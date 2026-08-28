@@ -3,7 +3,6 @@ import {
   BookOpenText,
   CalendarDays,
   ChevronRight,
-  CircleAlert,
   Clock3,
   FileQuestion,
   GraduationCap,
@@ -16,9 +15,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { schoolApi } from "../api";
-import { Markdown } from "../components/Markdown";
 import { EmptyState, ErrorNotice } from "../components/Status";
-import { classTone, dueBucket, formatDue, isAssessment } from "../format";
+import { classTone, dueBucket, formatDue, isAssessment, isPastDue, parseDueDate } from "../format";
 import { usePolling } from "../hooks/usePolling";
 import type { AssignmentContext, TrackedTask } from "../types";
 
@@ -32,20 +30,24 @@ export function MyWork() {
   const [groupMode, setGroupMode] = useState<GroupMode>("due");
   const [filter, setFilter] = useState<FilterMode>("all");
   const selectedId = searchParams.get("task");
-  const selectedTask = tasks?.find((task) => task.logical_id === selectedId) ?? null;
+  const unfinishedTasks = useMemo(
+    () => (tasks ?? []).filter((task) => task.completed === false),
+    [tasks],
+  );
+  const selectedTask = unfinishedTasks.find((task) => task.logical_id === selectedId) ?? null;
 
   const filtered = useMemo(() => {
     const now = new Date();
     const week = new Date(now);
     week.setDate(now.getDate() + 7);
-    return (tasks ?? []).filter((task) => {
+    return unfinishedTasks.filter((task) => {
       if (query && !`${task.display_title} ${task.course.name}`.toLowerCase().includes(query.toLowerCase())) return false;
-      const due = task.due_date ? new Date(task.due_date) : null;
-      if (filter === "overdue" && (!due || due >= now)) return false;
-      if (filter === "week" && (!due || due < now || due > week)) return false;
+      const due = task.due_date ? parseDueDate(task.due_date) : null;
+      if (filter === "overdue" && (!task.due_date || !isPastDue(task.due_date, now))) return false;
+      if (filter === "week" && (!due || (task.due_date && isPastDue(task.due_date, now)) || due > week)) return false;
       return true;
     });
-  }, [tasks, query, filter]);
+  }, [unfinishedTasks, query, filter]);
 
   const groups = useMemo(() => {
     const output = new Map<string, TrackedTask[]>();
@@ -93,9 +95,6 @@ export function MyWork() {
               {item === "all" ? "All unfinished" : item === "overdue" ? "Overdue" : "Next 7 days"}
             </button>
           ))}
-          {tasks?.some((task) => task.completion_status === "unavailable") && (
-            <span className="data-note"><CircleAlert size={14} />Google completion status unavailable; tracked tasks are still shown.</span>
-          )}
         </div>
 
         {Boolean(error) && <ErrorNotice error={error} />}
@@ -122,8 +121,7 @@ export function MyWork() {
 }
 
 function AssignmentRow({ task, selected, onSelect }: { task: TrackedTask; selected: boolean; onSelect: () => void }) {
-  const due = task.due_date ? new Date(task.due_date) : null;
-  const overdue = due ? due < new Date() : false;
+  const overdue = task.due_date ? isPastDue(task.due_date) : false;
   return (
     <button className={`assignment-row ${selected ? "selected" : ""}`} onClick={onSelect}>
       <span className={`course-mark tone-${classTone(task.course.id)}`}>{task.course.prefix.slice(0, 3).toUpperCase()}</span>
@@ -171,7 +169,7 @@ function AssignmentInspector({ task, onClose }: { task: TrackedTask; onClose: ()
       <div className="inspector-section">
         <div className="section-kicker">Directions</div>
         {error ? <ErrorNotice error={error} /> : context ? (
-          context.directionsMarkdown ? <Markdown>{context.directionsMarkdown}</Markdown> : <p className="muted">No Canvas directions were supplied.</p>
+          <p className="muted">Open the assignment workspace and choose Get Directions for a Luna-generated, source-grounded summary.</p>
         ) : <div className="text-skeleton"><span /><span /><span /></div>}
       </div>
       {context?.externalAssignment.isExternal && (

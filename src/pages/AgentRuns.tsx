@@ -34,12 +34,14 @@ export function AgentRunsPage() {
 }
 
 function featureName(feature: AgentRun["feature"]) {
+  if (feature === "directions") return "Assignment directions";
   if (feature === "problemExtraction") return "Problem extraction";
   if (feature === "answerKey") return "Answer key";
   return "Study guide";
 }
 
 function tabForFeature(feature: AgentRun["feature"]) {
+  if (feature === "directions") return "directions";
   if (feature === "problemExtraction") return "problems";
   if (feature === "answerKey") return "answers";
   return "study";

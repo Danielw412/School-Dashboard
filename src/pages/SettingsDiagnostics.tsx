@@ -129,6 +129,7 @@ function DiagnosticCard({ label, value, detail, ok }: { label: string; value: st
 }
 
 function humanFeature(value: string) {
+  if (value === "assignmentNavigation") return "Directions / assignment navigation";
   return value.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
 }
 

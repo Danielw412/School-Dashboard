@@ -11,6 +11,7 @@ import TurndownService from "turndown";
 import { z } from "zod";
 
 import type { ActivityStore } from "./activity.js";
+import { sanitizeUrlCapabilities } from "./activity.js";
 import { requireCanvasToken } from "./env.js";
 import type { TrackedTask } from "./task-sync.js";
 
@@ -87,11 +88,28 @@ const canvasFileSchema = z
   })
   .passthrough();
 
+const canvasCourseSchema = z
+  .object({
+    id: z.number(),
+    name: z.string(),
+    course_code: z.string().optional(),
+    syllabus_body: z.string().nullable().optional(),
+    default_view: z.string().optional(),
+    term: z.record(z.string(), z.unknown()).optional(),
+    teachers: z.array(z.record(z.string(), z.unknown())).optional(),
+  })
+  .passthrough();
+
 export type CanvasAssignment = z.infer<typeof canvasAssignmentSchema>;
 export type CanvasPage = z.infer<typeof canvasPageSchema>;
 export type CanvasModule = z.infer<typeof canvasModuleSchema>;
 export type CanvasModuleItem = z.infer<typeof canvasModuleItemSchema>;
 export type CanvasFile = z.infer<typeof canvasFileSchema>;
+export type CanvasCourse = z.infer<typeof canvasCourseSchema>;
+export type CanvasReadablePage = CanvasPage & {
+  bodyMarkdown: string;
+  links: CanvasLink[];
+};
 
 export type CanvasLink = {
   text: string;
@@ -156,6 +174,16 @@ export class CanvasClient {
     );
   }
 
+  async getCourse(courseId: string): Promise<CanvasCourse & { syllabusMarkdown: string }> {
+    const course = canvasCourseSchema.parse(
+      await this.requestJson(`/courses/${encodeURIComponent(courseId)}`, {
+        include: ["syllabus_body", "term", "teachers"],
+      }),
+    );
+    const syllabus = normalizeCanvasHtml(course.syllabus_body ?? "", this.baseUrl);
+    return { ...course, syllabusMarkdown: syllabus.markdown };
+  }
+
   async listAssignments(courseId: string, search?: string): Promise<CanvasAssignment[]> {
     const values = await this.paginate(
       `/courses/${encodeURIComponent(courseId)}/assignments`,
@@ -164,20 +192,34 @@ export class CanvasClient {
     return z.array(canvasAssignmentSchema).parse(values);
   }
 
+
+  async listPages(courseId: string, search?: string): Promise<CanvasPage[]> {
+    const values = await this.paginate(`/courses/${encodeURIComponent(courseId)}/pages`, {
+      ...(search ? { search_term: search } : {}),
+      per_page: "100",
+    });
+    return z.array(canvasPageSchema).parse(values);
+  }
+
+  async listFiles(courseId: string, search?: string): Promise<CanvasFile[]> {
+    const values = await this.paginate(`/courses/${encodeURIComponent(courseId)}/files`, {
+      ...(search ? { search_term: search } : {}),
+      per_page: "100",
+    });
+    return z.array(canvasFileSchema).parse(values);
+  }
+
   async searchCourse(courseId: string, query: string): Promise<Record<string, unknown>> {
-    const encodedCourse = encodeURIComponent(courseId);
-    const [assignments, pages, modules, files] = await Promise.all([
+    const [assignmentsResult, pagesResult, modulesResult, filesResult] = await Promise.allSettled([
       this.listAssignments(courseId, query),
-      this.paginate(`/courses/${encodedCourse}/pages`, {
-        search_term: query,
-        per_page: "100",
-      }).then((value) => z.array(canvasPageSchema).parse(value)),
+      this.listPages(courseId, query),
       this.listModules(courseId),
-      this.paginate(`/courses/${encodedCourse}/files`, {
-        search_term: query,
-        per_page: "100",
-      }).then((value) => z.array(canvasFileSchema).parse(value)),
+      this.listFiles(courseId, query),
     ]);
+    const assignments = settledValue(assignmentsResult);
+    const pages = settledValue(pagesResult);
+    const modules = settledValue(modulesResult);
+    const files = settledValue(filesResult);
     const tokens = normalizedTokens(query);
     return {
       query,
@@ -185,6 +227,12 @@ export class CanvasClient {
       pages: rankByTitle(pages, (item) => item.title, tokens).slice(0, 20),
       modules: rankByTitle(modules, (item) => item.name, tokens).slice(0, 20),
       files: rankByTitle(files, (item) => item.display_name, tokens).slice(0, 20),
+      unavailable: [
+        settledFailure("assignments", assignmentsResult),
+        settledFailure("pages", pagesResult),
+        settledFailure("modules", modulesResult),
+        settledFailure("files", filesResult),
+      ].filter(Boolean),
     };
   }
 
@@ -204,12 +252,80 @@ export class CanvasClient {
     return z.array(canvasModuleItemSchema).parse(values);
   }
 
-  async getPage(courseId: string, slug: string): Promise<CanvasPage> {
-    return canvasPageSchema.parse(
+  async getPage(courseId: string, slug: string): Promise<CanvasReadablePage> {
+    const page = canvasPageSchema.parse(
       await this.requestJson(
         `/courses/${encodeURIComponent(courseId)}/pages/${encodeURIComponent(slug)}`,
       ),
     );
+    const body = normalizeCanvasHtml(page.body ?? "", this.baseUrl);
+    return { ...page, bodyMarkdown: body.markdown, links: body.links };
+  }
+
+  async getModuleItemSequence(
+    courseId: string,
+    assetType: "ModuleItem" | "File" | "Page" | "Discussion" | "Assignment" | "Quiz" | "ExternalTool",
+    assetId: string,
+  ): Promise<Record<string, unknown>> {
+    return z.record(z.string(), z.unknown()).parse(
+      await this.requestJson(`/courses/${encodeURIComponent(courseId)}/module_item_sequence`, {
+        asset_type: assetType,
+        asset_id: assetId,
+      }),
+    );
+  }
+
+  async listAnnouncements(
+    courseId: string,
+    range?: { startDate?: string; endDate?: string },
+  ): Promise<Record<string, unknown>[]> {
+    const values = await this.paginate("/announcements", {
+      "context_codes[]": [`course_${courseId}`],
+      ...(range?.startDate ? { start_date: range.startDate } : {}),
+      ...(range?.endDate ? { end_date: range.endDate } : {}),
+      per_page: "50",
+    });
+    return z.array(z.record(z.string(), z.unknown())).parse(values).map((announcement) => {
+      const message = normalizeCanvasHtml(
+        typeof announcement.message === "string" ? announcement.message : "",
+        this.baseUrl,
+      );
+      return { ...announcement, messageMarkdown: message.markdown, links: message.links };
+    });
+  }
+
+  async getDiscussion(courseId: string, topicId: string): Promise<Record<string, unknown>> {
+    const discussion = z.record(z.string(), z.unknown()).parse(
+      await this.requestJson(
+        `/courses/${encodeURIComponent(courseId)}/discussion_topics/${encodeURIComponent(topicId)}`,
+      ),
+    );
+    const message = normalizeCanvasHtml(
+      typeof discussion.message === "string" ? discussion.message : "",
+      this.baseUrl,
+    );
+    return { ...discussion, messageMarkdown: message.markdown, links: message.links };
+  }
+
+  async getQuiz(courseId: string, quizId: string): Promise<Record<string, unknown>> {
+    const quiz = z.record(z.string(), z.unknown()).parse(
+      await this.requestJson(
+        `/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(quizId)}`,
+      ),
+    );
+    const description = normalizeCanvasHtml(
+      typeof quiz.description === "string" ? quiz.description : "",
+      this.baseUrl,
+    );
+    return { ...quiz, descriptionMarkdown: description.markdown, links: description.links };
+  }
+
+  async listQuizQuestions(courseId: string, quizId: string): Promise<Record<string, unknown>[]> {
+    const values = await this.paginate(
+      `/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(quizId)}/questions`,
+      { per_page: "100" },
+    );
+    return z.array(z.record(z.string(), z.unknown())).parse(values);
   }
 
   async getFile(fileId: string): Promise<CanvasFile> {
@@ -262,6 +378,17 @@ export class CanvasClient {
     if (file) {
       return { kind: "file", value: await this.getFile(file[1] ?? file[2]!) };
     }
+    const discussion = url.pathname.match(/\/courses\/(\d+)\/discussion_topics\/(\d+)/);
+    if (discussion) {
+      return {
+        kind: "discussion",
+        value: await this.getDiscussion(discussion[1]!, discussion[2]!),
+      };
+    }
+    const quiz = url.pathname.match(/\/courses\/(\d+)\/quizzes\/(\d+)/);
+    if (quiz) {
+      return { kind: "quiz", value: await this.getQuiz(quiz[1]!, quiz[2]!) };
+    }
     return {
       kind: "canvas_link",
       url: url.toString(),
@@ -301,11 +428,12 @@ export class CanvasClient {
       return emptyAssignmentContext();
     }
     const directions = normalizeCanvasHtml(assignment.description ?? "", this.baseUrl);
+    const sanitizedAssignment = { ...assignment, description: directions.html };
     const externalUrl = assignment.external_tool_tag_attributes?.url ?? null;
     const isExternal = assignment.submission_types.includes("external_tool") || Boolean(externalUrl);
     const supportedTypes = new Set(["online_text_entry", "online_url", "online_upload"]);
     return {
-      assignment,
+      assignment: sanitizedAssignment,
       directionsHtml: directions.html,
       directionsMarkdown: directions.markdown,
       links: directions.links,
@@ -513,16 +641,22 @@ function normalizeCanvasHtml(
     const href = $(element).attr("href");
     if (!href) return;
     const resolved = new URL(href, baseUrl);
-    $(element).attr("href", resolved.toString());
+    const safeUrl = sanitizeUrlCapabilities(resolved.toString());
+    $(element).attr("href", safeUrl);
     links.push({
       text: $(element).text().trim() || resolved.pathname,
-      url: resolved.toString(),
+      url: safeUrl,
       sameCanvasOrigin: resolved.origin === canvasOrigin,
     });
   });
   $("img[src]").each((_index, element) => {
     const src = $(element).attr("src");
-    if (src) $(element).attr("src", new URL(src, baseUrl).toString());
+    if (src) {
+      $(element).attr(
+        "src",
+        sanitizeUrlCapabilities(new URL(src, baseUrl).toString()),
+      );
+    }
   });
   const html = $("body").html() ?? "";
   const turndown = new TurndownService({ bulletListMarker: "-", headingStyle: "atx" });
@@ -574,6 +708,18 @@ function normalizedTokens(value: string): Set<string> {
       .split(/\s+/)
       .filter((item) => item.length > 1),
   );
+}
+
+function settledValue<T>(result: PromiseSettledResult<T[]>): T[] {
+  return result.status === "fulfilled" ? result.value : [];
+}
+
+function settledFailure(label: string, result: PromiseSettledResult<unknown>) {
+  if (result.status === "fulfilled") return null;
+  return {
+    section: label,
+    reason: result.reason instanceof Error ? result.reason.message : "Canvas access unavailable",
+  };
 }
 
 function rankByTitle<T>(items: T[], title: (item: T) => string, query: Set<string>) {

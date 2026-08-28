@@ -79,7 +79,7 @@ export type AssignmentContext = {
 
 export type AgentRun = {
   id: string;
-  feature: "problemExtraction" | "answerKey" | "studyGuide";
+  feature: "directions" | "problemExtraction" | "answerKey" | "studyGuide";
   status: "queued" | "running" | "completed" | "failed";
   logicalId: string;
   taskTitle: string;
@@ -169,6 +169,35 @@ export type ProblemExtraction = {
   }>;
   unresolved: Array<{ reference: string; reason: string; searched: string[] }>;
   sourcesInspected: Array<{ name: string; type: string; url: string | null; pages: number[] }>;
+};
+
+export type AssignmentDirections = {
+  assignmentTitle: string;
+  overviewMarkdown: string;
+  instructions: Array<{
+    heading: string;
+    markdown: string;
+    provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
+  }>;
+  assignedWork: Array<{
+    label: string;
+    items: string[];
+    provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
+  }>;
+  submission: {
+    methodMarkdown: string;
+    deliverables: string[];
+    dueMarkdown: string | null;
+    attemptsMarkdown: string | null;
+  };
+  resources: Array<{
+    title: string;
+    url: string | null;
+    kind: "canvas" | "file" | "page" | "external";
+    description: string;
+  }>;
+  notices: Array<{ level: "info" | "warning"; markdown: string }>;
+  sourcesInspected: Array<{ name: string; type: string; url: string | null; relevance: string }>;
 };
 
 export type AnswerKey = {

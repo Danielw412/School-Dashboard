@@ -33,7 +33,11 @@ const context = {
 
 vi.mock("../api", () => ({
   schoolApi: {
-    tasks: vi.fn(async () => [task]),
+    tasks: vi.fn(async () => [
+      task,
+      { ...task, logical_id: "physics:assignment:99", display_title: "Checked off task", completed: true, completion_status: "completed" },
+      { ...task, logical_id: "physics:assignment:100", display_title: "Unknown task", completed: null, completion_status: "unavailable" },
+    ]),
     context: vi.fn(async () => context),
   },
 }));
@@ -41,12 +45,15 @@ vi.mock("../api", () => ({
 describe("MyWork", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("groups unfinished tasks and opens Canvas-backed directions", async () => {
+  it("shows only explicitly unfinished Google Tasks and opens the workspace preview", async () => {
     const user = userEvent.setup();
     render(<MemoryRouter><MyWork /></MemoryRouter>);
     expect(await screen.findByText("Problem Set 4")).toBeInTheDocument();
+    expect(screen.queryByText("Checked off task")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unknown task")).not.toBeInTheDocument();
     await user.click(screen.getByText("Problem Set 4"));
-    await waitFor(() => expect(screen.getByText(/Complete questions/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Get Directions/)).toBeInTheDocument());
+    expect(screen.queryByText(/Complete questions/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open Canvas/i })).toHaveAttribute("href", task.canvas.assignment_url);
     expect(screen.getByText(/Allowed: pdf/)).toBeInTheDocument();
   });

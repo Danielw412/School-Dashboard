@@ -56,7 +56,8 @@ app.get("/api/health", async (_request, response) => {
 
 app.get("/api/tasks", async (request, response) => {
   const completed = request.query.completed === "true";
-  response.json(await taskSync.listTasks(completed));
+  const tasks = await taskSync.listTasks(completed);
+  response.json(tasks.filter((task) => task.completed === completed));
 });
 
 app.get("/api/tasks/:logicalId", async (request, response) => {
@@ -69,7 +70,7 @@ app.get("/api/tasks/:logicalId/context", async (request, response) => {
 });
 
 app.get("/api/overview", async (_request, response) => {
-  const tasks = await taskSync.listTasks(false);
+  const tasks = (await taskSync.listTasks(false)).filter((task) => task.completed === false);
   const now = new Date();
   const endOfWeek = new Date(now);
   endOfWeek.setDate(now.getDate() + 7);

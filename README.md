@@ -7,14 +7,16 @@ Canvas coursework, and runs structured Codex workflows.
 
 ## What is included
 
-- Incomplete work grouped by due date or class, backed by `GET /api/v1/tasks?completed=false`.
-- Canvas directions, same-origin links, assignment metadata, external-assignment disclosure, and
-  submission requirements.
+- Incomplete work grouped by due date or class, backed by `GET /api/v1/tasks?completed=false` and
+  shown only when Google Tasks explicitly reports `needsAction`.
+- A **Get Directions** workflow where Luna inspects the assignment, submission requirements,
+  module neighborhood, and relevant Canvas resources, then produces a concise structured summary.
 - Exact problem extraction with Markdown/LaTeX, page-level provenance, Poppler PDF rendering, and
   optional image crops for diagrams or figures.
 - Answer keys that accept only a completed problem-extraction result as their problem source.
 - Focused study guides with teacher-stated scope separated from agent-inferred topics.
-- GPT-5.6 Luna as the default Codex SDK model, plus Terra/Sol and per-feature reasoning controls.
+- GPT-5.6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
+  extraction, plus Terra/Sol and configurable reasoning controls.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.
@@ -57,16 +59,17 @@ temporary workspace containing `canvas-tool.mjs`, `CANVAS_TOOLS.md`, the tracked
 deterministically resolved assignment context. Supported actions include:
 
 ```text
-context / assignment / submission-requirements
-search / modules / module-items / page / follow
+context / assignment / submission-requirements / course
+search / pages / files / modules / module-items / module-neighborhood
+page / follow / announcements / discussion / quiz / quiz-questions
 file / download / pdf-text / pdf-render / image-crop
 upload / submit (only with a separate explicit-confirmation capability)
 ```
 
 The script calls a loopback-only internal endpoint with a short-lived scoped capability. The actual
-Canvas token stays in the dashboard process and is redacted from persistent activity. Normal Codex
-analysis runs receive read-only capabilities; submissions are performed only by the confirmation
-dialog in the UI.
+Canvas token stays in the dashboard process and is redacted from persistent activity. Codex runs in
+a read-only workspace and receives only the short-lived Canvas capability; submissions are performed
+only by the confirmation dialog in the UI.
 
 Downloaded files use a short-term cache under `.school-dashboard/cache`, then are copied into the
 temporary assignment workspace. The workspace path lives under the operating system temporary

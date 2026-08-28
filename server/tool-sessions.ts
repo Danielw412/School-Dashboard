@@ -4,7 +4,7 @@ import { basename, relative } from "node:path";
 
 import { z } from "zod";
 
-import type { ActivityStore } from "./activity.js";
+import { sanitizeForLog, type ActivityStore } from "./activity.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import { APP_ROOT } from "./env.js";
 import type { AppSettings } from "./settings.js";
@@ -94,7 +94,9 @@ export class CanvasToolSessions {
       metadata: { workspace: session.workspace.id },
     });
 
-    switch (action) {
+    try {
+      const result = await (async () => {
+        switch (action) {
       case "context":
       case "assignment":
       case "submission-requirements":
@@ -112,6 +114,21 @@ export class CanvasToolSessions {
         const query = z.string().min(1).parse(input.query);
         return this.canvas.searchCourse(courseId, query);
       }
+      case "course":
+        requireCourse(courseId);
+        return this.canvas.getCourse(courseId);
+      case "pages":
+        requireCourse(courseId);
+        return this.canvas.listPages(
+          courseId,
+          input.query === undefined ? undefined : z.string().min(1).parse(input.query),
+        );
+      case "files":
+        requireCourse(courseId);
+        return this.canvas.listFiles(
+          courseId,
+          input.query === undefined ? undefined : z.string().min(1).parse(input.query),
+        );
       case "modules":
         requireCourse(courseId);
         return this.canvas.listModules(courseId);
@@ -121,11 +138,43 @@ export class CanvasToolSessions {
           courseId,
           z.union([z.string(), z.number()]).parse(input.moduleId).toString(),
         );
+      case "module-neighborhood":
+        requireCourse(courseId);
+        requireAssignment(assignmentId);
+        return this.canvas.getModuleItemSequence(courseId, "Assignment", assignmentId);
       case "page":
         requireCourse(courseId);
         return this.canvas.getPage(courseId, z.string().min(1).parse(input.slug));
-      case "follow":
-        return this.canvas.followLinkedResource(z.string().url().parse(input.url));
+      case "follow": {
+        requireCourse(courseId);
+        const url = z.string().url().parse(input.url);
+        requireCourseScopedUrl(url, courseId);
+        return this.canvas.followLinkedResource(url);
+      }
+      case "announcements":
+        requireCourse(courseId);
+        return this.canvas.listAnnouncements(courseId, {
+          startDate: input.startDate === undefined ? undefined : z.string().date().parse(input.startDate),
+          endDate: input.endDate === undefined ? undefined : z.string().date().parse(input.endDate),
+        });
+      case "discussion":
+        requireCourse(courseId);
+        return this.canvas.getDiscussion(
+          courseId,
+          z.union([z.string(), z.number()]).parse(input.topicId).toString(),
+        );
+      case "quiz":
+        requireCourse(courseId);
+        return this.canvas.getQuiz(
+          courseId,
+          z.union([z.string(), z.number()]).parse(input.quizId).toString(),
+        );
+      case "quiz-questions":
+        requireCourse(courseId);
+        return this.canvas.listQuizQuestions(
+          courseId,
+          z.union([z.string(), z.number()]).parse(input.quizId).toString(),
+        );
       case "file":
         return this.canvas.getFile(z.union([z.string(), z.number()]).parse(input.fileId).toString());
       case "download": {
@@ -186,6 +235,28 @@ export class CanvasToolSessions {
       }
       default:
         throw new Error(`Unknown Canvas tool action: ${action}`);
+        }
+      })();
+      await this.activity.record({
+        category: "agent",
+        action: `canvas_tool.${action}`,
+        status: "completed",
+        summary: session.task.display_title,
+        metadata: { workspace: session.workspace.id },
+      });
+      return sanitizeForLog(result);
+    } catch (error) {
+      await this.activity.record({
+        category: "agent",
+        action: `canvas_tool.${action}`,
+        status: "failed",
+        summary: session.task.display_title,
+        metadata: {
+          workspace: session.workspace.id,
+          error: error instanceof Error ? error.message : "Canvas tool failed",
+        },
+      });
+      throw error;
     }
   }
 
@@ -207,6 +278,14 @@ function requireAssignment(assignmentId: string | null): asserts assignmentId is
   if (!assignmentId) throw new Error("This task could not be resolved to a Canvas assignment.");
 }
 
+function requireCourseScopedUrl(urlValue: string, courseId: string) {
+  const url = new URL(urlValue);
+  const courseMatch = url.pathname.match(/\/courses\/(\d+)/);
+  if (courseMatch && courseMatch[1] !== courseId) {
+    throw new ToolAuthorizationError("The linked Canvas resource belongs to a different course.");
+  }
+}
+
 function requireMutation(session: ToolSession, input: Record<string, unknown>) {
   if (!session.allowMutation || input.confirmed !== true) {
     throw new ToolAuthorizationError("Upload and submission require an explicit user confirmation capability.");
@@ -221,11 +300,19 @@ export const TOOL_DOCUMENTATION = [
   "Run tools with node canvas-tool.mjs ACTION 'JSON':",
   "",
   "- context or assignment: selected assignment, directions, links, and submission requirements",
+  "- course: course metadata and syllabus text",
   "- search {\"query\":\"...\"}: focused course search across assignments, pages, modules, and files",
+  "- pages {\"query\":\"optional phrase\"}: list available course pages; use a query when possible",
+  "- files {\"query\":\"optional phrase\"}: list available course files; use a query when possible",
   "- modules: course modules and embedded items",
   "- module-items {\"moduleId\":123}: one module's items",
+  "- module-neighborhood: the selected assignment's module sequence with previous/current/next items",
   "- page {\"slug\":\"page-slug\"}: a Canvas page",
   "- follow {\"url\":\"https://...\"}: classify/read a linked Canvas resource",
+  "- announcements {\"startDate\":\"YYYY-MM-DD\",\"endDate\":\"YYYY-MM-DD\"}: course announcements in an optional date range",
+  "- discussion {\"topicId\":123}: one Canvas discussion or announcement topic",
+  "- quiz {\"quizId\":123}: quiz/test metadata and teacher description",
+  "- quiz-questions {\"quizId\":123}: authorized question data for an accessible classic quiz; Canvas may deny or omit it",
   "- file {\"fileId\":123}: file metadata",
   "- download {\"fileId\":123}: download into resources/ with cache support",
   "- pdf-text {\"path\":\"resources/file.pdf\",\"page\":2}: layout-aware PDF text (page is optional)",

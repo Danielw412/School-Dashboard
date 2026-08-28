@@ -24,7 +24,7 @@ import type { TaskSyncClient } from "./task-sync.js";
 import type { CanvasToolSessions } from "./tool-sessions.js";
 import type { WorkspaceManager } from "./workspace.js";
 
-export const featureSchema = z.enum(["problemExtraction", "answerKey", "studyGuide"]);
+export const featureSchema = z.enum(["directions", "problemExtraction", "answerKey", "studyGuide"]);
 export type AgentFeature = z.infer<typeof featureSchema>;
 
 const provenanceSchema = z.object({
@@ -32,6 +32,45 @@ const provenanceSchema = z.object({
   sourceUrl: z.string().nullable(),
   page: z.number().int().positive().nullable(),
   evidence: z.string(),
+});
+
+export const directionsSchema = z.object({
+  assignmentTitle: z.string(),
+  overviewMarkdown: z.string(),
+  instructions: z.array(
+    z.object({
+      heading: z.string(),
+      markdown: z.string(),
+      provenance: z.array(provenanceSchema).min(1),
+    }),
+  ),
+  assignedWork: z.array(
+    z.object({
+      label: z.string(),
+      items: z.array(z.string()),
+      provenance: z.array(provenanceSchema).min(1),
+    }),
+  ),
+  submission: z.object({
+    methodMarkdown: z.string(),
+    deliverables: z.array(z.string()),
+    dueMarkdown: z.string().nullable(),
+    attemptsMarkdown: z.string().nullable(),
+  }),
+  resources: z.array(
+    z.object({
+      title: z.string(),
+      url: z.string().nullable(),
+      kind: z.enum(["canvas", "file", "page", "external"]),
+      description: z.string(),
+    }),
+  ),
+  notices: z.array(
+    z.object({ level: z.enum(["info", "warning"]), markdown: z.string() }),
+  ),
+  sourcesInspected: z.array(
+    z.object({ name: z.string(), type: z.string(), url: z.string().nullable(), relevance: z.string() }),
+  ),
 });
 
 export const problemExtractionSchema = z.object({
@@ -177,7 +216,7 @@ export class AgentRunStore {
 
   private async read(): Promise<AgentRun[]> {
     try {
-      return JSON.parse(await readFile(RUNS_PATH, "utf8")) as AgentRun[];
+      return sanitizeForLog(JSON.parse(await readFile(RUNS_PATH, "utf8"))) as AgentRun[];
     } catch {
       return [];
     }
@@ -219,10 +258,16 @@ export class AgentRunner {
       .parse(input);
     const settings = await this.settingsStore.get();
     const task = await this.taskSync.getTask(parsed.logicalId);
-    const model = parsed.model ?? settings.featureModels[parsed.feature] ?? settings.defaultModel;
-    const reasoningEffort = parsed.reasoningEffort ?? settings.reasoningEffort;
+    const preference = resolveAgentPreferences(
+      settings,
+      parsed.feature,
+      parsed.model,
+      parsed.reasoningEffort,
+    );
+    const model = preference.model;
+    const reasoningEffort = preference.reasoningEffort;
     const effectiveReasoningEffort = reasoningEffort === "none" ? "minimal" : reasoningEffort;
-    const prompt = settings.prompts[parsed.feature];
+    const prompt = preference.prompt;
     const run: AgentRun = {
       id: randomUUID(),
       feature: parsed.feature,
@@ -300,6 +345,25 @@ export class AgentRunner {
       const toolSession = this.toolSessions.create(task, context, workspace, settings);
       toolToken = toolSession.token;
       await this.toolSessions.installAgentScript(toolSession);
+      const preflight: Record<string, unknown> = {
+        helperReady: true,
+        selectedAssignment: context.assignment?.id ?? null,
+        moduleNeighborhood: null,
+      };
+      const courseId = task.canvas.course_id ?? task.course.canvas_course_id;
+      if (courseId && context.assignment?.id) {
+        try {
+          preflight.moduleNeighborhood = await this.canvas.getModuleItemSequence(
+            courseId,
+            "Assignment",
+            String(context.assignment.id),
+          );
+        } catch (error) {
+          preflight.moduleNeighborhoodError =
+            error instanceof Error ? error.message : "Module neighborhood unavailable";
+        }
+      }
+      await this.workspaces.writeJson(workspace, "canvas-tool-preflight.json", preflight);
       const instructions = buildInstructions(run.feature, run.prompt, predictor, referencedExtraction);
       const codex = new Codex({
         env: {
@@ -324,7 +388,7 @@ export class AgentRunner {
       const thread = codex.startThread({
         model: run.model,
         modelReasoningEffort: run.effectiveReasoningEffort as ModelReasoningEffort,
-        sandboxMode: "workspace-write",
+        sandboxMode: "read-only",
         workingDirectory: workspace.path,
         skipGitRepoCheck: true,
         networkAccessEnabled: true,
@@ -335,7 +399,7 @@ export class AgentRunner {
       await this.runs.update(run.id, { workspaceId: workspace.id });
       const { events } = await thread.runStreamed(instructions, {
         outputSchema: schemaForFeature(run.feature),
-        signal: AbortSignal.timeout(8 * 60_000),
+        signal: AbortSignal.timeout(run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000),
       });
       const rawEvents: unknown[] = [];
       let usage: Usage | null = null;
@@ -361,14 +425,16 @@ export class AgentRunner {
       }
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
       const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
+      const safeOutput = sanitizeForLog(parsedOutput);
+      const safeRawStructuredOutput = JSON.stringify(safeOutput);
       await this.runs.update(run.id, {
         status: "completed",
         completedAt: new Date().toISOString(),
         threadId: thread.id,
         usage,
         events: rawEvents.slice(-250),
-        rawStructuredOutput,
-        output: parsedOutput,
+        rawStructuredOutput: safeRawStructuredOutput,
+        output: safeOutput,
         predictor,
       });
       await this.activity.record({
@@ -404,9 +470,12 @@ function buildInstructions(
   predictor: PredictorResult | null,
   extraction: unknown,
 ): string {
-  const common = `You are operating inside one temporary assignment workspace. Read task.json, assignment-context.json, and CANVAS_TOOLS.md first. Use the provided canvas-tool.mjs scripts instead of direct Canvas HTTP requests. Never inspect environment variables or print credentials. Use deterministic tool results for facts and use reasoning only for navigation decisions, extraction, solving, or synthesis. Keep all source provenance precise. External links may be reported but must not be claimed as read unless the tool returned readable content. Return only the requested structured JSON.`;
+  const common = `You are operating inside one temporary assignment workspace. Read only task.json, assignment-context.json, canvas-tool-preflight.json, CANVAS_TOOLS.md, extracted-problems.json when named below, and files returned by the Canvas helper. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Use node canvas-tool.mjs ACTION 'JSON' for Canvas access instead of direct HTTP requests. The helper is assignment/course-scoped and its bearer credential is intentionally hidden. Use deterministic tool results for facts and use reasoning for navigation, extraction, solving, or synthesis. Keep provenance precise. External links may be reported but must not be claimed as read unless a tool returned readable content. Return only the requested structured JSON.`;
+  if (feature === "directions") {
+    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nInvestigate the selected assignment using the Canvas helper. Read the assignment, its submission requirements, its module neighborhood, and relevant linked Canvas pages or files. Search the course only when the assignment evidence points to a specific missing resource. Everything in the response must be a Luna-authored synthesis of inspected evidence: do not copy the raw Canvas HTML into the answer. Paraphrase verbose directions into a clear overview and ordered instructions while preserving exact problem numbers, page numbers, filenames, required deliverables, deadlines, warnings, and submission constraints. This feature summarizes what to do; do not solve problems or extract full question text, and inspect only the pages needed to verify an assignment reference. Leave exact question extraction to the problemExtraction feature. In Canvas, allowed_attempts=-1 means unlimited attempts; render it as “Unlimited,” never “-1.” Label external resources honestly and do not claim to read an external platform. If a fact is unavailable, omit it or state that it could not be verified; never invent it.`;
+  }
   if (feature === "problemExtraction") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with assignment context, then inspect only relevant module neighbors and linked resources. For PDFs, use pdf-text and render pages when visuals or layout matter. A visual path must be relative to this workspace. If exact text cannot be found, add an unresolved entry rather than inventing it.`;
+    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with assignment context, then inspect only relevant module neighbors and linked resources. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. For PDFs, use pdf-text and render pages when visuals or layout matter. A visual path must be relative to this workspace. If exact text cannot be found, add an unresolved entry rather than inventing it.`;
   }
   if (feature === "answerKey") {
     return `${common}\n\nFeature prompt:\n${customPrompt}\n\nUse extracted-problems.json as the sole problem statement source. Do not navigate Canvas to substitute or embellish a problem. Preserve the extracted numbering. The final answer must be concise and the full solution must be complete. Extraction payload:\n${JSON.stringify(extraction)}`;
@@ -415,9 +484,25 @@ function buildInstructions(
 }
 
 function outputParser(feature: AgentFeature) {
+  if (feature === "directions") return directionsSchema;
   if (feature === "problemExtraction") return problemExtractionSchema;
   if (feature === "answerKey") return answerKeySchema;
   return studyGuideSchema;
+}
+
+export function resolveAgentPreferences(
+  settings: AppSettings,
+  feature: AgentFeature,
+  modelOverride?: z.infer<typeof modelSchema>,
+  reasoningOverride?: z.infer<typeof reasoningEffortSchema>,
+) {
+  const settingsFeature = feature === "directions" ? "assignmentNavigation" : feature;
+  return {
+    model: modelOverride ?? settings.featureModels[settingsFeature] ?? settings.defaultModel,
+    reasoningEffort:
+      reasoningOverride ?? (feature === "problemExtraction" ? "xhigh" : settings.reasoningEffort),
+    prompt: settings.prompts[settingsFeature],
+  } as const;
 }
 
 function schemaForFeature(feature: AgentFeature): unknown {

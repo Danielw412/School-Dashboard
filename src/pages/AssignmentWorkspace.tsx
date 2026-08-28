@@ -5,10 +5,10 @@ import {
   BrainCircuit,
   Check,
   ChevronDown,
+  CircleAlert,
   FileQuestion,
   FileText,
   LoaderCircle,
-  LockKeyhole,
   Send,
   Sparkles,
   X,
@@ -24,7 +24,7 @@ import { usePolling } from "../hooks/usePolling";
 import type {
   AgentRun,
   AnswerKey,
-  AssignmentContext,
+  AssignmentDirections,
   ModelName,
   ProblemExtraction,
   ReasoningEffort,
@@ -50,6 +50,7 @@ export function AssignmentWorkspace() {
   const context = contextState.data;
   const runs = runsState.data ?? [];
   const extractionRun = latestRun(runs, logicalId, "problemExtraction");
+  const directionsRun = latestRun(runs, logicalId, "directions");
   const answerRun = latestRun(runs, logicalId, "answerKey");
   const studyRun = latestRun(runs, logicalId, "studyGuide");
 
@@ -72,7 +73,15 @@ export function AssignmentWorkspace() {
         extractionRunId: feature === "answerKey" ? extractionRun?.id : undefined,
       });
       await runsState.refresh();
-      switchTab(feature === "problemExtraction" ? "problems" : feature === "answerKey" ? "answers" : "study");
+      switchTab(
+        feature === "directions"
+          ? "directions"
+          : feature === "problemExtraction"
+            ? "problems"
+            : feature === "answerKey"
+              ? "answers"
+              : "study",
+      );
     } catch (error) {
       setActionError(error);
     } finally {
@@ -114,7 +123,11 @@ export function AssignmentWorkspace() {
       <div className="workspace-body">
         {Boolean(actionError) && <ErrorNotice error={actionError} />}
         {tab === "directions" && (
-          <DirectionsPanel taskDetails={task.details} context={context} />
+          <DirectionsPanel
+            run={directionsRun}
+            onRun={() => void start("directions")}
+            starting={starting === "directions"}
+          />
         )}
         {tab === "problems" && (
           <ProblemsPanel run={extractionRun} onRun={() => void start("problemExtraction")} starting={starting === "problemExtraction"} />
@@ -150,25 +163,54 @@ function TabButton({ active, onClick, icon: Icon, children }: { active: boolean;
   return <button className={active ? "active" : ""} onClick={onClick}><Icon size={17} />{children}</button>;
 }
 
-function DirectionsPanel({ taskDetails, context: typed }: { taskDetails: string; context: AssignmentContext }) {
+function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () => void; starting: boolean }) {
+  const output = run?.output as AssignmentDirections | null;
   return (
-    <div className="content-layout">
-      <article className="paper-panel">
-        <div className="paper-heading"><span>Assignment directions</span>{typed.resolution.method !== "not_found" && <small>{Math.round(typed.resolution.confidence * 100)}% match</small>}</div>
-        {typed.directionsMarkdown ? <Markdown>{typed.directionsMarkdown}</Markdown> : taskDetails ? <Markdown>{taskDetails}</Markdown> : <EmptyState title="No directions found" detail="Canvas Task Sync tracked this item, but Canvas did not expose assignment directions." />}
-      </article>
-      <aside className="context-rail">
-        <h3>Submission requirements</h3>
-        <dl>
-          <div><dt>Types</dt><dd>{typed.submissionRequirements.submissionTypes.map((item) => item.replaceAll("_", " ")).join(", ") || "None listed"}</dd></div>
-          <div><dt>Points</dt><dd>{typed.submissionRequirements.pointsPossible ?? "—"}</dd></div>
-          <div><dt>Attempts</dt><dd>{typed.submissionRequirements.allowedAttempts ?? "Canvas default"}</dd></div>
-          <div><dt>Extensions</dt><dd>{typed.submissionRequirements.allowedExtensions.join(", ") || "Any"}</dd></div>
-        </dl>
-        {typed.externalAssignment.isExternal && <div className="notice amber"><ArrowUpRight size={17} /><div><strong>External work</strong><p>Only Canvas directions and requirements are available here.</p></div></div>}
-        {typed.submissionRequirements.locked && <div className="notice error"><LockKeyhole size={17} /><div><strong>Locked</strong><p>{typed.submissionRequirements.lockExplanation || "Canvas reports this assignment is locked."}</p></div></div>}
-        {typed.links.length > 0 && <><h3>Directions links</h3><ul className="resource-links">{typed.links.map((link) => <li key={link.url}><a href={link.url} target="_blank" rel="noreferrer">{link.text}<ArrowUpRight size={13} /></a><span>{link.sameCanvasOrigin ? "Canvas" : "External"}</span></li>)}</ul></>}
-      </aside>
+    <div>
+      <FeatureHeader eyebrow="Luna-guided Canvas research" title="Directions" detail="Luna reads the assignment and its relevant Canvas resources, then turns them into a concise, source-grounded plan.">
+        <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>
+          {starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}
+          {run ? "Get directions again" : "Get Directions"}
+        </button>
+      </FeatureHeader>
+      {run && <RunBanner run={run} />}
+      {!run && <EmptyState title="Directions are ready to investigate" detail="Choose Get Directions and Luna will inspect the assignment, submission requirements, module neighborhood, and relevant linked Canvas resources." />}
+      {run?.status === "failed" && <ErrorNotice error={new Error(run.error || "Directions run failed")} />}
+      {output && (
+        <div className="content-layout directions-output">
+          <article className="paper-panel">
+            <div className="paper-heading"><span>{output.assignmentTitle || "Assignment directions"}</span><small>Luna synthesis</small></div>
+            <Markdown>{output.overviewMarkdown}</Markdown>
+            {output.instructions.map((instruction, index) => (
+              <section className="direction-section" key={`${instruction.heading}-${index}`}>
+                <h2><span>{index + 1}</span>{instruction.heading}</h2>
+                <Markdown>{instruction.markdown}</Markdown>
+                <Provenance items={instruction.provenance} />
+              </section>
+            ))}
+            {output.assignedWork.length > 0 && (
+              <section className="assigned-work">
+                <h2>Exactly what is assigned</h2>
+                {output.assignedWork.map((group) => (
+                  <div key={group.label}><strong>{group.label}</strong><ul>{group.items.map((item) => <li key={item}>{item}</li>)}</ul><Provenance items={group.provenance} /></div>
+                ))}
+              </section>
+            )}
+            {output.notices.map((notice, index) => <div className={`notice ${notice.level === "warning" ? "amber" : "blue"}`} key={index}><CircleAlert size={17} /><Markdown>{notice.markdown}</Markdown></div>)}
+          </article>
+          <aside className="context-rail">
+            <h3>Submission</h3>
+            <Markdown>{output.submission.methodMarkdown}</Markdown>
+            {output.submission.deliverables.length > 0 && <ul className="compact-list">{output.submission.deliverables.map((item) => <li key={item}>{item}</li>)}</ul>}
+            <dl>
+              {output.submission.dueMarkdown && <div><dt>Due</dt><dd>{output.submission.dueMarkdown}</dd></div>}
+              {output.submission.attemptsMarkdown && <div><dt>Attempts</dt><dd>{output.submission.attemptsMarkdown}</dd></div>}
+            </dl>
+            {output.resources.length > 0 && <><h3>Relevant resources</h3><ul className="resource-links">{output.resources.map((resource, index) => <li key={`${resource.title}-${index}`}>{resource.url ? <a href={resource.url} target="_blank" rel="noreferrer">{resource.title}<ArrowUpRight size={13} /></a> : <strong>{resource.title}</strong>}<span>{resource.kind} · {resource.description}</span></li>)}</ul></>}
+            {output.sourcesInspected.length > 0 && <details className="source-summary"><summary>Sources Luna inspected</summary>{output.sourcesInspected.map((source, index) => <p key={`${source.name}-${index}`}><strong>{source.name}</strong><span>{source.relevance}</span></p>)}</details>}
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
@@ -177,7 +219,7 @@ function ProblemsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () => 
   const output = run?.output as ProblemExtraction | null;
   return (
     <div>
-      <FeatureHeader eyebrow="Exact source extraction" title="Assigned problems" detail="Codex follows the assignment’s Canvas resources, preserves numbering, and refuses to invent missing questions.">
+      <FeatureHeader eyebrow="Exact source extraction · Luna xhigh" title="Assigned problems" detail="Luna uses xhigh reasoning to follow relevant Canvas resources, preserve numbering, and refuse to invent missing questions.">
         <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}{run ? "Extract again" : "Get assigned problems"}</button>
       </FeatureHeader>
       {run && <RunBanner run={run} />}
@@ -224,6 +266,7 @@ function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predic
       <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <BrainCircuit size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
     </div>
     {run && <RunBanner run={run} />}
+    {!run && <EmptyState title="No study guide yet" detail="Choose a model and reasoning level, then generate a focused guide from the assessment and nearby course evidence." />}
     {run?.status === "failed" && <ErrorNotice error={new Error(run.error || "Study-guide run failed")} />}
     {output && <div className="study-output"><div className={`predictor-banner ${output.predictor.status}`}><strong>Test Question Predictor: {output.predictor.status}</strong><span>{output.predictor.message}</span></div><p className="feature-summary">{output.overview}</p><EvidenceList title="Teacher-stated scope" items={output.teacherStatedScope.map((item) => ({ title: item.topic, detail: item.evidence }))} tone="teacher" /><EvidenceList title="Agent-inferred topics" items={output.agentInferredTopics.map((item) => ({ title: item.topic, detail: item.rationale }))} tone="inferred" />{output.sections.map((section) => <article className="study-section" key={section.heading}><h2>{section.heading}</h2><Markdown>{section.explanationMarkdown}</Markdown><ul>{section.keyIdeas.map((idea) => <li key={idea}>{idea}</li>)}</ul></article>)}<section className="practice-section"><h2>Practice questions</h2>{output.practiceQuestions.map((question, index) => <details key={index}><summary><span>{index + 1}</span><Markdown>{question.questionMarkdown}</Markdown><ChevronDown size={16} /></summary><div className="practice-answer"><small>Answer</small><Markdown>{question.answerMarkdown}</Markdown><p>{question.basis}</p></div></details>)}</section></div>}
   </div>;
