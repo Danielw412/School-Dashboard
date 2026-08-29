@@ -11,7 +11,12 @@ import { sanitizeForLog, type ActivityStore } from "./activity.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import { APP_ROOT } from "./env.js";
 import type { AppSettings } from "./settings.js";
-import type { TrackedTask } from "./task-sync.js";
+import {
+  TaskSyncRequestError,
+  type BrowserResource,
+  type TaskSyncClient,
+  type TrackedTask,
+} from "./task-sync.js";
 import {
   type AssignmentWorkspace,
   safeChild,
@@ -30,6 +35,9 @@ type ToolSession = {
   profile: "standard" | "directions";
   preflight: Record<string, unknown>;
   cache: Map<string, Promise<unknown>>;
+  failedOperations: Map<string, string>;
+  knownResourceUrls: Set<string>;
+  focusedSearchKey: string | null;
 };
 
 type McpConnection = {
@@ -48,6 +56,7 @@ export class CanvasToolSessions {
     private readonly canvas: CanvasClient,
     private readonly workspaces: WorkspaceManager,
     private readonly activity: ActivityStore,
+    private readonly taskSync?: TaskSyncClient,
   ) {}
 
   create(
@@ -77,6 +86,11 @@ export class CanvasToolSessions {
       profile: options?.profile ?? "standard",
       preflight: options?.preflight ?? {},
       cache: new Map(),
+      failedOperations: new Map(),
+      knownResourceUrls: new Set(
+        directTaskLinks(task, context).map(normalizeResourceUrl).filter(Boolean),
+      ),
+      focusedSearchKey: null,
     };
     this.sessions.set(token, session);
     return session;
@@ -112,7 +126,13 @@ export class CanvasToolSessions {
 
   async installAgentScript(session: ToolSession): Promise<string> {
     const path = safeChild(session.workspace.path, "canvas-tool.mjs");
-    await copyFile(safeChild(APP_ROOT, "scripts/canvas-tool.mjs"), path);
+    await Promise.all([
+      copyFile(safeChild(APP_ROOT, "scripts/canvas-tool.mjs"), path),
+      copyFile(
+        safeChild(APP_ROOT, "scripts/canvas-tool.ps1"),
+        safeChild(session.workspace.path, "canvas-tool.ps1"),
+      ),
+    ]);
     await writeFile(
       safeChild(session.workspace.path, "CANVAS_TOOLS.md"),
       toolDocumentation(session.profile),
@@ -131,6 +151,13 @@ export class CanvasToolSessions {
     const action = z.string().min(1).parse(rawAction);
     const input = objectInput.parse(rawInput);
     requireProfileAction(session, action);
+    const operationKey = operationFingerprint(action, input);
+    const priorFailure = session.failedOperations.get(operationKey);
+    if (priorFailure) {
+      throw new ToolAuthorizationError(
+        `This identical ${action} request already failed in this run and was not repeated: ${priorFailure}`,
+      );
+    }
     const courseId = session.task.canvas.course_id ?? session.task.course.canvas_course_id;
     const assignmentId =
       session.context.assignment?.id?.toString() ?? session.task.canvas.assignment_id ?? null;
@@ -175,10 +202,31 @@ export class CanvasToolSessions {
           directLinks: directTaskLinks(session.task, session.context),
         };
       }
+      case "browser-resource": {
+        const url = z.string().url().parse(input.url);
+        requireKnownResourceUrl(session, url);
+        return sessionCached(session, `browser-resource:${normalizeResourceUrl(url)}`, async () => {
+          if (!this.taskSync) {
+            return browserResourceFailure(url, new Error("Canvas Task Sync browser-resource support is unavailable."));
+          }
+          try {
+            return compactBrowserResource(await this.taskSync.readBrowserResource(url));
+          } catch (error) {
+            return browserResourceFailure(url, error);
+          }
+        });
+      }
       case "search": {
         requireCourse(courseId);
         const query = z.string().min(1).parse(input.query);
-        return sessionCached(session, `search:${query}`, () => this.canvas.searchCourse(courseId, query));
+        const searchKey = normalizeSearchQuery(query);
+        if (session.profile === "directions" && session.focusedSearchKey && session.focusedSearchKey !== searchKey) {
+          throw new ToolAuthorizationError(
+            "Directions allows at most one focused Canvas search. Use its result or report the remaining uncertainty without trying alternate queries.",
+          );
+        }
+        session.focusedSearchKey ??= searchKey;
+        return sessionCached(session, `search:${searchKey}`, () => this.canvas.searchCourse(courseId, query));
       }
       case "course":
         requireCourse(courseId);
@@ -355,6 +403,11 @@ export class CanvasToolSessions {
       }
       case "batch": {
         const operations = batchOperationsSchema.parse(input.operations);
+        if (session.profile === "directions" && operations.filter((item) => item.action === "search").length > 1) {
+          throw new ToolAuthorizationError(
+            "Directions batches may contain at most one focused Canvas search.",
+          );
+        }
         const results: Array<{ action: string; status: "completed"; result: unknown } | { action: string; status: "failed"; error: string }> = await Promise.all(operations.map(async (operation) => {
           try {
             return { action: operation.action, status: "completed" as const, result: await this.execute(token, operation.action, operation.input) };
@@ -397,8 +450,11 @@ export class CanvasToolSessions {
         summary: session.task.display_title,
         metadata: { workspace: session.workspace.id, runId: session.runId },
       });
-      return sanitizeForLog(result);
+      const sanitized = sanitizeForLog(result);
+      rememberDiscoveredResourceUrls(session, sanitized);
+      return sanitized;
     } catch (error) {
+      session.failedOperations.set(operationKey, errorMessage(error));
       await this.activity.record({
         category: "agent",
         action: `canvas_tool.${action}`,
@@ -431,7 +487,7 @@ export class CanvasToolSessions {
       action: string,
       inputSchema: z.ZodType,
     ) => {
-      if (!toolActionAllowed(session.profile, action)) return;
+      if (!sessionActionAllowed(session, action)) return;
       server.registerTool(name, { description, inputSchema, annotations }, async (args) =>
         toMcpToolResult(
           await this.execute(session.token, action, args),
@@ -450,6 +506,12 @@ export class CanvasToolSessions {
       "Recover the originating Canvas assignment/page context from the task title, source sentence, anchor, page metadata, and direct URLs. Use before broad search when preloaded resolution is missing or incomplete.",
       "recover-context",
       z.object({}),
+    );
+    register(
+      "read_linked_resource_with_chrome",
+      "Use the paired Canvas Task Sync Chrome extension to read one already-known assignment/resource URL that the Canvas API cannot read, such as linked Google Docs or an authenticated course page. Returns compact readable content and metadata, or one cached authentication/access failure. Never use for discovery or broad browsing.",
+      "browser-resource",
+      z.object({ url: z.string().url() }),
     );
     register(
       "follow_canvas_link",
@@ -705,8 +767,159 @@ function directTaskLinks(task: TrackedTask, context: AssignmentContext): string[
   ].filter((value): value is string => Boolean(value)))];
 }
 
+export function directionsEvidenceSufficient(
+  task: TrackedTask,
+  context: AssignmentContext,
+): boolean {
+  const evidence = [
+    task.source.text,
+    task.details,
+    context.directionsMarkdown,
+    context.sourceContext?.contextMarkdown,
+    ...(context.sourceContext?.cells ?? []),
+  ].filter(Boolean).join("\n");
+  const hasAssignedWork = task.source.text.trim().length >= 8 || context.directionsMarkdown.trim().length >= 8;
+  const hasDueEvidence = Boolean(
+    task.due_date || context.assignment?.due_at ||
+    /\b(?:due|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b|\b\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)?/iu.test(evidence),
+  );
+  const relevantInstructionLinks = [
+    ...context.links,
+    ...(context.sourceContext?.links ?? []),
+  ].filter((link) => /\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/iu.test(link.text));
+  const explicitlyNeedsLinkedInstructions =
+    /\b(?:follow|see|use|read|review)\b.{0,50}\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/isu.test(evidence) ||
+    (relevantInstructionLinks.length > 0 &&
+      /\b(?:linked|below|attached)\b.{0,30}\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/isu.test(evidence));
+  return hasAssignedWork && hasDueEvidence && !explicitlyNeedsLinkedInstructions;
+}
+
+function normalizeResourceUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.hostname = url.hostname.toLocaleLowerCase();
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
+}
+
+function requireKnownResourceUrl(session: ToolSession, value: string) {
+  const normalized = normalizeResourceUrl(value);
+  if (!session.knownResourceUrls.has(normalized)) {
+    throw new ToolAuthorizationError(
+      "The Chrome extension may open only a URL already present in preloaded assignment context or returned by a prior scoped Canvas tool.",
+    );
+  }
+}
+
+function rememberDiscoveredResourceUrls(session: ToolSession, value: unknown, depth = 0) {
+  if (depth > 12 || value == null) return;
+  if (typeof value === "string") {
+    if (/^https?:\/\//iu.test(value)) session.knownResourceUrls.add(normalizeResourceUrl(value));
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) rememberDiscoveredResourceUrls(session, item, depth + 1);
+    return;
+  }
+  if (typeof value === "object") {
+    for (const item of Object.values(value)) rememberDiscoveredResourceUrls(session, item, depth + 1);
+  }
+}
+
+function compactBrowserResource(resource: BrowserResource) {
+  const items = resource.items.slice(0, 250).map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    order: item.order,
+    text: typeof item.text === "string" ? item.text.slice(0, 20_000) : "",
+    role: item.role,
+    sectionId: item.section_id,
+    structuredData: item.structured_data,
+    metadata: item.metadata,
+  }));
+  const links = new Map<string, { text: string; url: string }>();
+  for (const item of items) collectBrowserLinks(item.structuredData, links);
+  return {
+    ok: true,
+    sourceType: resource.source_type,
+    url: resource.source_url,
+    resourceId: resource.resource_id,
+    title: resource.title,
+    capturedAt: resource.captured_at,
+    captureStatus: resource.capture_status,
+    content: resource.content.slice(0, 120_000),
+    contentTruncated: resource.content_truncated || resource.content.length > 120_000,
+    items,
+    itemsTruncated: resource.items_truncated || resource.items.length > items.length,
+    links: [...links.values()].slice(0, 100),
+    metadata: resource.metadata,
+    warnings: resource.warnings,
+    source: "authenticated_chrome_extension",
+  };
+}
+
+function collectBrowserLinks(
+  value: unknown,
+  links: Map<string, { text: string; url: string }>,
+  depth = 0,
+) {
+  if (depth > 8 || !value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectBrowserLinks(item, links, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  if (typeof record.url === "string" && /^https?:\/\//iu.test(record.url)) {
+    links.set(normalizeResourceUrl(record.url), {
+      text: typeof record.text === "string" ? record.text.slice(0, 500) : "Linked resource",
+      url: record.url,
+    });
+  }
+  for (const item of Object.values(record)) collectBrowserLinks(item, links, depth + 1);
+}
+
+function browserResourceFailure(url: string, error: unknown) {
+  const code = error instanceof TaskSyncRequestError ? error.code : "browser_resource_unavailable";
+  return {
+    ok: false,
+    url,
+    error: {
+      code,
+      status: error instanceof TaskSyncRequestError ? error.status : null,
+      message: errorMessage(error),
+    },
+    retryable: false,
+    guidance: "Do not retry this URL during the current run. Report the authentication, permission, extension, or access problem concisely.",
+  };
+}
+
+function normalizeSearchQuery(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+function operationFingerprint(action: string, input: Record<string, unknown>): string {
+  return `${action}:${JSON.stringify(normalizeOperationValue(input))}`;
+}
+
+function normalizeOperationValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return /^https?:\/\//iu.test(value) ? normalizeResourceUrl(value) : normalizeSearchQuery(value);
+  }
+  if (Array.isArray(value)) return value.map(normalizeOperationValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, normalizeOperationValue(item)]));
+  }
+  return value;
+}
+
 function mcpServerInstructions(profile: ToolSession["profile"]): string {
-  const common = "Use direct Canvas URLs and known IDs first, then recovered source context, then one focused search. Index each PDF once. Prefer cached text, then contact-sheet/rendered vision, then OCR only for unusable text. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
+  const common = "Call get_preloaded_context first. If it answers the request, stop without another tool. Otherwise use direct Canvas URLs and known IDs first, then recovered source context, then at most one focused search. Use the Chrome extension only for one already-known linked resource that the Canvas API cannot read; never use it for discovery, and never retry a failed URL. Index each PDF once. Prefer cached text, then contact-sheet/rendered vision, then OCR only for unusable text. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
   return profile === "directions"
     ? `${common} Directions may recover and follow only directly relevant Canvas context; file/PDF content inspection is intentionally unavailable.`
     : `${common} For problem extraction, use automatic problem detection before manual page inspection and semantic crops before full-page visuals.`;
@@ -792,11 +1005,22 @@ const directionsBlockedActions = new Set([
 ]);
 
 function requireProfileAction(session: ToolSession, action: string) {
-  if (!toolActionAllowed(session.profile, action)) {
+  if (!sessionActionAllowed(session, action)) {
     throw new ToolAuthorizationError(
-      `The ${action} action is unavailable in Directions. Use the authoritative preloaded context and leave file/PDF inspection to problem extraction.`,
+      session.profile === "directions" && session.preflight.directionsEvidenceSufficient === true
+        ? `The preloaded Directions evidence is sufficient, so ${action} is intentionally unavailable. Produce the answer now without more retrieval.`
+        : `The ${action} action is unavailable in Directions. Use the authoritative preloaded context and leave file/PDF inspection to problem extraction.`,
     );
   }
+}
+
+function sessionActionAllowed(session: ToolSession, action: string) {
+  if (!toolActionAllowed(session.profile, action)) return false;
+  return !(
+    session.profile === "directions" &&
+    session.preflight.directionsEvidenceSufficient === true &&
+    action !== "preloaded-context"
+  );
 }
 
 export function toolActionAllowed(profile: "standard" | "directions", action: string) {
@@ -826,7 +1050,11 @@ const STANDARD_TOOL_DOCUMENTATION = [
   "",
   "This workspace has a scoped Canvas helper script. It uses a short-lived capability and never exposes the Canvas API token.",
   "",
-  "Run tools with node canvas-tool.mjs ACTION 'JSON':",
+  "On Windows, run tools with named PowerShell parameters; never pass JSON through the command line:",
+  "",
+  "- & .\\canvas-tool.ps1 -Action search -Query 'revision instructions'",
+  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/revision'",
+  "- For complex batched input, write JSON to a file and use -InputFile input.json.",
   "",
   "- context or assignment: selected assignment, directions, links, and submission requirements",
   "- course: course metadata and syllabus text",
@@ -861,7 +1089,11 @@ const DIRECTIONS_TOOL_DOCUMENTATION = [
   "",
   "assignment-context.json and canvas-tool-preflight.json are authoritative and already contain the selected assignment, directions, submission requirements, links, and module neighborhood. Read them directly and do not re-fetch them.",
   "",
-  "Only when a specific assignment instruction remains missing or ambiguous, run one targeted lookup with node canvas-tool.mjs ACTION 'JSON':",
+  "Only when a specific assignment instruction remains missing or ambiguous, run one targeted lookup with named PowerShell parameters; never pass JSON through the command line:",
+  "",
+  "- & .\\canvas-tool.ps1 -Action page -Slug 'page-slug'",
+  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/revision'",
+  "- & .\\canvas-tool.ps1 -Action search -Query 'specific phrase'",
   "",
   "- page {\"slug\":\"page-slug\"}: read one specifically relevant Canvas page",
   "- follow {\"url\":\"https://...\"}: classify/read one specifically relevant linked Canvas resource",

@@ -510,6 +510,25 @@ export class CanvasClient {
       }
     }
 
+    for (const slug of sourcePageSlugs(task)) {
+      try {
+        const page = await this.getPage(courseId, slug);
+        const relevant = extractRelevantCanvasContext(page.body ?? "", taskContextClues(task), this.baseUrl);
+        return {
+          kind: "page",
+          title: page.title,
+          url: page.html_url ?? `${this.baseUrl}/courses/${courseId}/pages/${page.url}`,
+          matchedBy: relevant.matchedBy ?? "source_anchor",
+          contextMarkdown: relevant.contextMarkdown || page.bodyMarkdown,
+          cells: relevant.cells,
+          links: relevant.links.length > 0 ? relevant.links : page.links,
+          resource: compactCanvasResource(page),
+        };
+      } catch {
+        // A stale anchor slug may still be recoverable from the focused page search below.
+      }
+    }
+
     const queries = sourceRecoveryQueries(task).slice(0, 3);
     const pageResults = await Promise.allSettled(queries.map((query) => this.listPages(courseId, query)));
     const pages = dedupeBy(
@@ -965,14 +984,7 @@ function taskContextClues(task: TrackedTask): Array<{ value: string; kind: Canva
 }
 
 function sourceRecoveryQueries(task: TrackedTask): string[] {
-  const pageSlug = uniqueStrings([task.source.url]).flatMap((value) => {
-    try {
-      const match = new URL(value).pathname.match(/\/pages\/([^/]+)/);
-      return match ? [decodeURIComponent(match[1]!).replace(/[-_]+/g, " ")] : [];
-    } catch {
-      return [];
-    }
-  });
+  const pageSlug = sourcePageSlugs(task).map((value) => value.replace(/[-_]+/g, " "));
   return uniqueStrings([
     ...pageSlug,
     task.source.anchor,
@@ -980,6 +992,21 @@ function sourceRecoveryQueries(task: TrackedTask): string[] {
     task.source.text.length <= 100 ? task.source.text : undefined,
     task.display_title,
   ]);
+}
+
+function sourcePageSlugs(task: TrackedTask): string[] {
+  const values: string[] = [];
+  if (task.source.url) {
+    try {
+      const match = new URL(task.source.url).pathname.match(/\/pages\/([^/]+)/);
+      if (match?.[1]) values.push(decodeURIComponent(match[1]));
+    } catch {
+      // The source URL is optional; the anchor may still encode the page slug.
+    }
+  }
+  const anchorMatch = task.source.anchor.match(/^canvas:(.+):\d+$/u);
+  if (anchorMatch?.[1]) values.push(anchorMatch[1]);
+  return uniqueStrings(values);
 }
 
 function assignmentRecoveryQueries(task: TrackedTask): string[] {

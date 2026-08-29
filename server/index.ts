@@ -31,7 +31,7 @@ const canvas = new CanvasClient(settings.connections.canvasBaseUrl || env.canvas
 const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
 await runs.failInterrupted();
-const toolSessions = new CanvasToolSessions(canvas, workspaces, activity);
+const toolSessions = new CanvasToolSessions(canvas, workspaces, activity, taskSync);
 const agentRunner = new AgentRunner(
   settingsStore,
   taskSync,

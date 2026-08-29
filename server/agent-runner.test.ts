@@ -46,10 +46,13 @@ describe("agent run preferences", () => {
   it("constrains directions to authoritative preloaded evidence and minimal tools", () => {
     const instructions = buildInstructions("directions", defaultSettings.prompts.assignmentNavigation, null);
 
-    expect(instructions).toContain("preloaded context as authoritative evidence");
-    expect(instructions).toContain("Call get_preloaded_context once first");
+    expect(instructions).toContain("preloaded data");
+    expect(instructions).toContain("Call get_preloaded_context exactly once first");
+    expect(instructions).toContain("preflight.directionsEvidenceSufficient");
     expect(instructions).toContain("sourceContext.contextMarkdown");
     expect(instructions).toContain("recover_canvas_context once");
+    expect(instructions).toContain("read_linked_resource_with_chrome once");
+    expect(instructions).toContain("Do not repeat a failed URL");
     expect(instructions).toContain("never invoke Canvas through PowerShell");
     expect(instructions).not.toContain("pdf-inspect");
   });

@@ -76,6 +76,9 @@ Each Luna run receives a short-lived, bearer-authenticated Streamable HTTP MCP c
 dashboard's assignment-scoped read-only tools. Canvas operations are structured calls, so Windows
 shell quoting, JSON escaping, and PowerShell language mode are not part of the retrieval path.
 The legacy loopback script endpoint remains available for compatibility, but Luna does not use it.
+On Windows, that compatibility helper is invoked through `canvas-tool.ps1` with named parameters;
+it builds the JSON request internally, so arguments containing spaces, quotes, punctuation, URLs,
+or long search phrases never pass through PowerShell as JSON.
 Supported operations include:
 
 ```text
@@ -84,6 +87,12 @@ page / file / module retrieval / cached download / batched Canvas reads
 PDF index / batch text / local OCR / contact sheet / problem detection
 batch render / batch crop / semantic PDF crop
 ```
+
+When an already-known Canvas link points to an authenticated Google Doc or another course resource
+that the Canvas API cannot read, Luna can ask the paired Canvas Task Sync Chrome extension for a
+bounded readable capture. It cannot use the extension for browsing or discovery. Recent captures,
+successful session reads, and structured authentication/access failures are reused within the run.
+If the preloaded task and context already answer Directions, all further retrieval tools are hidden.
 
 The actual Canvas token stays in the dashboard process and is redacted from persistent activity.
 Codex runs in a read-only workspace and receives only the short-lived Canvas capability; submissions

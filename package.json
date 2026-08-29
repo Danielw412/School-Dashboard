@@ -9,7 +9,7 @@
     "dev:client": "vite --host 127.0.0.1 --port 5174",
     "build": "tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.app.json && vite build",
     "start": "tsx server/index.ts",
-    "canvas-tool": "node scripts/canvas-tool.mjs",
+    "canvas-tool": "powershell.exe -NoLogo -NoProfile -NonInteractive -File scripts/canvas-tool.ps1",
     "test": "vitest run",
     "lint": "eslint ."
   },

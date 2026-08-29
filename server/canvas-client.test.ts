@@ -186,6 +186,52 @@ describe("CanvasClient assignment context", () => {
     expect(context.sourceContext?.links[0]?.url).toContain("revision-instructions");
   });
 
+  it("resolves an agenda page directly from a Canvas source anchor without listing pages", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      if (url.pathname.endsWith("/assignments")) return json([]);
+      if (url.pathname.endsWith("/pages/august-24-28-2")) {
+        return json({
+          page_id: 24,
+          url: "august-24-28-2",
+          title: "August 24-28",
+          html_url: "https://canvas.test/courses/9/pages/august-24-28-2",
+          body: '<table><tr><td>Choose one of your two paragraphs to revise for Monday.</td><td>Bring both drafts.</td></tr></table>',
+        });
+      }
+      if (url.pathname.endsWith("/pages")) throw new Error("Page listing must not be used");
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new CanvasClient("https://canvas.test", activity);
+    const task = makeTask();
+    task.canvas.assignment_id = null;
+    task.title = "Revise";
+    task.display_title = "Revise";
+    task.due_date = "2026-08-31T12:10:00Z";
+    task.source = {
+      key: "canvas:august-24-28-2:21",
+      type: "agenda_page",
+      url: null,
+      anchor: "canvas:august-24-28-2:21",
+      text: "Choose one of your two paragraphs to revise for Monday.",
+      assignment_url: null,
+    };
+
+    const context = await client.assignmentContext(task);
+
+    expect(context.sourceContext).toMatchObject({
+      kind: "page",
+      title: "August 24-28",
+      matchedBy: "source_text",
+    });
+    expect(context.sourceContext?.contextMarkdown).toContain("Bring both drafts");
+    expect(fetchMock.mock.calls.some(([input]) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      return url.pathname.endsWith("/pages") && url.searchParams.has("search_term");
+    })).toBe(false);
+  });
+
   it("follows directly linked revision instructions with normalized content", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({
       page_id: 4,

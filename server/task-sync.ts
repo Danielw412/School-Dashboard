@@ -55,7 +55,38 @@ const taskSchema = z.object({
 
 export type TrackedTask = z.infer<typeof taskSchema>;
 
+const browserResourceSchema = z.object({
+  ok: z.literal(true),
+  source_type: z.string(),
+  source_url: z.string().url(),
+  resource_id: z.string(),
+  title: z.string(),
+  captured_at: z.string(),
+  content: z.string(),
+  content_truncated: z.boolean(),
+  items: z.array(z.record(z.string(), z.unknown())),
+  items_truncated: z.boolean(),
+  metadata: z.record(z.string(), z.unknown()),
+  warnings: z.array(z.string()),
+  capture_status: z.enum(["cached", "captured"]).optional(),
+});
+
+export type BrowserResource = z.infer<typeof browserResourceSchema>;
+
+export class TaskSyncRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "TaskSyncRequestError";
+  }
+}
+
 export class TaskSyncClient {
+  private csrfTokenPromise: Promise<string> | null = null;
+
   constructor(
     private readonly baseUrl: string,
     private readonly activity: ActivityStore,
@@ -80,27 +111,63 @@ export class TaskSyncClient {
     }
   }
 
+  async readBrowserResource(url: string, timeoutSeconds = 75): Promise<BrowserResource> {
+    const csrfToken = await this.csrfToken();
+    return browserResourceSchema.parse(await this.request(
+      "/agent/browser-resources/read",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
+        body: JSON.stringify({ url, timeout_seconds: timeoutSeconds }),
+        signal: AbortSignal.timeout((timeoutSeconds + 10) * 1_000),
+      },
+      true,
+    ));
+  }
+
   private async get(path: string, log = true): Promise<unknown> {
+    return this.request(path, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    }, log);
+  }
+
+  private async csrfToken(): Promise<string> {
+    this.csrfTokenPromise ??= this.get("/bootstrap", false).then((value) =>
+      z.object({ csrf_token: z.string().min(20) }).parse(value).csrf_token).catch((error) => {
+        this.csrfTokenPromise = null;
+        throw error;
+      });
+    return this.csrfTokenPromise;
+  }
+
+  private async request(path: string, init: RequestInit, log: boolean): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
     const started = performance.now();
     try {
-      const response = await fetch(url, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(15_000),
-      });
+      const response = await fetch(url, init);
       if (!response.ok) {
-        const body = (await response.text()).slice(0, 500);
+        const body = (await response.text()).slice(0, 2_000);
         if (response.status === 404 && path.startsWith("/tasks")) {
           throw new Error(
             "Canvas Task Sync does not expose the task API yet. Restart it after updating the repo.",
           );
         }
-        throw new Error(`Task Sync returned ${response.status}: ${body}`);
+        const parsed = parseTaskSyncError(body);
+        throw new TaskSyncRequestError(
+          parsed?.error?.message ?? `Task Sync returned ${response.status}: ${body.slice(0, 500)}`,
+          parsed?.error?.code ?? "task_sync_request_failed",
+          response.status,
+        );
       }
       if (log) {
         await this.activity.record({
           category: "task_sync",
-          action: "GET",
+          action: init.method ?? "GET",
           status: "completed",
           summary: path.split("?")[0] ?? path,
           metadata: { durationMs: Math.round(performance.now() - started) },
@@ -111,7 +178,7 @@ export class TaskSyncClient {
       if (log) {
         await this.activity.record({
           category: "task_sync",
-          action: "GET",
+          action: init.method ?? "GET",
           status: "failed",
           summary: path.split("?")[0] ?? path,
           metadata: { error: error instanceof Error ? error.message : "Request failed" },
@@ -119,5 +186,15 @@ export class TaskSyncClient {
       }
       throw error;
     }
+  }
+}
+
+function parseTaskSyncError(body: string): { error?: { code?: string; message?: string } } | null {
+  try {
+    const value: unknown = JSON.parse(body);
+    if (!value || typeof value !== "object") return null;
+    return value as { error?: { code?: string; message?: string } };
+  } catch {
+    return null;
   }
 }

@@ -6,10 +6,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { describe, expect, it, vi } from "vitest";
 
 import type { ActivityStore } from "./activity.js";
-import type { CanvasClient } from "./canvas-client.js";
+import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import { defaultSettings } from "./settings.js";
+import { TaskSyncRequestError, type TaskSyncClient, type TrackedTask } from "./task-sync.js";
 import {
   CanvasToolSessions,
+  directionsEvidenceSufficient,
   parsePdfPageSelection,
   parsePdfRenderPages,
   toolActionAllowed,
@@ -53,6 +55,139 @@ describe("Directions tool profile", () => {
     }
     expect(toolDocumentation("directions")).not.toContain("pdf-inspect {");
     expect(toolDocumentation("directions")).toContain("Question-content inspection belongs to problem extraction");
+  });
+
+  it("stops from the preloaded source sentence and due date in the failed Directions case", async () => {
+    const task = makeTask();
+    task.title = "Revise";
+    task.display_title = "Revise";
+    task.due_date = "2026-08-31T12:10:00Z";
+    task.source.anchor = "canvas:august-24-28-2:21";
+    task.source.text = "Choose one of your two paragraphs to revise for Monday.";
+    const context = makeContext();
+    expect(directionsEvidenceSufficient(task, context)).toBe(true);
+
+    const sessions = makeSessions();
+    const session = sessions.create(task, context, makeWorkspace(), defaultSettings, {
+      profile: "directions",
+      preflight: { directionsEvidenceSufficient: true },
+    });
+    await expect(sessions.execute(session.token, "recover-context", {})).rejects.toThrow(
+      /evidence is sufficient/i,
+    );
+    expect(await mcpToolNames(sessions, session.token)).toEqual(["get_preloaded_context"]);
+    sessions.revoke(session.token);
+  });
+
+  it("does not stop before an explicitly referenced instruction link is read", () => {
+    const task = makeTask();
+    task.due_date = "2026-08-31T12:10:00Z";
+    task.source.text = "Revise one paragraph for Monday; follow the revision instructions.";
+    const context = makeContext();
+    context.links = [{
+      text: "Revision instructions",
+      url: "https://docs.google.com/document/d/revision-guide/edit",
+      sameCanvasOrigin: false,
+    }];
+    expect(directionsEvidenceSufficient(task, context)).toBe(false);
+  });
+
+  it("uses the authenticated extension once for a known link and caches failures", async () => {
+    const url = "https://docs.google.com/document/d/revision-guide/edit?tab=t.0";
+    const readBrowserResource = vi.fn(async () => {
+      throw new TaskSyncRequestError("Request access to this document.", "access_denied", 409);
+    });
+    const taskSync = { readBrowserResource } as unknown as TaskSyncClient;
+    const sessions = makeSessions({} as CanvasClient, taskSync);
+    const context = makeContext();
+    context.links = [{ text: "Revision instructions", url, sameCanvasOrigin: false }];
+    const session = sessions.create(makeTask(), context, makeWorkspace(), defaultSettings);
+
+    const first = await sessions.execute(session.token, "browser-resource", { url });
+    const repeated = await sessions.execute(session.token, "browser-resource", { url: `${url}#section` });
+
+    expect(first).toEqual(repeated);
+    expect(first).toMatchObject({
+      ok: false,
+      error: { code: "access_denied", status: 409 },
+      retryable: false,
+    });
+    expect(readBrowserResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses one successful authenticated extension read within the run", async () => {
+    const url = "https://course.example.edu/resources/revision-guide?week=3";
+    const readBrowserResource = vi.fn(async () => ({
+      ok: true as const,
+      source_type: "web_page",
+      source_url: url,
+      resource_id: "web_revision",
+      title: "Revision guide",
+      captured_at: "2026-08-29T12:00:00Z",
+      content: "Revise the claim and add one quotation.",
+      content_truncated: false,
+      items: [],
+      items_truncated: false,
+      metadata: {},
+      warnings: [],
+      capture_status: "captured" as const,
+    }));
+    const sessions = makeSessions({} as CanvasClient, { readBrowserResource } as unknown as TaskSyncClient);
+    const context = makeContext();
+    context.links = [{ text: "Revision guide", url, sameCanvasOrigin: false }];
+    const session = sessions.create(makeTask(), context, makeWorkspace(), defaultSettings);
+
+    const first = await sessions.execute(session.token, "browser-resource", { url });
+    const repeated = await sessions.execute(session.token, "browser-resource", { url });
+
+    expect(first).toEqual(repeated);
+    expect(first).toMatchObject({ ok: true, title: "Revision guide", captureStatus: "captured" });
+    expect(readBrowserResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects extension browsing for URLs not discovered in scoped context", async () => {
+    const readBrowserResource = vi.fn();
+    const sessions = makeSessions({} as CanvasClient, { readBrowserResource } as unknown as TaskSyncClient);
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings);
+
+    await expect(sessions.execute(session.token, "browser-resource", {
+      url: "https://example.com/unrelated",
+    })).rejects.toThrow(/already present/i);
+    expect(readBrowserResource).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat normalized failed searches or try alternate Directions searches", async () => {
+    const searchCourse = vi.fn(async () => {
+      throw new Error("Canvas search unavailable");
+    });
+    const sessions = makeSessions({ searchCourse } as unknown as CanvasClient);
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings, {
+      profile: "directions",
+    });
+
+    await expect(sessions.execute(session.token, "search", { query: "  Revision   Instructions " }))
+      .rejects.toThrow(/unavailable/);
+    await expect(sessions.execute(session.token, "search", { query: "revision instructions" }))
+      .rejects.toThrow(/already failed/);
+    await expect(sessions.execute(session.token, "search", { query: "revision guide" }))
+      .rejects.toThrow(/at most one focused/i);
+    expect(searchCourse).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects multiple search variants hidden inside a Directions batch", async () => {
+    const searchCourse = vi.fn();
+    const sessions = makeSessions({ searchCourse } as unknown as CanvasClient);
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings, {
+      profile: "directions",
+    });
+
+    await expect(sessions.execute(session.token, "batch", {
+      operations: [
+        { action: "search", input: { query: "revision instructions" } },
+        { action: "search", input: { query: "revision guide" } },
+      ],
+    })).rejects.toThrow(/at most one focused/i);
+    expect(searchCourse).not.toHaveBeenCalled();
   });
 
   it("recovers unresolved Canvas context through a cached structured operation", async () => {
@@ -152,3 +287,91 @@ describe("Directions tool profile", () => {
     }
   });
 });
+
+function makeTask(): TrackedTask {
+  return {
+    logical_id: "english:agenda:revise",
+    course: { id: "english", name: "English", prefix: "ENG", canvas_course_id: "9" },
+    title: "Revise paragraph",
+    display_title: "Revise paragraph",
+    details: "",
+    due_date: null,
+    completed: false,
+    completion_status: "incomplete",
+    due_uncertain: false,
+    historical: false,
+    google_task: { status: "needsAction", deleted: false, hidden: false },
+    source: { key: "agenda", type: "page", anchor: "revise", text: "Revise one paragraph." },
+    canvas: { course_id: "9" },
+  };
+}
+
+function makeContext(): AssignmentContext {
+  return {
+    assignment: null,
+    directionsHtml: "",
+    directionsMarkdown: "",
+    links: [],
+    submissionRequirements: {
+      supported: false,
+      submissionTypes: [],
+      allowedExtensions: [],
+      pointsPossible: null,
+      allowedAttempts: null,
+      locked: false,
+      lockExplanation: null,
+    },
+    externalAssignment: { isExternal: false, url: null },
+    sourceContext: null,
+    resolution: { method: "not_found", confidence: 0 },
+  };
+}
+
+function makeWorkspace() {
+  return {
+    id: "workspace",
+    path: "C:\\tmp\\workspace",
+    resourcesPath: "C:\\tmp\\workspace\\resources",
+    rendersPath: "C:\\tmp\\workspace\\renders",
+  };
+}
+
+function makeSessions(
+  canvas = {} as CanvasClient,
+  taskSync?: TaskSyncClient,
+) {
+  const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
+  return new CanvasToolSessions(canvas, {} as WorkspaceManager, activity, taskSync);
+}
+
+async function mcpToolNames(sessions: CanvasToolSessions, token: string): Promise<string[]> {
+  const httpServer = createServer(async (request, response) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      await sessions.handleMcp(
+        token,
+        request,
+        response,
+        JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      );
+    } catch (error) {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : "MCP failure" }));
+    }
+  });
+  httpServer.listen(0, "127.0.0.1");
+  await once(httpServer, "listening");
+  const address = httpServer.address();
+  if (!address || typeof address === "string") throw new Error("MCP test server did not bind.");
+  const client = new Client({ name: "school-dashboard-test", version: "1.0.0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${address.port}/mcp`),
+    ));
+    return (await client.listTools()).tools.map((tool) => tool.name);
+  } finally {
+    await client.close();
+    await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+  }
+}
