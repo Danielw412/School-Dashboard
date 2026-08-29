@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ActivityStore } from "./activity.js";
-import { CanvasClient } from "./canvas-client.js";
+import { CanvasClient, extractRelevantCanvasContext } from "./canvas-client.js";
 import type { TrackedTask } from "./task-sync.js";
 
 const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
@@ -116,6 +116,92 @@ describe("CanvasClient assignment context", () => {
     expect(result.pages).toEqual([]);
     expect(result.files).toEqual([]);
     expect(result.unavailable.map((item) => item.section)).toEqual(["pages", "files"]);
+  });
+
+  it("preserves the complete agenda row instead of reducing it to the homework sentence", () => {
+    const context = extractRelevantCanvasContext(`
+      <table>
+        <thead><tr><th>Task</th><th>Due</th><th>Submit</th><th>Materials and instructions</th></tr></thead>
+        <tbody>
+          <tr id="monday-revision">
+            <td>Choose one of your two paragraphs to revise for Monday.</td>
+            <td>Monday at 8:10 AM</td>
+            <td>Bring the printed draft to class</td>
+            <td>Use a highlighter and follow <a href="/courses/9/pages/revision-instructions">revision instructions</a>.</td>
+          </tr>
+        </tbody>
+      </table>
+    `, [
+      { value: "monday-revision", kind: "source_anchor" },
+      { value: "Choose one of your two paragraphs to revise for Monday.", kind: "source_text" },
+    ], "https://canvas.test");
+
+    expect(context.contextMarkdown).toContain("Monday at 8:10 AM");
+    expect(context.contextMarkdown).toContain("printed draft");
+    expect(context.contextMarkdown).toContain("highlighter");
+    expect(context.cells).toHaveLength(4);
+    expect(context.links[0]?.url).toBe("https://canvas.test/courses/9/pages/revision-instructions");
+  });
+
+  it("recovers source-page context when assignment resolution fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      if (url.pathname.endsWith("/assignments")) return json([]);
+      if (url.pathname.endsWith("/pages/august-31-september-4")) {
+        return json({
+          page_id: 31,
+          url: "august-31-september-4",
+          title: "August 31 - September 4",
+          html_url: "https://canvas.test/courses/9/pages/august-31-september-4",
+          body: '<table><tr id="revise"><td>Revise one paragraph.</td><td>Due Monday 8:10 AM</td><td><a href="/courses/9/pages/revision-instructions">Instructions</a></td></tr></table>',
+        });
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+    const task = makeTask();
+    task.canvas.assignment_id = null;
+    task.canvas.assignment_url = null;
+    task.title = "Revise paragraph";
+    task.display_title = "Revise paragraph";
+    task.source = {
+      key: "agenda:revise",
+      type: "agenda_page",
+      url: "https://canvas.test/courses/9/pages/august-31-september-4#revise",
+      anchor: "revise",
+      text: "Revise one paragraph.",
+      assignment_url: null,
+    };
+
+    const context = await client.assignmentContext(task);
+
+    expect(context.assignment).toBeNull();
+    expect(context.resolution.method).toBe("not_found");
+    expect(context.sourceContext).toMatchObject({
+      kind: "page",
+      title: "August 31 - September 4",
+      matchedBy: "source_anchor",
+    });
+    expect(context.sourceContext?.contextMarkdown).toContain("Monday 8:10 AM");
+    expect(context.sourceContext?.links[0]?.url).toContain("revision-instructions");
+  });
+
+  it("follows directly linked revision instructions with normalized content", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      page_id: 4,
+      url: "revision-instructions",
+      title: "Revision instructions",
+      html_url: "https://canvas.test/courses/9/pages/revision-instructions",
+      body: '<p>Highlight the claim and upload by <strong>7:30 PM</strong>.</p><a href="/courses/9/files/77">Rubric</a>',
+    })));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const followed = await client.followLinkedResource(
+      "https://canvas.test/courses/9/pages/revision-instructions",
+    ) as { value: { bodyMarkdown: string; links: Array<{ url: string }> } };
+
+    expect(followed.value.bodyMarkdown).toContain("**7:30 PM**");
+    expect(followed.value.links[0]?.url).toBe("https://canvas.test/courses/9/files/77");
   });
 });
 

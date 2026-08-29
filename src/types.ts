@@ -222,8 +222,6 @@ export type AnswerKey = {
     problemNumber: string;
     finalAnswerMarkdown: string;
     solutionMarkdown: string;
-    checks: string[];
-    provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
   }>;
   warnings: string[];
 };

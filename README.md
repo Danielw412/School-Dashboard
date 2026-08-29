@@ -53,32 +53,50 @@ Set-Location ..\Canvas-Task-Sync
 Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the production bundle from
 `http://127.0.0.1:8780`.
 
-## Canvas agent scripts
+To start the production dashboard automatically when you sign in to Windows, build it once and run
+the installer from this project directory:
 
-This project deliberately uses scripts instead of an MCP server. Each agent run gets an isolated
-temporary workspace containing `canvas-tool.mjs`, `CANVAS_TOOLS.md`, the tracked task, and its
-deterministically resolved assignment context. Supported actions include:
-
-```text
-context / assignment / submission-requirements / course
-search / pages / files / modules / module-items / module-neighborhood
-page / follow / announcements / discussion / quiz / quiz-questions
-file / download / pdf-inspect / pdf-text / pdf-render / image-crop
-upload / submit (only with a separate explicit-confirmation capability)
+```powershell
+npm run build
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows-startup.ps1
 ```
 
-The script calls a loopback-only internal endpoint with a short-lived scoped capability. The actual
-Canvas token stays in the dashboard process and is redacted from persistent activity. Codex runs in
-a read-only workspace and receives only the short-lived Canvas capability; submissions are performed
-only by the confirmation dialog in the UI.
+The installer registers a hidden per-user scheduled task, starts it immediately, and creates a
+`Homework Dashboard.url` desktop shortcut. The server stays on the loopback interface and writes
+startup diagnostics to `.school-dashboard\web-startup.log`. To remove the scheduled task and
+shortcut later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\remove-windows-startup.ps1
+```
+
+## Structured Canvas and document tools
+
+Each Luna run receives a short-lived, bearer-authenticated Streamable HTTP MCP connection to the
+dashboard's assignment-scoped read-only tools. Canvas operations are structured calls, so Windows
+shell quoting, JSON escaping, and PowerShell language mode are not part of the retrieval path.
+The legacy loopback script endpoint remains available for compatibility, but Luna does not use it.
+Supported operations include:
+
+```text
+recover Canvas context / follow direct Canvas link / focused search
+page / file / module retrieval / cached download / batched Canvas reads
+PDF index / batch text / local OCR / contact sheet / problem detection
+batch render / batch crop / semantic PDF crop
+```
+
+The actual Canvas token stays in the dashboard process and is redacted from persistent activity.
+Codex runs in a read-only workspace and receives only the short-lived Canvas capability; submissions
+are performed only by the confirmation dialog in the UI.
 
 Downloaded files use a short-term cache under `.school-dashboard/cache`, then are copied into the
 temporary assignment workspace. The workspace path lives under the operating system temporary
 directory and is pruned according to local settings.
 
-`pdf-inspect` samples an unfamiliar document once and recommends text extraction or rendered-page
-vision. `pdf-render` accepts one page, a page list, or an inclusive range; multi-page requests are
-processed concurrently with bounded parallelism and return one image path per page.
+The initial PDF index records per-page text quality, structure, likely relevant pages, detected
+problem numbers, and the cheapest reliable representation. Text, OCR, renders, contact sheets, and
+crops are cached within the run. English OCR data is bundled locally, and multi-page rendering,
+OCR, and cropping use bounded batching.
 
 ## Test Question Predictor
 

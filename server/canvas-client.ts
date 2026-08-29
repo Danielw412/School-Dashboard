@@ -111,6 +111,17 @@ export type CanvasReadablePage = CanvasPage & {
   links: CanvasLink[];
 };
 
+export type CanvasSourceContext = {
+  kind: "assignment" | "page" | "file" | "discussion" | "quiz" | "module_item" | "canvas_link";
+  title: string;
+  url: string | null;
+  matchedBy: "direct_url" | "source_anchor" | "source_text" | "task_title" | "page_search";
+  contextMarkdown: string;
+  cells: string[];
+  links: CanvasLink[];
+  resource: Record<string, unknown>;
+};
+
 export type CanvasLink = {
   text: string;
   url: string;
@@ -135,8 +146,9 @@ export type AssignmentContext = {
     isExternal: boolean;
     url: string | null;
   };
+  sourceContext: CanvasSourceContext | null;
   resolution: {
-    method: "canvas_id" | "title_search" | "not_found";
+    method: "canvas_id" | "direct_url" | "title_search" | "not_found";
     confidence: number;
   };
 };
@@ -252,6 +264,28 @@ export class CanvasClient {
     return z.array(canvasModuleItemSchema).parse(values);
   }
 
+  async getModuleItemResource(courseId: string, itemId: string): Promise<Record<string, unknown>> {
+    const modules = await this.listModules(courseId);
+    let item = modules.flatMap((module) => module.items ?? []).find((candidate) => String(candidate.id) === itemId);
+    if (!item) {
+      const results = await Promise.allSettled(modules.slice(0, 40).map((module) => this.listModuleItems(courseId, String(module.id))));
+      item = results.flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        .find((candidate) => String(candidate.id) === itemId);
+    }
+    if (!item) throw new Error(`Canvas module item ${itemId} was not found in this course.`);
+    let resource: unknown = null;
+    if (item.type === "Page" && item.page_url) resource = await this.getPage(courseId, item.page_url);
+    else if (item.type === "Assignment" && item.content_id) {
+      const assignment = await this.getAssignment(courseId, String(item.content_id));
+      const directions = normalizeCanvasHtml(assignment.description ?? "", this.baseUrl);
+      resource = { ...assignment, description: directions.html, directionsMarkdown: directions.markdown, links: directions.links };
+    }
+    else if (item.type === "File" && item.content_id) resource = await this.getFile(String(item.content_id));
+    else if (item.type === "Discussion" && item.content_id) resource = await this.getDiscussion(courseId, String(item.content_id));
+    else if (item.type === "Quiz" && item.content_id) resource = await this.getQuiz(courseId, String(item.content_id));
+    return { item, resource };
+  }
+
   async getPage(courseId: string, slug: string): Promise<CanvasReadablePage> {
     const page = canvasPageSchema.parse(
       await this.requestJson(
@@ -259,7 +293,7 @@ export class CanvasClient {
       ),
     );
     const body = normalizeCanvasHtml(page.body ?? "", this.baseUrl);
-    return { ...page, bodyMarkdown: body.markdown, links: body.links };
+    return { ...page, body: body.html, bodyMarkdown: body.markdown, links: body.links };
   }
 
   async getModuleItemSequence(
@@ -362,9 +396,11 @@ export class CanvasClient {
     }
     const assignment = url.pathname.match(/\/courses\/(\d+)\/assignments\/(\d+)/);
     if (assignment) {
+      const value = await this.getAssignment(assignment[1]!, assignment[2]!);
+      const directions = normalizeCanvasHtml(value.description ?? "", this.baseUrl);
       return {
         kind: "assignment",
-        value: await this.getAssignment(assignment[1]!, assignment[2]!),
+        value: { ...value, description: directions.html, directionsMarkdown: directions.markdown, links: directions.links },
       };
     }
     const page = url.pathname.match(/\/courses\/(\d+)\/pages\/([^/]+)/);
@@ -374,7 +410,7 @@ export class CanvasClient {
         value: await this.getPage(page[1]!, decodeURIComponent(page[2]!)),
       };
     }
-    const file = url.pathname.match(/\/courses\/\d+\/files\/(\d+)|\/files\/(\d+)/);
+    const file = url.pathname.match(/\/courses\/\d+\/files\/(\d+)|\/(?:api\/v1\/)?files\/(\d+)/);
     if (file) {
       return { kind: "file", value: await this.getFile(file[1] ?? file[2]!) };
     }
@@ -389,6 +425,17 @@ export class CanvasClient {
     if (quiz) {
       return { kind: "quiz", value: await this.getQuiz(quiz[1]!, quiz[2]!) };
     }
+    const moduleItem = url.pathname.match(
+      /\/courses\/(\d+)\/modules\/(\d+)\/items\/(\d+)|\/courses\/(\d+)\/modules\/items\/(\d+)/,
+    );
+    if (moduleItem) {
+      const courseId = moduleItem[1] ?? moduleItem[4]!;
+      const itemId = moduleItem[3] ?? moduleItem[5]!;
+      return {
+        kind: "module_item",
+        value: await this.getModuleItemResource(courseId, itemId),
+      };
+    }
     return {
       kind: "canvas_link",
       url: url.toString(),
@@ -402,30 +449,17 @@ export class CanvasClient {
     if (!courseId) {
       return emptyAssignmentContext();
     }
-    let assignment: CanvasAssignment | null = null;
-    let method: AssignmentContext["resolution"]["method"] = "not_found";
-    let confidence = 0;
-    if (task.canvas.assignment_id) {
-      assignment = await this.getAssignment(courseId, task.canvas.assignment_id);
-      method = "canvas_id";
-      confidence = 1;
-    } else {
-      const candidates = await this.listAssignments(courseId, task.display_title);
-      const ranked = rankByTitle(
-        candidates,
-        (item) => item.name,
-        normalizedTokens(task.display_title),
-      );
-      const best = ranked[0];
-      const runnerUp = ranked[1];
-      if (best && best.score >= 0.55 && (!runnerUp || best.score - runnerUp.score >= 0.08)) {
-        assignment = best.item;
-        method = "title_search";
-        confidence = best.score;
-      }
-    }
+    const recoverSourceImmediately = taskSourceMayContainDirections(task);
+    const [assignmentResolution, initialSourceContext] = await Promise.all([
+      this.resolveAssignment(task, courseId),
+      recoverSourceImmediately ? this.recoverTaskSourceContext(task, courseId) : Promise.resolve(null),
+    ]);
+    const { assignment, method, confidence } = assignmentResolution;
+    const sourceContext = initialSourceContext ?? (
+      assignment ? null : await this.recoverTaskSourceContext(task, courseId)
+    );
     if (!assignment) {
-      return emptyAssignmentContext();
+      return emptyAssignmentContext(sourceContext);
     }
     const directions = normalizeCanvasHtml(assignment.description ?? "", this.baseUrl);
     const sanitizedAssignment = { ...assignment, description: directions.html };
@@ -447,8 +481,105 @@ export class CanvasClient {
         lockExplanation: assignment.lock_explanation ?? null,
       },
       externalAssignment: { isExternal, url: externalUrl },
+      sourceContext,
       resolution: { method, confidence },
     };
+  }
+
+  async recoverTaskSourceContext(
+    task: TrackedTask,
+    courseId = task.canvas.course_id ?? task.course.canvas_course_id ?? undefined,
+  ): Promise<CanvasSourceContext | null> {
+    if (!courseId) return null;
+    const directUrls = uniqueStrings([
+      task.source.assignment_url,
+      task.canvas.assignment_url,
+      task.source.url,
+    ]);
+    for (const url of directUrls) {
+      try {
+        const resolved = new URL(url, this.baseUrl);
+        if (resolved.origin !== new URL(this.baseUrl).origin) continue;
+        const courseMatch = resolved.pathname.match(/\/courses\/(\d+)/);
+        if (courseMatch && courseMatch[1] !== courseId) continue;
+        const followed = await this.followLinkedResource(resolved.toString());
+        const context = sourceContextFromFollowedResource(followed, task, resolved.toString(), this.baseUrl);
+        if (context) return context;
+      } catch {
+        // Try the next deterministic identifier before falling back to page search.
+      }
+    }
+
+    const queries = sourceRecoveryQueries(task).slice(0, 3);
+    const pageResults = await Promise.allSettled(queries.map((query) => this.listPages(courseId, query)));
+    const pages = dedupeBy(
+      pageResults.flatMap((result) => result.status === "fulfilled" ? result.value : []),
+      (page) => page.url,
+    );
+    const ranked = rankPagesForTask(pages, task);
+    for (const candidate of ranked.slice(0, 3)) {
+      try {
+        const page = await this.getPage(courseId, candidate.item.url);
+        const relevant = extractRelevantCanvasContext(page.body ?? "", taskContextClues(task), this.baseUrl);
+        if (!relevant.contextMarkdown && candidate.score < 0.35) continue;
+        return {
+          kind: "page",
+          title: page.title,
+          url: page.html_url ?? `${this.baseUrl}/courses/${courseId}/pages/${page.url}`,
+          matchedBy: relevant.matchedBy ?? "page_search",
+          contextMarkdown: relevant.contextMarkdown || page.bodyMarkdown,
+          cells: relevant.cells,
+          links: relevant.links.length > 0 ? relevant.links : page.links,
+          resource: compactCanvasResource(page),
+        };
+      } catch {
+        // A stale or inaccessible page should not prevent trying another ranked page.
+      }
+    }
+    return null;
+  }
+
+  private async resolveAssignment(
+    task: TrackedTask,
+    courseId: string,
+  ): Promise<Pick<AssignmentContext["resolution"], "method" | "confidence"> & { assignment: CanvasAssignment | null }> {
+    if (task.canvas.assignment_id) {
+      return {
+        assignment: await this.getAssignment(courseId, task.canvas.assignment_id),
+        method: "canvas_id",
+        confidence: 1,
+      };
+    }
+    for (const urlValue of uniqueStrings([task.source.assignment_url, task.canvas.assignment_url, task.source.url])) {
+      try {
+        const url = new URL(urlValue, this.baseUrl);
+        if (url.origin !== new URL(this.baseUrl).origin) continue;
+        const match = url.pathname.match(/\/courses\/(\d+)\/assignments\/(\d+)/);
+        if (match?.[1] === courseId) {
+          return {
+            assignment: await this.getAssignment(courseId, match[2]!),
+            method: "direct_url",
+            confidence: 1,
+          };
+        }
+      } catch {
+        // Ignore malformed optional URLs and continue with title evidence.
+      }
+    }
+
+    const queries = assignmentRecoveryQueries(task).slice(0, 3);
+    const results = await Promise.allSettled(queries.map((query) => this.listAssignments(courseId, query)));
+    const candidates = dedupeBy(
+      results.flatMap((result) => result.status === "fulfilled" ? result.value : []),
+      (assignment) => String(assignment.id),
+    );
+    const ranked = rankByMultipleQueries(candidates, (item) => item.name, queries);
+    const best = ranked[0];
+    const runnerUp = ranked[1];
+    if (best && best.score >= 0.55 && (!runnerUp || best.score - runnerUp.score >= 0.08)) {
+      return { assignment: best.item, method: "title_search", confidence: best.score };
+    }
+    return { assignment: null, method: "not_found", confidence: 0 };
   }
 
   async uploadSubmissionFile(
@@ -628,6 +759,7 @@ function normalizeCanvasHtml(
       "span",
     ],
     allowedAttributes: {
+      "*": ["id"],
       a: ["href", "title", "target"],
       img: ["src", "alt", "title"],
       span: ["class"],
@@ -663,7 +795,247 @@ function normalizeCanvasHtml(
   return { html, markdown: turndown.turndown(html), links };
 }
 
-function emptyAssignmentContext(): AssignmentContext {
+export type RelevantCanvasContext = {
+  contextMarkdown: string;
+  cells: string[];
+  links: CanvasLink[];
+  matchedBy: CanvasSourceContext["matchedBy"] | null;
+};
+
+export function extractRelevantCanvasContext(
+  htmlValue: string,
+  clues: Array<{ value: string; kind: CanvasSourceContext["matchedBy"] }>,
+  baseUrl: string,
+): RelevantCanvasContext {
+  const normalized = normalizeCanvasHtml(htmlValue, baseUrl);
+  if (!normalized.html.trim()) {
+    return { contextMarkdown: "", cells: [], links: [], matchedBy: null };
+  }
+  const $ = cheerio.load(normalized.html);
+  // Cheerio's public element type differs between its browser and Node exports; keep the
+  // scored nodes local and infer them from each traversal callback.
+  const scored = new Map<unknown, { score: number; matchedBy: CanvasSourceContext["matchedBy"] }>();
+  $("tr, li, p, [id]").each((_index, element) => {
+    const node = $(element).closest("tr, li, p").get(0) ?? element;
+    const text = $(node).text().replace(/\s+/g, " ").trim();
+    const id = ($(element).attr("id") ?? "").trim();
+    if (!text && !id) return;
+    let bestScore = 0;
+    let matchedBy: CanvasSourceContext["matchedBy"] = "task_title";
+    for (const clue of clues) {
+      const clueValue = clue.value.trim();
+      if (!clueValue) continue;
+      let score = 0;
+      if (clue.kind === "source_anchor" && id && normalizeComparable(id) === normalizeComparable(clueValue)) {
+        score = 10;
+      } else {
+        const comparableText = normalizeComparable(text);
+        const comparableClue = normalizeComparable(clueValue);
+        if (comparableClue.length >= 8 && comparableText.includes(comparableClue)) score = 7;
+        else if (comparableText.length >= 8 && comparableClue.includes(comparableText)) score = 5;
+        else score = tokenSimilarity(normalizedTokens(text), normalizedTokens(clueValue)) * 4;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        matchedBy = clue.kind;
+      }
+    }
+    const previous = scored.get(node);
+    if (bestScore > (previous?.score ?? 0)) scored.set(node, { score: bestScore, matchedBy });
+  });
+
+  const winner = [...scored.entries()].sort((left, right) => right[1].score - left[1].score)[0];
+  if (!winner || winner[1].score < 0.75) {
+    return {
+      contextMarkdown: normalized.markdown,
+      cells: [],
+      links: normalized.links,
+      matchedBy: null,
+    };
+  }
+  const selected = $(winner[0] as never).closest("tr, li, p");
+  const selectedNode = selected.length > 0 ? selected : $(winner[0] as never);
+  const fragments: string[] = [];
+  const row = selectedNode.is("tr") ? selectedNode : selectedNode.closest("tr");
+  if (row.length > 0) {
+    const table = row.closest("table");
+    const header = table.find("thead tr").first().length > 0
+      ? table.find("thead tr").first()
+      : table.find("tr").filter((_index, element) => $(element).find("th").length > 0).first();
+    if (header.length > 0 && header.get(0) !== row.get(0)) fragments.push($.html(header));
+    fragments.push($.html(row));
+    for (const neighbor of [row.prev("tr"), row.next("tr")]) {
+      if (neighbor.length > 0 && nearbyInstructionText(neighbor.text())) fragments.push($.html(neighbor));
+    }
+  } else {
+    fragments.push($.html(selectedNode));
+    for (const neighbor of [selectedNode.prev(), selectedNode.next()]) {
+      if (neighbor.length > 0 && nearbyInstructionText(neighbor.text())) fragments.push($.html(neighbor));
+    }
+  }
+  const fragment = fragments.filter(Boolean).join("\n");
+  const context = normalizeCanvasHtml(fragment, baseUrl);
+  const cells = row.length > 0
+    ? row.find("th, td").map((_index, element) => $(element).text().replace(/\s+/g, " ").trim()).get().filter(Boolean)
+    : [];
+  return {
+    contextMarkdown: context.markdown,
+    cells,
+    links: context.links,
+    matchedBy: winner[1].matchedBy,
+  };
+}
+
+function sourceContextFromFollowedResource(
+  followed: Record<string, unknown>,
+  task: TrackedTask,
+  directUrl: string,
+  baseUrl: string,
+): CanvasSourceContext | null {
+  const kind = typeof followed.kind === "string" ? followed.kind : "canvas_link";
+  const value = followed.value && typeof followed.value === "object"
+    ? followed.value as Record<string, unknown>
+    : followed;
+  if (kind === "page") {
+    const relevant = extractRelevantCanvasContext(
+      typeof value.body === "string" ? value.body : "",
+      taskContextClues(task),
+      baseUrl,
+    );
+    return {
+      kind: "page",
+      title: typeof value.title === "string" ? value.title : task.display_title,
+      url: typeof value.html_url === "string" ? value.html_url : directUrl,
+      matchedBy: relevant.matchedBy ?? "direct_url",
+      contextMarkdown: relevant.contextMarkdown || (typeof value.bodyMarkdown === "string" ? value.bodyMarkdown : ""),
+      cells: relevant.cells,
+      links: relevant.links.length > 0 ? relevant.links : canvasLinksFromUnknown(value.links),
+      resource: compactCanvasResource(value),
+    };
+  }
+  if (kind === "assignment") {
+    return {
+      kind: "assignment",
+      title: typeof value.name === "string" ? value.name : task.display_title,
+      url: typeof value.html_url === "string" ? value.html_url : directUrl,
+      matchedBy: "direct_url",
+      contextMarkdown: typeof value.directionsMarkdown === "string" ? value.directionsMarkdown : "",
+      cells: [],
+      links: canvasLinksFromUnknown(value.links),
+      resource: compactCanvasResource(value),
+    };
+  }
+  if (["file", "discussion", "quiz", "module_item"].includes(kind)) {
+    const title = [value.display_name, value.title, value.name].find((item): item is string => typeof item === "string");
+    const markdown = [value.messageMarkdown, value.descriptionMarkdown, value.bodyMarkdown]
+      .find((item): item is string => typeof item === "string") ?? "";
+    return {
+      kind: kind as CanvasSourceContext["kind"],
+      title: title ?? task.display_title,
+      url: directUrl,
+      matchedBy: "direct_url",
+      contextMarkdown: markdown,
+      cells: [],
+      links: canvasLinksFromUnknown(value.links),
+      resource: compactCanvasResource(value),
+    };
+  }
+  return null;
+}
+
+function taskSourceMayContainDirections(task: TrackedTask): boolean {
+  return /agenda|page|table|syllabus/i.test(task.source.type) ||
+    Boolean(task.source.url?.match(/\/pages\//i)) ||
+    Boolean(task.source.anchor && task.source.anchor !== task.source.key);
+}
+
+function taskContextClues(task: TrackedTask): Array<{ value: string; kind: CanvasSourceContext["matchedBy"] }> {
+  const fragment = (() => {
+    try {
+      return task.source.url ? decodeURIComponent(new URL(task.source.url).hash.replace(/^#/, "")) : "";
+    } catch {
+      return "";
+    }
+  })();
+  return [
+    ...uniqueStrings([fragment, task.source.anchor]).map((value) => ({ value, kind: "source_anchor" as const })),
+    ...uniqueStrings([task.source.text, task.details]).map((value) => ({ value, kind: "source_text" as const })),
+    ...uniqueStrings([task.display_title, task.title]).map((value) => ({ value, kind: "task_title" as const })),
+  ];
+}
+
+function sourceRecoveryQueries(task: TrackedTask): string[] {
+  const pageSlug = uniqueStrings([task.source.url]).flatMap((value) => {
+    try {
+      const match = new URL(value).pathname.match(/\/pages\/([^/]+)/);
+      return match ? [decodeURIComponent(match[1]!).replace(/[-_]+/g, " ")] : [];
+    } catch {
+      return [];
+    }
+  });
+  return uniqueStrings([
+    ...pageSlug,
+    task.source.anchor,
+    task.source_date,
+    task.source.text.length <= 100 ? task.source.text : undefined,
+    task.display_title,
+  ]);
+}
+
+function assignmentRecoveryQueries(task: TrackedTask): string[] {
+  return uniqueStrings([
+    task.display_title,
+    task.title,
+    task.source.text.length <= 120 ? task.source.text : undefined,
+    task.source.anchor,
+  ]);
+}
+
+function rankPagesForTask(pages: CanvasPage[], task: TrackedTask) {
+  const tokens = new Set(sourceRecoveryQueries(task).flatMap((query) => [...normalizedTokens(query)]));
+  return rankByTitle(pages, (page) => `${page.title} ${page.url}`, tokens);
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+}
+
+function dedupeBy<T>(values: T[], key: (value: T) => string): T[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const current = key(value);
+    if (seen.has(current)) return false;
+    seen.add(current);
+    return true;
+  });
+}
+
+function canvasLinksFromUnknown(value: unknown): CanvasLink[] {
+  const parsed = z.array(z.object({ text: z.string(), url: z.string(), sameCanvasOrigin: z.boolean() })).safeParse(value);
+  return parsed.success ? parsed.data : [];
+}
+
+function compactCanvasResource(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => ![
+    "body",
+    "bodyMarkdown",
+    "description",
+    "directionsMarkdown",
+    "message",
+    "messageMarkdown",
+    "links",
+  ].includes(key)));
+}
+
+function normalizeComparable(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function nearbyInstructionText(value: string): boolean {
+  return /\b(?:due|submit|submission|upload|turn in|bring|required|materials?|instructions?|revision|revise|link)\b/i.test(value);
+}
+
+function emptyAssignmentContext(sourceContext: CanvasSourceContext | null = null): AssignmentContext {
   return {
     assignment: null,
     directionsHtml: "",
@@ -679,6 +1051,7 @@ function emptyAssignmentContext(): AssignmentContext {
       lockExplanation: null,
     },
     externalAssignment: { isExternal: false, url: null },
+    sourceContext,
     resolution: { method: "not_found", confidence: 0 },
   };
 }
@@ -725,6 +1098,16 @@ function settledFailure(label: string, result: PromiseSettledResult<unknown>) {
 function rankByTitle<T>(items: T[], title: (item: T) => string, query: Set<string>) {
   return items
     .map((item) => ({ item, score: tokenSimilarity(query, normalizedTokens(title(item))) }))
+    .sort((left, right) => right.score - left.score || title(left.item).localeCompare(title(right.item)));
+}
+
+function rankByMultipleQueries<T>(items: T[], title: (item: T) => string, queries: string[]) {
+  const tokenQueries = queries.map(normalizedTokens).filter((query) => query.size > 0);
+  return items
+    .map((item) => ({
+      item,
+      score: Math.max(0, ...tokenQueries.map((query) => tokenSimilarity(query, normalizedTokens(title(item))))),
+    }))
     .sort((left, right) => right.score - left.score || title(left.item).localeCompare(title(right.item)));
 }
 

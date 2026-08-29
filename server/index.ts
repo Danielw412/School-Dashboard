@@ -241,6 +241,12 @@ app.post("/api/internal/canvas-tools", async (request, response) => {
   response.json(result);
 });
 
+app.post("/api/internal/canvas-mcp", async (request, response) => {
+  const authorization = request.header("authorization") ?? "";
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  await toolSessions.handleMcp(token, request, response, request.body);
+});
+
 app.get("/workspace-files/:workspaceId/*path", async (request, response) => {
   const workspaceId = z.string().regex(/^[a-zA-Z0-9._-]+$/).parse(request.params.workspaceId);
   const rawPath = request.params.path;

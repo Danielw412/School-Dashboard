@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
 import {
   Codex,
@@ -102,12 +103,15 @@ export const answerKeySchema = z.object({
       problemNumber: z.string(),
       finalAnswerMarkdown: z.string(),
       solutionMarkdown: z.string(),
-      checks: z.array(z.string()),
-      provenance: z.array(provenanceSchema).min(1),
     }),
   ),
   warnings: z.array(z.string()),
 });
+
+export function stripLegacyAnswerMetadata(output: unknown): unknown {
+  const parsed = answerKeySchema.safeParse(output);
+  return parsed.success ? parsed.data : output;
+}
 
 export const studyGuideSchema = z.object({
   assessmentTitle: z.string(),
@@ -216,7 +220,20 @@ export class AgentRunStore {
   private async read(): Promise<AgentRun[]> {
     try {
       const runs = sanitizeForLog(JSON.parse(await readFile(RUNS_PATH, "utf8"))) as AgentRun[];
-      return runs.map((run) => ({ ...run, events: sanitizeStoredAgentEvents(run.events) }));
+      return runs.map((run) => {
+        const normalizedOutput = run.feature === "answerKey"
+          ? stripLegacyAnswerMetadata(run.output)
+          : run.output;
+        return {
+          ...run,
+          events: sanitizeStoredAgentEvents(run.events),
+          output: normalizedOutput,
+          rawStructuredOutput:
+            run.feature === "answerKey" && normalizedOutput && run.rawStructuredOutput
+              ? JSON.stringify(normalizedOutput)
+              : run.rawStructuredOutput,
+        };
+      });
     } catch {
       return [];
     }
@@ -311,67 +328,59 @@ export class AgentRunner {
         summary: run.taskTitle,
         metadata: { runId: run.id, model: run.model, reasoningEffort: run.reasoningEffort },
       });
-      const [context, workspace] = await Promise.all([
-        this.canvas.assignmentContext(task),
-        this.workspaces.create(task.logical_id),
-      ]);
-      await this.workspaces.writeJson(workspace, "task.json", task);
-      await this.workspaces.writeJson(workspace, "assignment-context.json", context);
-
+      const workspace = await this.workspaces.create(task.logical_id);
       let predictor: PredictorResult | null = null;
-      if (run.feature === "studyGuide") {
-        predictor = await runTestQuestionPredictor(Boolean(input.useTestQuestionPredictor), {
-          task,
-          assignment: context.assignment,
-          directions: context.directionsMarkdown,
-        });
-        await this.workspaces.writeJson(workspace, "test-question-predictor.json", predictor);
-      }
-
-      let referencedExtraction: unknown = null;
+      let toolSession: ReturnType<CanvasToolSessions["create"]> | null = null;
       if (run.feature === "answerKey") {
-        if (!input.extractionRunId) throw new Error("Generate or select an extracted-problems run first.");
-        const extraction = await this.runs.get(input.extractionRunId);
-        if (!extraction || extraction.feature !== "problemExtraction" || extraction.status !== "completed") {
-          throw new Error("The selected extracted-problems run is unavailable or incomplete.");
+        const answerSource = await this.prepareAnswerSource(input, task.logical_id, workspace);
+        await this.workspaces.writeJson(workspace, "extracted-problems.json", answerSource);
+      } else {
+        const context = await this.canvas.assignmentContext(task);
+        await this.workspaces.writeJson(workspace, "task.json", task);
+        await this.workspaces.writeJson(workspace, "assignment-context.json", context);
+        if (run.feature === "studyGuide") {
+          predictor = await runTestQuestionPredictor(Boolean(input.useTestQuestionPredictor), {
+            task,
+            assignment: context.assignment,
+            directions: context.directionsMarkdown,
+          });
+          await this.workspaces.writeJson(workspace, "test-question-predictor.json", predictor);
         }
-        if (extraction.logicalId !== task.logical_id) {
-          throw new Error("The extracted problems belong to a different assignment.");
+        const preflight: Record<string, unknown> = {
+          structuredToolsReady: true,
+          selectedAssignment: context.assignment?.id ?? null,
+          recoveredSourceContext: context.sourceContext,
+          moduleNeighborhood: null,
+        };
+        const courseId = task.canvas.course_id ?? task.course.canvas_course_id;
+        if (courseId && context.assignment?.id) {
+          try {
+            preflight.moduleNeighborhood = await this.canvas.getModuleItemSequence(
+              courseId,
+              "Assignment",
+              String(context.assignment.id),
+            );
+          } catch (error) {
+            preflight.moduleNeighborhoodError =
+              error instanceof Error ? error.message : "Module neighborhood unavailable";
+          }
         }
-        referencedExtraction = extraction.output;
-        await this.workspaces.writeJson(workspace, "extracted-problems.json", referencedExtraction);
+        toolSession = this.toolSessions.create(task, context, workspace, settings, {
+          runId: run.id,
+          profile: run.feature === "directions" ? "directions" : "standard",
+          preflight,
+        });
+        toolToken = toolSession.token;
+        await this.workspaces.writeJson(workspace, "canvas-tool-preflight.json", preflight);
       }
-
-      const toolSession = this.toolSessions.create(task, context, workspace, settings, {
-        runId: run.id,
-      });
-      toolToken = toolSession.token;
-      await this.toolSessions.installAgentScript(toolSession);
-      const preflight: Record<string, unknown> = {
-        helperReady: true,
-        selectedAssignment: context.assignment?.id ?? null,
-        moduleNeighborhood: null,
-      };
-      const courseId = task.canvas.course_id ?? task.course.canvas_course_id;
-      if (courseId && context.assignment?.id) {
-        try {
-          preflight.moduleNeighborhood = await this.canvas.getModuleItemSequence(
-            courseId,
-            "Assignment",
-            String(context.assignment.id),
-          );
-        } catch (error) {
-          preflight.moduleNeighborhoodError =
-            error instanceof Error ? error.message : "Module neighborhood unavailable";
-        }
-      }
-      await this.workspaces.writeJson(workspace, "canvas-tool-preflight.json", preflight);
-      const instructions = buildInstructions(run.feature, run.prompt, predictor, referencedExtraction);
+      const instructions = buildInstructions(run.feature, run.prompt, predictor);
+      const configuredMcpServers = await configuredMcpServerNames();
       const codex = new Codex({
         env: {
           ...sanitizedEnvironment(),
-          SCHOOL_DASHBOARD_TOOL_TOKEN: toolSession.token,
-          SCHOOL_DASHBOARD_TOOL_URL: `http://127.0.0.1:${env.port}/api/internal/canvas-tools`,
+          ...(toolSession ? {
+            SCHOOL_DASHBOARD_TOOL_TOKEN: toolSession.token,
+          } : {}),
         },
         config: {
           show_raw_agent_reasoning: false,
@@ -383,9 +392,10 @@ export class AgentRunner {
             computer_use: false,
             image_generation: false,
             skill_search: false,
+            shell_tool: !toolSession,
           },
         },
-        configOverrides: ["mcp_servers={}"],
+        configOverrides: buildMcpConfigOverrides(Boolean(toolSession), env.port, configuredMcpServers),
       });
       const thread = codex.startThread({
         model: run.model,
@@ -393,7 +403,7 @@ export class AgentRunner {
         sandboxMode: "read-only",
         workingDirectory: workspace.path,
         skipGitRepoCheck: true,
-        networkAccessEnabled: true,
+        networkAccessEnabled: run.feature !== "answerKey",
         webSearchMode: "disabled",
         approvalPolicy: "never",
         threadSource: "school-dashboard",
@@ -464,25 +474,104 @@ export class AgentRunner {
       if (toolToken) this.toolSessions.revoke(toolToken);
     }
   }
+
+  private async prepareAnswerSource(
+    input: StartAgentRun,
+    logicalId: string,
+    workspace: Awaited<ReturnType<WorkspaceManager["create"]>>,
+  ) {
+    if (!input.extractionRunId) throw new Error("Generate or select an extracted-problems run first.");
+    const extraction = await this.runs.get(input.extractionRunId);
+    if (!extraction || extraction.feature !== "problemExtraction" || extraction.status !== "completed") {
+      throw new Error("The selected extracted-problems run is unavailable or incomplete.");
+    }
+    if (extraction.logicalId !== logicalId) {
+      throw new Error("The extracted problems belong to a different assignment.");
+    }
+    const parsed = problemExtractionSchema.parse(extraction.output);
+    const problems = await Promise.all(parsed.problems.map(async (problem, index) => {
+      if (!problem.visual) {
+        return { number: problem.number, markdown: problem.markdown, visual: null };
+      }
+      if (!extraction.workspaceId) {
+        throw new Error("An extracted problem visual is unavailable. Extract the problems again.");
+      }
+      let path: string;
+      try {
+        path = await this.workspaces.copyWorkspaceAsset(
+          extraction.workspaceId,
+          problem.visual.path,
+          workspace,
+          `problem-${index + 1}-${basename(problem.visual.path)}`,
+        );
+      } catch {
+        throw new Error("An extracted problem visual has expired. Extract the problems again.");
+      }
+      return {
+        number: problem.number,
+        markdown: problem.markdown,
+        visual: { ...problem.visual, path },
+      };
+    }));
+    return { assignmentTitle: parsed.assignmentTitle, problems };
+  }
 }
 
-function buildInstructions(
+export function buildInstructions(
   feature: AgentFeature,
   customPrompt: string,
   predictor: PredictorResult | null,
-  extraction: unknown,
 ): string {
-  const common = `You are operating inside one temporary assignment workspace. Read only task.json, assignment-context.json, canvas-tool-preflight.json, CANVAS_TOOLS.md, extracted-problems.json when named below, and files returned by the Canvas helper. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Use node canvas-tool.mjs ACTION 'JSON' for Canvas access instead of direct HTTP requests. The helper is assignment/course-scoped and its bearer credential is intentionally hidden. Use deterministic tool results for facts and use reasoning for navigation, extraction, solving, or synthesis. Keep provenance precise. External links may be reported but must not be claimed as read unless a tool returned readable content. Before reading or rendering an unfamiliar PDF, call pdf-inspect once and follow its text-or-vision recommendation. If several PDF pages need vision, render them with one batched pdf-render pages/range call rather than separate calls. Return only the requested structured JSON.`;
+  const workspaceRules = `You are operating inside one temporary assignment workspace. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Return only the requested structured JSON.`;
+  const canvasRules = `Call get_preloaded_context once first. Treat this preloaded context as authoritative evidence, including its task, assignment context, sourceContext, and preflight data. Use only the structured school_dashboard tools for any necessary Canvas or document access; shell access is disabled, and you must never invoke Canvas through PowerShell, a shell command, JavaScript helper, direct HTTP request, or handwritten JSON. Prefer direct URLs and known assignment/file/page/module identifiers, then source anchor and source text recovery, and only then one focused course search. External links may be reported but must not be claimed as read unless a structured tool returned readable content.`;
+  const pdfRules = `For every unfamiliar PDF, call index_pdf once with any requested problem numbers. Use its per-page recommendation and the cheapest reliable representation: cached text first; a low-resolution contact sheet when page navigation is unclear; automatic problem detection before manual inspection; batched full-resolution rendering only for necessary visual pages; OCR only where the text layer is missing or unusable. Use semantic_crop_pdf for complete problem/diagram/table regions and crop_image_regions only for known coordinates. Reuse cached outputs, batch independent operations, and stop when exact requested content is sufficiently verified.`;
   if (feature === "directions") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nInvestigate the selected assignment using the Canvas helper. Read the assignment, its submission requirements, its module neighborhood, and relevant linked Canvas pages or files. Search the course only when the assignment evidence points to a specific missing resource. Everything in the response must be a Luna-authored synthesis of inspected evidence: do not copy raw Canvas HTML. Be brief and practical: overviewMarkdown is at most two short sentences; use no more than five instructions, each with a short heading and one or two short sentences; keep assigned-work items terse and exact; make submission.methodMarkdown one short sentence; make deliverables short noun phrases; and make dueMarkdown only the concise verified date/time. Do not include attempt counts. Avoid repeating the same fact across fields. Preserve exact problem numbers, page numbers, filenames, required deliverables, deadlines, warnings, and submission constraints. This feature summarizes what to do; do not solve problems or extract full question text, and inspect only the pages needed to verify an assignment reference. Leave exact question extraction to problemExtraction. Label external resources honestly and do not claim to read an external platform. If a fact is unavailable, omit it or state that it could not be verified; never invent it.`;
+    return `${workspaceRules}\n${canvasRules}\n\nFeature prompt:\n${customPrompt}\n\nMandatory Directions scope: determine only the assigned work, relevant instructions, submission requirements, and due date. Use the returned preloaded context first; do not re-fetch facts already present there. For agenda/table tasks, treat sourceContext.contextMarkdown and sourceContext.cells as the relevant surrounding row, not merely the classified homework sentence: preserve exact due times, submission method, required materials, related links, and nearby instructions. If resolution is missing or incomplete, call recover_canvas_context once; it uses the task title, source sentence, source anchor, source/page metadata, and direct URLs. Follow a directly relevant Canvas link such as revision instructions only when it resolves a specific missing instruction. Do not open or inspect PDF/file question content in Directions, and do not search broadly. Stop immediately once assigned work, submission method, due information, and explicitly referenced instructions are sufficiently verified. Everything in the response must be a brief Luna-authored paraphrase, never raw Canvas HTML: overviewMarkdown is at most two short sentences; use no more than five instructions; keep assigned-work items exact and terse; make submission.methodMarkdown one short sentence; use short deliverable phrases; and make dueMarkdown the concise verified date/time. Never include attempt counts, solve problems, repeat facts, or invent missing details.`;
   }
   if (feature === "problemExtraction") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with assignment context, then inspect only relevant module neighbors and linked resources. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. For PDFs, inspect first, then use pdf-text for a usable text layer or rendered-page vision when recommended. Batch independent page renders. A visual path must be relative to this workspace. Write inline math with $...$ and display math with $$...$$ so the dashboard can render it. If exact text cannot be found, add an unresolved entry rather than inventing it.`;
+    return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources, page renders, OCR pages, or crops together when possible. A visual path must be relative to this workspace and should be the smallest semantic crop that still contains the complete problem and any required diagram/table/answer area. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
   }
   if (feature === "answerKey") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nUse extracted-problems.json as the sole problem statement source. Do not navigate Canvas to substitute or embellish a problem. Preserve the extracted numbering. The final answer must be concise and the full solution must be complete. Extraction payload:\n${JSON.stringify(extraction)}`;
+    return `${workspaceRules}\nRead only extracted-problems.json and the local visual paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question in extracted-problems.json and inspect its attached visual whenever it affects the question. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
   }
-  return `${common}\n\nFeature prompt:\n${customPrompt}\n\nThis is a focused assessment investigation. Inspect the assessment description, its containing or nearby modules, and only relevant pages, assignments, notes, PDFs, worksheets, or teacher review material. Separate teacher-stated scope from your own inferences. Predictor adapter status:\n${JSON.stringify(predictor)}\nIf predictor status is unavailable, state that exactly and do not fabricate predicted history. If available, treat its output as one labeled evidence source, not teacher-provided scope.`;
+  return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nThis is a focused assessment investigation. Inspect the assessment description, its containing or nearby modules, and only relevant pages, assignments, notes, PDFs, worksheets, or teacher review material. Separate teacher-stated scope from your own inferences. Predictor adapter status:\n${JSON.stringify(predictor)}\nIf predictor status is unavailable, state that exactly and do not fabricate predicted history. If available, treat its output as one labeled evidence source, not teacher-provided scope.`;
+}
+
+const BUILTIN_MCP_SERVERS = ["node_repl", "openaiDeveloperDocs", "cua_repl"];
+
+export function buildMcpConfigOverrides(
+  enabled: boolean,
+  port: number,
+  configuredServers: string[] = [],
+): string[] {
+  const overrides = [...new Set([...BUILTIN_MCP_SERVERS, ...configuredServers])]
+    .filter((name) => name !== "school_dashboard" && /^[A-Za-z0-9_-]+$/u.test(name))
+    .map((name) => `mcp_servers.${name}.enabled=false`);
+  if (!enabled) return overrides;
+  const url = JSON.stringify(`http://127.0.0.1:${port}/api/internal/canvas-mcp`);
+  return [
+    ...overrides,
+    `mcp_servers.school_dashboard.url=${url}`,
+    'mcp_servers.school_dashboard.bearer_token_env_var="SCHOOL_DASHBOARD_TOOL_TOKEN"',
+    "mcp_servers.school_dashboard.required=true",
+    "mcp_servers.school_dashboard.startup_timeout_sec=10",
+    "mcp_servers.school_dashboard.tool_timeout_sec=240",
+    'mcp_servers.school_dashboard.default_tools_approval_mode="auto"',
+  ];
+}
+
+export async function configuredMcpServerNames(
+  configPath = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"),
+): Promise<string[]> {
+  try {
+    const config = await readFile(configPath, "utf8");
+    const names = new Set<string>();
+    const pattern = /^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))(?:\.[^\]]+)?\]\s*$/gmu;
+    for (const match of config.matchAll(pattern)) names.add(match[1] ?? match[2]!);
+    return [...names];
+  } catch {
+    return [];
+  }
 }
 
 function outputParser(feature: AgentFeature) {

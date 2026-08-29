@@ -15,4 +15,19 @@ describe("Markdown math", () => {
     expect(container.querySelectorAll(".katex")).toHaveLength(2);
     expect(container.querySelector(".katex-display")).toBeInTheDocument();
   });
+
+  it("braces vector and unit-vector accents so arrows stay attached", () => {
+    expect(normalizeMathDelimiters("\\(\\vec R=3\\hat\\imath+4\\hat\\jmath\\)"))
+      .toBe("$\\vec{R}=3\\hat{\\imath}+4\\hat{\\jmath}$");
+  });
+
+  it("converts accidental solution HTML wrappers into Markdown", () => {
+    const normalized = normalizeMathDelimiters(
+      "<details><summary>Solution</summary><h3>Components</h3><p>Resolve the vector.</p></details>",
+    );
+
+    expect(normalized).toContain("### Components");
+    expect(normalized).toContain("Resolve the vector.");
+    expect(normalized).not.toMatch(/<\/?(?:details|summary|h3|p)/i);
+  });
 });

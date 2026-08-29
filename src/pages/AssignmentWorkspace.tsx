@@ -263,7 +263,6 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
               {answer && <details className="inline-answer">
                 <summary>Show answer <ChevronDown size={15} /></summary>
                 <div className="inline-answer-body">
-                  <span>Answer</span>
                   <Markdown>{answer.finalAnswerMarkdown}</Markdown>
                   <details className="inline-solution"><summary>Show full solution <ChevronDown size={14} /></summary><Markdown>{answer.solutionMarkdown}</Markdown></details>
                 </div>
@@ -281,13 +280,13 @@ function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRu
   const output = run?.output as AnswerKey | null;
   const ready = extractionRun?.status === "completed";
   return <div>
-    <FeatureHeader eyebrow="Grounded solutions" title="Answer key" detail="Every solution starts from the extracted problem text, with a concise final answer and an expandable derivation.">
+    <FeatureHeader eyebrow="Grounded solutions" title="Answer key" detail="Every solution uses only the parsed question and its attached visual, with a concise answer and an expandable derivation.">
       <button className="primary-button" disabled={!ready || starting || run?.status === "running"} onClick={onRun}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <BookOpenCheck size={17} />}{run ? "Generate again" : "Generate answer key"}</button>
     </FeatureHeader>
     {!ready && <div className="notice amber"><FileQuestion size={17} /><div><strong>Extract the assigned problems first</strong><p>The answer key never solves guessed problem descriptions.</p></div></div>}
     {run && <RunBanner run={run} />}
     {run?.status === "failed" && <ErrorNotice error={new Error(run.error || "Answer-key run failed")} />}
-    {output && <div className="answer-stack"><p className="feature-summary">{output.summary}</p>{output.answers.map((answer, index) => <article className="answer-panel" key={`${answer.problemNumber}-${index}`}><div className="answer-heading"><span>Problem {answer.problemNumber}</span><Check size={18} /></div><div className="final-answer"><span>Final answer</span><Markdown>{answer.finalAnswerMarkdown}</Markdown></div><details><summary>Show full solution <ChevronDown size={16} /></summary><Markdown>{answer.solutionMarkdown}</Markdown>{answer.checks.length > 0 && <ul className="checks">{answer.checks.map((check) => <li key={check}><Check size={14} />{check}</li>)}</ul>}</details><SourceDisclosure items={answer.provenance} /></article>)}</div>}
+    {output && <div className="answer-stack"><p className="feature-summary">{output.summary}</p>{output.answers.map((answer, index) => <article className="answer-panel" key={`${answer.problemNumber}-${index}`}><div className="answer-heading"><span>Problem {answer.problemNumber}</span></div><div className="final-answer"><span>Final answer</span><Markdown>{answer.finalAnswerMarkdown}</Markdown></div><details><summary>Show full solution <ChevronDown size={16} /></summary><Markdown>{answer.solutionMarkdown}</Markdown></details></article>)}</div>}
   </div>;
 }
 
