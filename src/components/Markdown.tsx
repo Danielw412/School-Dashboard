@@ -2,6 +2,8 @@ import rehypeKatex from "rehype-katex";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 
+import { normalizeMathDelimiters } from "./markdown-math";
+
 export function Markdown({ children, className = "" }: { children: string; className?: string }) {
   return (
     <div className={`markdown ${className}`}>
@@ -12,7 +14,7 @@ export function Markdown({ children, className = "" }: { children: string; class
           a: ({ href, children: label }) => <a href={href} target="_blank" rel="noreferrer">{label}</a>,
         }}
       >
-        {children}
+        {normalizeMathDelimiters(children)}
       </ReactMarkdown>
     </div>
   );

@@ -55,7 +55,6 @@ export const directionsSchema = z.object({
     methodMarkdown: z.string(),
     deliverables: z.array(z.string()),
     dueMarkdown: z.string().nullable(),
-    attemptsMarkdown: z.string().nullable(),
   }),
   resources: z.array(
     z.object({
@@ -216,7 +215,8 @@ export class AgentRunStore {
 
   private async read(): Promise<AgentRun[]> {
     try {
-      return sanitizeForLog(JSON.parse(await readFile(RUNS_PATH, "utf8"))) as AgentRun[];
+      const runs = sanitizeForLog(JSON.parse(await readFile(RUNS_PATH, "utf8"))) as AgentRun[];
+      return runs.map((run) => ({ ...run, events: sanitizeStoredAgentEvents(run.events) }));
     } catch {
       return [];
     }
@@ -342,7 +342,9 @@ export class AgentRunner {
         await this.workspaces.writeJson(workspace, "extracted-problems.json", referencedExtraction);
       }
 
-      const toolSession = this.toolSessions.create(task, context, workspace, settings);
+      const toolSession = this.toolSessions.create(task, context, workspace, settings, {
+        runId: run.id,
+      });
       toolToken = toolSession.token;
       await this.toolSessions.installAgentScript(toolSession);
       const preflight: Record<string, unknown> = {
@@ -405,7 +407,7 @@ export class AgentRunner {
       let usage: Usage | null = null;
       let rawStructuredOutput: string | null = null;
       for await (const event of events) {
-        rawEvents.push(sanitizeForLog(compactEvent(event)));
+        rawEvents.push(sanitizeForLog(compactEventForLog(event)));
         if (event.type === "thread.started") {
           await this.runs.update(run.id, { threadId: event.thread_id });
         }
@@ -470,12 +472,12 @@ function buildInstructions(
   predictor: PredictorResult | null,
   extraction: unknown,
 ): string {
-  const common = `You are operating inside one temporary assignment workspace. Read only task.json, assignment-context.json, canvas-tool-preflight.json, CANVAS_TOOLS.md, extracted-problems.json when named below, and files returned by the Canvas helper. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Use node canvas-tool.mjs ACTION 'JSON' for Canvas access instead of direct HTTP requests. The helper is assignment/course-scoped and its bearer credential is intentionally hidden. Use deterministic tool results for facts and use reasoning for navigation, extraction, solving, or synthesis. Keep provenance precise. External links may be reported but must not be claimed as read unless a tool returned readable content. Return only the requested structured JSON.`;
+  const common = `You are operating inside one temporary assignment workspace. Read only task.json, assignment-context.json, canvas-tool-preflight.json, CANVAS_TOOLS.md, extracted-problems.json when named below, and files returned by the Canvas helper. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Use node canvas-tool.mjs ACTION 'JSON' for Canvas access instead of direct HTTP requests. The helper is assignment/course-scoped and its bearer credential is intentionally hidden. Use deterministic tool results for facts and use reasoning for navigation, extraction, solving, or synthesis. Keep provenance precise. External links may be reported but must not be claimed as read unless a tool returned readable content. Before reading or rendering an unfamiliar PDF, call pdf-inspect once and follow its text-or-vision recommendation. If several PDF pages need vision, render them with one batched pdf-render pages/range call rather than separate calls. Return only the requested structured JSON.`;
   if (feature === "directions") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nInvestigate the selected assignment using the Canvas helper. Read the assignment, its submission requirements, its module neighborhood, and relevant linked Canvas pages or files. Search the course only when the assignment evidence points to a specific missing resource. Everything in the response must be a Luna-authored synthesis of inspected evidence: do not copy the raw Canvas HTML into the answer. Paraphrase verbose directions into a clear overview and ordered instructions while preserving exact problem numbers, page numbers, filenames, required deliverables, deadlines, warnings, and submission constraints. This feature summarizes what to do; do not solve problems or extract full question text, and inspect only the pages needed to verify an assignment reference. Leave exact question extraction to the problemExtraction feature. In Canvas, allowed_attempts=-1 means unlimited attempts; render it as “Unlimited,” never “-1.” Label external resources honestly and do not claim to read an external platform. If a fact is unavailable, omit it or state that it could not be verified; never invent it.`;
+    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nInvestigate the selected assignment using the Canvas helper. Read the assignment, its submission requirements, its module neighborhood, and relevant linked Canvas pages or files. Search the course only when the assignment evidence points to a specific missing resource. Everything in the response must be a Luna-authored synthesis of inspected evidence: do not copy raw Canvas HTML. Be brief and practical: overviewMarkdown is at most two short sentences; use no more than five instructions, each with a short heading and one or two short sentences; keep assigned-work items terse and exact; make submission.methodMarkdown one short sentence; make deliverables short noun phrases; and make dueMarkdown only the concise verified date/time. Do not include attempt counts. Avoid repeating the same fact across fields. Preserve exact problem numbers, page numbers, filenames, required deliverables, deadlines, warnings, and submission constraints. This feature summarizes what to do; do not solve problems or extract full question text, and inspect only the pages needed to verify an assignment reference. Leave exact question extraction to problemExtraction. Label external resources honestly and do not claim to read an external platform. If a fact is unavailable, omit it or state that it could not be verified; never invent it.`;
   }
   if (feature === "problemExtraction") {
-    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with assignment context, then inspect only relevant module neighbors and linked resources. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. For PDFs, use pdf-text and render pages when visuals or layout matter. A visual path must be relative to this workspace. If exact text cannot be found, add an unresolved entry rather than inventing it.`;
+    return `${common}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with assignment context, then inspect only relevant module neighbors and linked resources. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. For PDFs, inspect first, then use pdf-text for a usable text layer or rendered-page vision when recommended. Batch independent page renders. A visual path must be relative to this workspace. Write inline math with $...$ and display math with $$...$$ so the dashboard can render it. If exact text cannot be found, add an unresolved entry rather than inventing it.`;
   }
   if (feature === "answerKey") {
     return `${common}\n\nFeature prompt:\n${customPrompt}\n\nUse extracted-problems.json as the sole problem statement source. Do not navigate Canvas to substitute or embellish a problem. Preserve the extracted numbering. The final answer must be concise and the full solution must be complete. Extraction payload:\n${JSON.stringify(extraction)}`;
@@ -517,16 +519,48 @@ function sanitizedEnvironment(): Record<string, string> {
   );
 }
 
-function compactEvent(event: ThreadEvent): unknown {
-  if (event.type === "item.updated") return { type: event.type, item: event.item };
+export function compactEventForLog(event: ThreadEvent): unknown {
+  if (
+    event.type === "item.started" ||
+    event.type === "item.updated" ||
+    event.type === "item.completed"
+  ) {
+    const summary = event.type === "item.completed"
+      ? summarizeItem(event)
+      : event.item.type === "reasoning"
+        ? "Reasoning about inspected evidence"
+        : `${event.item.type.replaceAll("_", " ")} in progress`;
+    return { type: event.type, item: { type: event.item.type, summary } };
+  }
   return event;
+}
+
+export function sanitizeStoredAgentEvents(events: unknown[]): unknown[] {
+  return events.map((event) => {
+    if (!event || typeof event !== "object") return event;
+    const record = event as Record<string, unknown>;
+    const item = record.item;
+    if (!item || typeof item !== "object") return event;
+    const itemRecord = item as Record<string, unknown>;
+    const type = typeof itemRecord.type === "string" ? itemRecord.type : "agent_item";
+    const summary = type === "reasoning"
+      ? "Reasoning about inspected evidence"
+      : type === "command_execution"
+        ? "Scoped assignment tool activity"
+        : type === "agent_message"
+          ? "Structured result activity"
+          : typeof itemRecord.summary === "string"
+            ? itemRecord.summary
+            : `${type.replaceAll("_", " ")} activity`;
+    return { type: record.type, item: { type, summary } };
+  });
 }
 
 function summarizeItem(event: Extract<ThreadEvent, { type: "item.completed" }>): string {
   const item = event.item;
-  if (item.type === "command_execution") return item.command.slice(0, 180);
-  if (item.type === "agent_message") return "Structured agent output";
-  if (item.type === "reasoning") return item.text.slice(0, 180);
+  if (item.type === "command_execution") return "Scoped assignment tool completed";
+  if (item.type === "agent_message") return "Structured result prepared";
+  if (item.type === "reasoning") return "Reasoning about inspected evidence completed";
   if (item.type === "error") return item.message;
   return item.type.replaceAll("_", " ");
 }

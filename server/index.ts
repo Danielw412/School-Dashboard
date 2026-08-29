@@ -6,6 +6,7 @@ import multer from "multer";
 import { z, ZodError } from "zod";
 
 import { ActivityStore } from "./activity.js";
+import { buildAgentProgress } from "./agent-progress.js";
 import { AgentRunner, AgentRunStore } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
 import { APP_ROOT, env, TEMP_WORKSPACE_ROOT } from "./env.js";
@@ -120,6 +121,12 @@ app.get("/api/agent-runs/:id", async (request, response) => {
   const run = await runs.get(request.params.id);
   if (!run) return response.status(404).json({ error: "Agent run not found." });
   response.json(run);
+});
+
+app.get("/api/agent-runs/:id/progress", async (request, response) => {
+  const run = await runs.get(request.params.id);
+  if (!run) return response.status(404).json({ error: "Agent run not found." });
+  response.json(buildAgentProgress(run, await activity.list(500)));
 });
 
 app.post("/api/agent-runs", async (request, response) => {

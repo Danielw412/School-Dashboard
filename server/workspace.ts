@@ -34,6 +34,16 @@ export type AssignmentWorkspace = {
   rendersPath: string;
 };
 
+export type PdfInspection = {
+  pageCount: number;
+  textLayer: "usable" | "sparse" | "none";
+  hasUsableTextLayer: boolean;
+  primarilyScanned: boolean;
+  recommendation: "text" | "vision";
+  sampledPages: { start: number; end: number };
+  extractedCharacters: number;
+};
+
 export class WorkspaceManager {
   private hits = 0;
   private misses = 0;
@@ -120,6 +130,51 @@ export class WorkspaceManager {
     }
   }
 
+  async inspectPdf(pdfPath: string): Promise<PdfInspection> {
+    assertPdf(pdfPath);
+    let pageCount: number;
+    try {
+      const { stdout } = await execFileAsync("pdfinfo", [pdfPath], {
+        encoding: "utf8",
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: 30_000,
+      });
+      pageCount = parsePdfPageCount(stdout);
+    } catch (error) {
+      throw new Error(`PDF inspection requires Poppler's pdfinfo: ${errorMessage(error)}`);
+    }
+
+    const sampleEnd = Math.min(pageCount, 3);
+    let sampleText: string;
+    try {
+      const { stdout } = await execFileAsync(
+        "pdftotext",
+        ["-f", "1", "-l", String(sampleEnd), pdfPath, "-"],
+        {
+          encoding: "utf8",
+          maxBuffer: 4 * 1024 * 1024,
+          timeout: 30_000,
+        },
+      );
+      sampleText = stdout;
+    } catch (error) {
+      throw new Error(`PDF inspection requires Poppler's pdftotext: ${errorMessage(error)}`);
+    }
+
+    const extractedCharacters = sampleText.replace(/\s+/g, "").length;
+    const textLayer = classifyPdfTextLayer(extractedCharacters);
+    const hasUsableTextLayer = textLayer === "usable";
+    return {
+      pageCount,
+      textLayer,
+      hasUsableTextLayer,
+      primarilyScanned: !hasUsableTextLayer,
+      recommendation: hasUsableTextLayer ? "text" : "vision",
+      sampledPages: { start: 1, end: sampleEnd },
+      extractedCharacters,
+    };
+  }
+
   async renderPdfPage(
     pdfPath: string,
     page: number,
@@ -147,6 +202,33 @@ export class WorkspaceManager {
       metadata: { workspace: workspace.id, output: basename(destination) },
     });
     return destination;
+  }
+
+  async renderPdfPages(
+    pdfPath: string,
+    pages: number[],
+    workspace: AssignmentWorkspace,
+    concurrency = 4,
+  ): Promise<Array<{ page: number; path: string }>> {
+    if (pages.length === 0) throw new Error("Choose at least one PDF page to render.");
+    const results = new Array<{ page: number; path: string }>(pages.length);
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(Math.max(1, concurrency), pages.length) },
+      async () => {
+        while (cursor < pages.length) {
+          const index = cursor;
+          cursor += 1;
+          const page = pages[index];
+          results[index] = {
+            page,
+            path: await this.renderPdfPage(pdfPath, page, workspace),
+          };
+        }
+      },
+    );
+    await Promise.all(workers);
+    return results;
   }
 
   async cropImage(
@@ -259,6 +341,21 @@ function safeExtension(value: string): string {
 
 function assertPdf(path: string) {
   if (extname(path).toLowerCase() !== ".pdf") throw new Error("This operation requires a PDF file.");
+}
+
+export function parsePdfPageCount(pdfInfo: string): number {
+  const match = pdfInfo.match(/^Pages:\s+(\d+)\s*$/im);
+  const pageCount = match ? Number.parseInt(match[1], 10) : 0;
+  if (!Number.isInteger(pageCount) || pageCount < 1) {
+    throw new Error("Could not determine the PDF page count.");
+  }
+  return pageCount;
+}
+
+export function classifyPdfTextLayer(extractedCharacters: number): PdfInspection["textLayer"] {
+  if (extractedCharacters >= 80) return "usable";
+  if (extractedCharacters >= 10) return "sparse";
+  return "none";
 }
 
 function errorMessage(error: unknown): string {

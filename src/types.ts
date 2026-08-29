@@ -106,6 +106,22 @@ export type AgentRun = {
   predictor: null | { requested: boolean; status: string; message: string; output: unknown };
 };
 
+export type AgentProgress = {
+  runId: string;
+  status: AgentRun["status"];
+  startedAt: string;
+  completedAt: string | null;
+  serverNow: string;
+  elapsedMs: number;
+  current: string;
+  entries: Array<{
+    id: string;
+    timestamp: string;
+    status: "started" | "completed" | "warning" | "failed";
+    message: string;
+  }>;
+};
+
 export type ModelName = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -188,7 +204,6 @@ export type AssignmentDirections = {
     methodMarkdown: string;
     deliverables: string[];
     dueMarkdown: string | null;
-    attemptsMarkdown: string | null;
   };
   resources: Array<{
     title: string;

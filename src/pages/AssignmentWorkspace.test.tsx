@@ -10,6 +10,7 @@ const apiMocks = vi.hoisted(() => ({
   task: vi.fn(),
   context: vi.fn(),
   runs: vi.fn(),
+  runProgress: vi.fn(),
   startRun: vi.fn(),
 }));
 
@@ -64,6 +65,16 @@ describe("AssignmentWorkspace directions", () => {
     apiMocks.task.mockResolvedValue(task);
     apiMocks.context.mockResolvedValue(context);
     apiMocks.runs.mockResolvedValue([]);
+    apiMocks.runProgress.mockResolvedValue({
+      runId: "directions-run",
+      status: "completed",
+      startedAt: "2026-08-28T12:00:00Z",
+      completedAt: "2026-08-28T12:01:00Z",
+      serverNow: "2026-08-28T12:01:00Z",
+      elapsedMs: 60_000,
+      current: "Structured result prepared",
+      entries: [],
+    });
     apiMocks.startRun.mockResolvedValue({ id: "new-run" });
   });
 
@@ -92,14 +103,62 @@ describe("AssignmentWorkspace directions", () => {
     renderWorkspace();
 
     expect(await screen.findByText("Start with the packet on page 3.")).toBeInTheDocument();
-    expect(screen.getByText("Unlimited")).toBeInTheDocument();
+    expect(screen.getByText("September 1")).toBeInTheDocument();
+    expect(screen.queryByText("Attempts")).not.toBeInTheDocument();
     expect(screen.queryByText("RAW CANVAS DIRECTIONS")).not.toBeInTheDocument();
+    expect(screen.getByText("View sources").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("shows safe live Luna activity and elapsed time", async () => {
+    apiMocks.runs.mockResolvedValue([{
+      ...directionsRun(),
+      status: "running",
+      completedAt: null,
+      output: null,
+    }]);
+    apiMocks.runProgress.mockResolvedValue({
+      runId: "directions-run",
+      status: "running",
+      startedAt: "2026-08-28T12:00:00Z",
+      completedAt: null,
+      serverNow: "2026-08-28T12:00:08Z",
+      elapsedMs: 8_000,
+      current: "Inspecting PDF structure and text layer",
+      entries: [{
+        id: "activity-1",
+        timestamp: "2026-08-28T12:00:07Z",
+        status: "started",
+        message: "Inspecting PDF structure and text layer",
+      }],
+    });
+    renderWorkspace();
+
+    expect(await screen.findByText("Inspecting PDF structure and text layer", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
+    expect(screen.getByText(/Private reasoning text is not recorded/)).toBeInTheDocument();
+  });
+
+  it("keeps problem sources collapsed and reveals an existing answer below the problem", async () => {
+    apiMocks.runs.mockResolvedValue([problemRun(), answerRun()]);
+    const user = userEvent.setup();
+    renderWorkspace("?tab=problems");
+
+    expect(await screen.findByText(/A particle has velocity/)).toBeInTheDocument();
+    const sourceDetails = screen.getByText("View sources").closest("details");
+    expect(sourceDetails).not.toHaveAttribute("open");
+    const answerDetails = screen.getByText("Show answer").closest("details");
+    expect(answerDetails).not.toHaveAttribute("open");
+
+    await user.click(screen.getByText("Show answer"));
+
+    expect(answerDetails).toHaveAttribute("open");
+    expect(screen.getAllByText("5 m/s").length).toBeGreaterThan(0);
   });
 });
 
-function renderWorkspace() {
+function renderWorkspace(search = "") {
   return render(
-    <MemoryRouter initialEntries={[`/assignment/${encodeURIComponent(task.logical_id)}`]}>
+    <MemoryRouter initialEntries={[`/assignment/${encodeURIComponent(task.logical_id)}${search}`]}>
       <Routes><Route path="/assignment/:logicalId" element={<AssignmentWorkspace />} /></Routes>
     </MemoryRouter>,
   );
@@ -135,11 +194,61 @@ function directionsRun(): AgentRun {
         methodMarkdown: "Upload one PDF.",
         deliverables: ["Completed work"],
         dueMarkdown: "September 1",
-        attemptsMarkdown: "Unlimited",
       },
-      resources: [],
+      resources: [{
+        title: "Worksheet packet",
+        url: "https://canvas.test/files/7",
+        kind: "file",
+        description: "Assigned source",
+      }],
       notices: [],
+      sourcesInspected: [{
+        name: "Worksheet packet",
+        type: "pdf",
+        url: "https://canvas.test/files/7",
+        relevance: "Contains the assignment directions",
+      }],
+    },
+  };
+}
+
+function problemRun(): AgentRun {
+  return {
+    ...directionsRun(),
+    id: "problem-run",
+    feature: "problemExtraction",
+    output: {
+      assignmentTitle: "Worksheet 7",
+      summary: "One exact problem found.",
+      problems: [{
+        number: "1",
+        markdown: "A particle has velocity \\(v=5\\) m/s.",
+        provenance: [{ sourceName: "Worksheet packet", sourceUrl: null, page: 2, evidence: "Problem 1" }],
+        visual: null,
+        confidence: "high",
+      }],
+      unresolved: [],
       sourcesInspected: [],
+    },
+  };
+}
+
+function answerRun(): AgentRun {
+  return {
+    ...directionsRun(),
+    id: "answer-run",
+    feature: "answerKey",
+    output: {
+      assignmentTitle: "Worksheet 7",
+      summary: "Solved from the extracted problem.",
+      answers: [{
+        problemNumber: "1",
+        finalAnswerMarkdown: "5 m/s",
+        solutionMarkdown: "The given constant velocity is **5 m/s**.",
+        checks: [],
+        provenance: [{ sourceName: "Extracted problem", sourceUrl: null, page: 2, evidence: "Problem 1" }],
+      }],
+      warnings: [],
     },
   };
 }

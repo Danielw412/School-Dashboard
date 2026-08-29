@@ -23,6 +23,7 @@ type ToolSession = {
   settings: AppSettings;
   expiresAt: number;
   allowMutation: boolean;
+  runId: string | null;
 };
 
 const objectInput = z.record(z.string(), z.unknown()).default({});
@@ -41,7 +42,7 @@ export class CanvasToolSessions {
     context: AssignmentContext,
     workspace: AssignmentWorkspace,
     settings: AppSettings,
-    options?: { allowMutation?: boolean; ttlMinutes?: number },
+    options?: { allowMutation?: boolean; ttlMinutes?: number; runId?: string },
   ): ToolSession {
     this.pruneExpired();
     const token = randomBytes(32).toString("base64url");
@@ -53,6 +54,7 @@ export class CanvasToolSessions {
       settings,
       expiresAt: Date.now() + (options?.ttlMinutes ?? 45) * 60_000,
       allowMutation: options?.allowMutation ?? false,
+      runId: options?.runId ?? null,
     };
     this.sessions.set(token, session);
     return session;
@@ -91,7 +93,7 @@ export class CanvasToolSessions {
       action: `canvas_tool.${action}`,
       status: "started",
       summary: session.task.display_title,
-      metadata: { workspace: session.workspace.id },
+      metadata: { workspace: session.workspace.id, runId: session.runId },
     });
 
     try {
@@ -194,11 +196,25 @@ export class CanvasToolSessions {
         const page = input.page === undefined ? undefined : z.number().int().positive().parse(input.page);
         return { path: relative(session.workspace.path, path), page: page ?? null, text: await this.workspaces.extractPdfText(path, page) };
       }
+      case "pdf-inspect": {
+        const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
+        return {
+          path: relative(session.workspace.path, path).replaceAll("\\", "/"),
+          ...(await this.workspaces.inspectPdf(path)),
+        };
+      }
       case "pdf-render": {
         const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
-        const page = z.number().int().positive().parse(input.page);
-        const output = await this.workspaces.renderPdfPage(path, page, session.workspace);
-        return { page, path: relative(session.workspace.path, output).replaceAll("\\", "/") };
+        const pages = parsePdfRenderPages(input);
+        const renders = (await this.workspaces.renderPdfPages(path, pages, session.workspace)).map(
+          (render) => ({
+            page: render.page,
+            path: relative(session.workspace.path, render.path).replaceAll("\\", "/"),
+          }),
+        );
+        return renders.length === 1
+          ? { page: renders[0].page, path: renders[0].path, renders }
+          : { renders };
       }
       case "image-crop": {
         const path = z.string().min(1).parse(input.path);
@@ -242,7 +258,7 @@ export class CanvasToolSessions {
         action: `canvas_tool.${action}`,
         status: "completed",
         summary: session.task.display_title,
-        metadata: { workspace: session.workspace.id },
+        metadata: { workspace: session.workspace.id, runId: session.runId },
       });
       return sanitizeForLog(result);
     } catch (error) {
@@ -253,6 +269,7 @@ export class CanvasToolSessions {
         summary: session.task.display_title,
         metadata: {
           workspace: session.workspace.id,
+          runId: session.runId,
           error: error instanceof Error ? error.message : "Canvas tool failed",
         },
       });
@@ -292,6 +309,45 @@ function requireMutation(session: ToolSession, input: Record<string, unknown>) {
   }
 }
 
+const pdfRenderSelectionSchema = z
+  .object({
+    page: z.number().int().positive().optional(),
+    pages: z.array(z.number().int().positive()).min(1).max(40).optional(),
+    range: z
+      .object({ start: z.number().int().positive(), end: z.number().int().positive() })
+      .optional(),
+  })
+  .superRefine((value, context) => {
+    const selections = [value.page !== undefined, value.pages !== undefined, value.range !== undefined]
+      .filter(Boolean).length;
+    if (selections !== 1) {
+      context.addIssue({
+        code: "custom",
+        message: "Choose exactly one of page, pages, or range.",
+      });
+    }
+    if (value.range) {
+      if (value.range.end < value.range.start) {
+        context.addIssue({ code: "custom", path: ["range", "end"], message: "Range end must be at least range start." });
+      } else if (value.range.end - value.range.start + 1 > 40) {
+        context.addIssue({ code: "custom", path: ["range"], message: "A render range may contain at most 40 pages." });
+      }
+    }
+  });
+
+export function parsePdfRenderPages(input: Record<string, unknown>): number[] {
+  const selection = pdfRenderSelectionSchema.parse(input);
+  const pages = selection.page !== undefined
+    ? [selection.page]
+    : selection.pages
+      ? selection.pages
+      : Array.from(
+          { length: selection.range!.end - selection.range!.start + 1 },
+          (_, index) => selection.range!.start + index,
+        );
+  return [...new Set(pages)];
+}
+
 export const TOOL_DOCUMENTATION = [
   "# Canvas assignment tools",
   "",
@@ -315,11 +371,14 @@ export const TOOL_DOCUMENTATION = [
   "- quiz-questions {\"quizId\":123}: authorized question data for an accessible classic quiz; Canvas may deny or omit it",
   "- file {\"fileId\":123}: file metadata",
   "- download {\"fileId\":123}: download into resources/ with cache support",
+  "- pdf-inspect {\"path\":\"resources/file.pdf\"}: page count, text-layer quality, scanned/image status, and a text-or-vision recommendation",
   "- pdf-text {\"path\":\"resources/file.pdf\",\"page\":2}: layout-aware PDF text (page is optional)",
-  "- pdf-render {\"path\":\"resources/file.pdf\",\"page\":2}: render a page to renders/",
+  "- pdf-render {\"path\":\"resources/file.pdf\",\"page\":2}: render one page to renders/",
+  "- pdf-render {\"path\":\"resources/file.pdf\",\"pages\":[2,4,7]}: render several pages in one call",
+  "- pdf-render {\"path\":\"resources/file.pdf\",\"range\":{\"start\":2,\"end\":6}}: render an inclusive page range in one call",
   "- image-crop {\"path\":\"renders/page.png\",\"rect\":{\"left\":10,\"top\":20,\"width\":600,\"height\":400}}: crop a rendered visual",
   "- submission-requirements: allowed submission types, extensions, locks, and attempts",
   "",
-  "The agent session is read-only. Upload and submit operations exist behind a separate, explicit user-confirmation capability and are not available during analysis runs. Never infer text that is missing from a source. Use downloaded files and rendered pages as provenance.",
+  "Inspect every unfamiliar PDF before extraction. Follow pdf-inspect's recommendation: prefer pdf-text for a usable text layer and vision from rendered pages for sparse/image-only documents. When multiple pages need rendering, prefer one batched pdf-render call with pages or range instead of many single-page calls. The agent session is read-only. Upload and submit operations exist behind a separate, explicit user-confirmation capability and are not available during analysis runs. Never infer text that is missing from a source. Use downloaded files and rendered pages as provenance.",
   "",
 ].join("\n");

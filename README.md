@@ -11,8 +11,8 @@ Canvas coursework, and runs structured Codex workflows.
   shown only when Google Tasks explicitly reports `needsAction`.
 - A **Get Directions** workflow where Luna inspects the assignment, submission requirements,
   module neighborhood, and relevant Canvas resources, then produces a concise structured summary.
-- Exact problem extraction with Markdown/LaTeX, page-level provenance, Poppler PDF rendering, and
-  optional image crops for diagrams or figures.
+- Exact problem extraction with Markdown/LaTeX, page-level provenance, PDF text-layer inspection,
+  batched Poppler rendering, and optional image crops for diagrams or figures.
 - Answer keys that accept only a completed problem-extraction result as their problem source.
 - Focused study guides with teacher-stated scope separated from agent-inferred topics.
 - GPT-5.6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
@@ -20,13 +20,14 @@ Canvas coursework, and runs structured Codex workflows.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.
-- Local settings, cache controls, recent runs, tool activity, Canvas requests, downloads, usage, raw
-  structured output, and redacted errors.
+- Live per-run elapsed time and safe action summaries, plus local settings, cache controls, recent
+  runs, Canvas requests, downloads, usage, raw structured output, and redacted errors. Private model
+  reasoning text is neither requested nor persisted.
 
 ## Setup
 
-Requirements: Node.js 18+, the updated Canvas Task Sync server, and Poppler (`pdftotext` and
-`pdftoppm`) for PDF workflows.
+Requirements: Node.js 18+, the updated Canvas Task Sync server, and Poppler (`pdfinfo`, `pdftotext`,
+and `pdftoppm`) for PDF workflows.
 
 ```powershell
 npm install
@@ -62,7 +63,7 @@ deterministically resolved assignment context. Supported actions include:
 context / assignment / submission-requirements / course
 search / pages / files / modules / module-items / module-neighborhood
 page / follow / announcements / discussion / quiz / quiz-questions
-file / download / pdf-text / pdf-render / image-crop
+file / download / pdf-inspect / pdf-text / pdf-render / image-crop
 upload / submit (only with a separate explicit-confirmation capability)
 ```
 
@@ -74,6 +75,10 @@ only by the confirmation dialog in the UI.
 Downloaded files use a short-term cache under `.school-dashboard/cache`, then are copied into the
 temporary assignment workspace. The workspace path lives under the operating system temporary
 directory and is pruned according to local settings.
+
+`pdf-inspect` samples an unfamiliar document once and recommends text extraction or rendered-page
+vision. `pdf-render` accepts one page, a page list, or an inclusive range; multi-page requests are
+processed concurrently with bounded parallelism and return one image path per page.
 
 ## Test Question Predictor
 

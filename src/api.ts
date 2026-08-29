@@ -1,5 +1,6 @@
 import type {
   AgentRun,
+  AgentProgress,
   AppSettings,
   AssignmentContext,
   Diagnostics,
@@ -33,6 +34,7 @@ export const schoolApi = {
   context: (logicalId: string) => api<AssignmentContext>(`/api/tasks/${encodeURIComponent(logicalId)}/context`),
   runs: () => api<AgentRun[]>("/api/agent-runs"),
   run: (id: string) => api<AgentRun>(`/api/agent-runs/${id}`),
+  runProgress: (id: string) => api<AgentProgress>(`/api/agent-runs/${id}/progress`),
   startRun: (input: {
     feature: AgentRun["feature"];
     logicalId: string;
