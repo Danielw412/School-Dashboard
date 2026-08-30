@@ -63,16 +63,25 @@ describe("agent tool payload compaction", () => {
         recoveredSourceContext: sourceContext,
         directionsEvidenceSufficient: false,
       },
-    }) as Record<string, any>;
+    });
 
-    expect(result.task.google_task).toBeUndefined();
-    expect(result.task.completion_status).toBeUndefined();
-    expect(result.assignmentContext.directionsHtml).toBeUndefined();
-    expect(result.assignmentContext.sourceContext.contextMarkdown).toBe("Friday assignment context");
-    expect(result.assignmentContext.sourceContext.resource.page_id).toBe(42);
-    expect(result.assignmentContext.sourceContext.resource.body).toBeUndefined();
-    expect(result.assignmentContext.sourceContext.resource.last_edited_by).toBeUndefined();
-    expect(result.preflight.recoveredSourceContext).toBeUndefined();
+    expect(result).toMatchObject({
+      task: { logical_id: "task-1", display_title: "Revise paragraph" },
+      assignmentContext: {
+        directionsMarkdown: "Use a strong claim.",
+        sourceContext: {
+          contextMarkdown: "Friday assignment context",
+          resource: { page_id: 42 },
+        },
+      },
+      preflight: { structuredToolsReady: true, directionsEvidenceSufficient: false },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("google_task");
+    expect(serialized).not.toContain("completion_status");
+    expect(serialized).not.toContain("directionsHtml");
+    expect(serialized).not.toContain("last_edited_by");
+    expect(serialized).not.toContain("recoveredSourceContext");
   });
 
   it("returns browser text and links without repeating every captured item", () => {
@@ -98,13 +107,17 @@ describe("agent tool payload compaction", () => {
       metadata: { extraction_method: "background_plain_text_export" },
       warnings: ["Automatic linked-resource capture uses plain text only."],
       source: "authenticated_chrome_extension",
-    }) as Record<string, any>;
+    });
 
-    expect(result.content).toBe("Use a strong claim. Integrate evidence.");
-    expect(result.links).toEqual([{ text: "rubric", url: "https://example.test/rubric" }]);
-    expect(result.items).toBeUndefined();
-    expect(result.metadata).toBeUndefined();
-    expect(result.itemsTruncated).toBeUndefined();
+    expect(result).toMatchObject({
+      content: "Use a strong claim. Integrate evidence.",
+      links: [{ text: "rubric", url: "https://example.test/rubric" }],
+      contentTruncated: false,
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('"items"');
+    expect(serialized).not.toContain('"metadata"');
+    expect(serialized).not.toContain("itemsTruncated");
   });
 
   it("keeps limited structured data when a browser capture has no readable text", () => {
@@ -125,8 +138,15 @@ describe("agent tool payload compaction", () => {
       links: [],
       warnings: [],
       source: "authenticated_chrome_extension",
-    }) as Record<string, any>;
+    });
 
-    expect(result.structuredItems).toEqual([{ id: "cell-block", kind: "table", order: 0, structuredData: { rows: [["A", "B"]] } }]);
+    expect(result).toMatchObject({
+      structuredItems: [{
+        id: "cell-block",
+        kind: "table",
+        order: 0,
+        structuredData: { rows: [["A", "B"]] },
+      }],
+    });
   });
 });
