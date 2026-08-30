@@ -62,9 +62,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-windows-startup.ps1
 ```
 
 The installer registers a hidden per-user scheduled task, starts it immediately, and creates a
-`Homework Dashboard.url` desktop shortcut. The server stays on the loopback interface and writes
-startup diagnostics to `.school-dashboard\web-startup.log`. To remove the scheduled task and
-shortcut later:
+`Homework Dashboard.url` desktop shortcut. The server runs windowlessly on the loopback interface
+and writes startup diagnostics to `.school-dashboard\web-startup.log`. To remove the scheduled
+task and shortcut later:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\remove-windows-startup.ps1

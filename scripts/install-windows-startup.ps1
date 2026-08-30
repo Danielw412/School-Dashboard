@@ -8,9 +8,11 @@ $websiteUrl = "http://127.0.0.1:8780/"
 $port = 8780
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+$wscriptPath = Join-Path $env:SystemRoot "System32\wscript.exe"
 $distIndexPath = Join-Path $projectRoot "dist\index.html"
 $tsxCliPath = Join-Path $projectRoot "node_modules\tsx\dist\cli.mjs"
 $startupModulePath = Join-Path $projectRoot "server\windows-startup.ts"
+$windowlessLauncherPath = Join-Path $projectRoot "scripts\windows-startup.vbs"
 $logDirectory = Join-Path $projectRoot ".school-dashboard"
 $logPath = Join-Path $logDirectory "web-startup.log"
 $principalUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -20,12 +22,20 @@ if ($null -eq $nodeCommand) {
 }
 
 $nodePath = $nodeCommand.Source
+if (-not (Test-Path -LiteralPath $wscriptPath -PathType Leaf)) {
+    throw "The Windows Script Host executable was not found at $wscriptPath"
+}
+
 if (-not (Test-Path -LiteralPath $tsxCliPath -PathType Leaf)) {
     throw "The local tsx runtime was not found at $tsxCliPath. Run npm install in $projectRoot."
 }
 
 if (-not (Test-Path -LiteralPath $startupModulePath -PathType Leaf)) {
     throw "The Windows startup entry point was not found at $startupModulePath"
+}
+
+if (-not (Test-Path -LiteralPath $windowlessLauncherPath -PathType Leaf)) {
+    throw "The windowless Windows startup launcher was not found at $windowlessLauncherPath"
 }
 
 if (-not (Test-Path -LiteralPath $distIndexPath -PathType Leaf)) {
@@ -99,9 +109,9 @@ else {
     $existingDashboard = $false
 }
 
-$actionArguments = '"{0}" "{1}" --log-path "{2}"' -f $tsxCliPath, $startupModulePath, $logPath
+$actionArguments = '"{0}" "{1}" "{2}" "{3}" "{4}"' -f $windowlessLauncherPath, $nodePath, $tsxCliPath, $startupModulePath, $logPath
 $action = New-ScheduledTaskAction `
-    -Execute $nodePath `
+    -Execute $wscriptPath `
     -Argument $actionArguments `
     -WorkingDirectory $projectRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser
@@ -174,7 +184,7 @@ if (-not $ready) {
 }
 
 Write-Host "Windows startup task installed: $taskName"
-Write-Host "The server runs in the background via node.exe; no browser was opened."
+Write-Host "The server runs windowlessly via wscript.exe and node.exe; no browser or terminal was opened."
 Write-Host "Desktop shortcut created: $shortcutPath"
 Write-Host "Website ready: $websiteUrl"
 Write-Host "Startup log: $logPath"
