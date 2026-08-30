@@ -52,8 +52,11 @@ describe("agent run preferences", () => {
     expect(instructions).toContain("sourceContext.contextMarkdown");
     expect(instructions).toContain("recover_canvas_context once");
     expect(instructions).toContain("read_linked_resource_with_chrome once");
+    expect(instructions).toContain("prefer those direct links over any course search");
+    expect(instructions).toContain("do not open unrelated links");
     expect(instructions).toContain("Do not repeat a failed URL");
     expect(instructions).toContain("never invoke Canvas through PowerShell");
+    expect(instructions).not.toContain("revision instructions");
     expect(instructions).not.toContain("pdf-inspect");
   });
 
