@@ -55,52 +55,98 @@ describe("Directions tool profile", () => {
     }
     expect(toolDocumentation("directions")).not.toContain("pdf-inspect {");
     expect(toolDocumentation("directions")).toContain("Question-content inspection belongs to problem extraction");
+    expect(toolDocumentation("directions")).toContain("do not search the course or visit unrelated links");
   });
 
-  it("stops from the preloaded source sentence and due date in the failed Directions case", async () => {
+  it("keeps recovery available when a contextual source has not been recovered", async () => {
     const task = makeTask();
     task.title = "Revise";
     task.display_title = "Revise";
     task.due_date = "2026-08-31T12:10:00Z";
-    task.source.anchor = "canvas:august-24-28-2:21";
+    task.source.anchor = "canvas:weekly-agenda:21";
     task.source.text = "Choose one of your two paragraphs to revise for Monday.";
     const context = makeContext();
-    expect(directionsEvidenceSufficient(task, context)).toBe(true);
+    expect(directionsEvidenceSufficient(task, context)).toBe(false);
 
     const sessions = makeSessions();
     const session = sessions.create(task, context, makeWorkspace(), defaultSettings, {
       profile: "directions",
-      preflight: { directionsEvidenceSufficient: true },
+      preflight: { directionsEvidenceSufficient: false },
     });
-    await expect(sessions.execute(session.token, "recover-context", {})).rejects.toThrow(
-      /evidence is sufficient/i,
-    );
-    expect(await mcpToolNames(sessions, session.token)).toEqual(["get_preloaded_context"]);
+    const tools = await mcpToolNames(sessions, session.token);
+    expect(tools).toContain("get_preloaded_context");
+    expect(tools).toContain("recover_canvas_context");
+    expect(tools).toContain("search_canvas_course");
     sessions.revoke(session.token);
   });
 
-  it("does not stop before an explicitly referenced instruction link is read", () => {
+  it("does not stop before a directly referenced instruction link is read", () => {
     const task = makeTask();
     task.due_date = "2026-08-31T12:10:00Z";
-    task.source.text = "Revise one paragraph for Monday; follow the revision instructions.";
+    task.source.text = "Complete one paragraph for Monday.";
     const context = makeContext();
-    context.links = [{
-      text: "Revision instructions",
-      url: "https://docs.google.com/document/d/revision-guide/edit",
-      sameCanvasOrigin: false,
-    }];
+    const url = "https://docs.google.com/document/d/assignment-instructions/edit";
+    context.sourceContext = {
+      kind: "page",
+      title: "Weekly agenda",
+      url: "https://canvas.test/courses/9/pages/week",
+      matchedBy: "source_anchor",
+      contextMarkdown: "Complete one paragraph for Monday. Here are the assignment details.",
+      cells: ["Complete one paragraph", "Monday"],
+      links: [{ text: "Instructions", url, sameCanvasOrigin: false }],
+      resource: {},
+    };
     expect(directionsEvidenceSufficient(task, context)).toBe(false);
   });
 
+  it("exposes only the direct instruction readers when an instruction link is already known", async () => {
+    const instructionUrl = "https://docs.google.com/document/d/assignment-instructions/edit";
+    const unrelatedUrl = "https://docs.google.com/presentation/d/lecture-slides/edit";
+    const context = makeContext();
+    context.sourceContext = {
+      kind: "page",
+      title: "Weekly agenda",
+      url: "https://canvas.test/courses/9/pages/week",
+      matchedBy: "source_anchor",
+      contextMarkdown: "Complete the assignment by Monday.",
+      cells: ["Complete the assignment", "Monday"],
+      links: [
+        { text: "Instructions", url: instructionUrl, sameCanvasOrigin: false },
+        { text: "Lecture slides", url: unrelatedUrl, sameCanvasOrigin: false },
+      ],
+      resource: {},
+    };
+    const readBrowserResource = vi.fn();
+    const sessions = makeSessions({ searchCourse: vi.fn() } as unknown as CanvasClient, {
+      readBrowserResource,
+    } as unknown as TaskSyncClient);
+    const session = sessions.create(makeTask(), context, makeWorkspace(), defaultSettings, {
+      profile: "directions",
+      preflight: { directionsEvidenceSufficient: false },
+    });
+
+    expect(await mcpToolNames(sessions, session.token)).toEqual([
+      "get_preloaded_context",
+      "read_linked_resource_with_chrome",
+      "follow_canvas_link",
+    ]);
+    await expect(sessions.execute(session.token, "search", { query: "assignment instructions" }))
+      .rejects.toThrow(/directly referenced instruction resource/i);
+    await expect(sessions.execute(session.token, "browser-resource", { url: unrelatedUrl }))
+      .rejects.toThrow(/read only that relevant instruction link/i);
+    expect(readBrowserResource).not.toHaveBeenCalled();
+    sessions.revoke(session.token);
+  });
+
   it("uses the authenticated extension once for a known link and caches failures", async () => {
-    const url = "https://docs.google.com/document/d/revision-guide/edit?tab=t.0";
+    const url = "https://docs.google.com/document/d/assignment-instructions/edit?tab=t.0";
     const readBrowserResource = vi.fn(async () => {
       throw new TaskSyncRequestError("Request access to this document.", "access_denied", 409);
     });
     const taskSync = { readBrowserResource } as unknown as TaskSyncClient;
     const sessions = makeSessions({} as CanvasClient, taskSync);
     const context = makeContext();
-    context.links = [{ text: "Revision instructions", url, sameCanvasOrigin: false }];
+    context.links = [{ text: "Instructions", url, sameCanvasOrigin: false }];
     const session = sessions.create(makeTask(), context, makeWorkspace(), defaultSettings);
 
     const first = await sessions.execute(session.token, "browser-resource", { url });
@@ -116,15 +162,15 @@ describe("Directions tool profile", () => {
   });
 
   it("reuses one successful authenticated extension read within the run", async () => {
-    const url = "https://course.example.edu/resources/revision-guide?week=3";
+    const url = "https://course.example.edu/resources/assignment-guide?week=3";
     const readBrowserResource = vi.fn(async () => ({
       ok: true as const,
       source_type: "web_page",
       source_url: url,
-      resource_id: "web_revision",
-      title: "Revision guide",
+      resource_id: "web_assignment_guide",
+      title: "Assignment guide",
       captured_at: "2026-08-29T12:00:00Z",
-      content: "Revise the claim and add one quotation.",
+      content: "Use evidence and explain the reasoning.",
       content_truncated: false,
       items: [],
       items_truncated: false,
@@ -134,14 +180,14 @@ describe("Directions tool profile", () => {
     }));
     const sessions = makeSessions({} as CanvasClient, { readBrowserResource } as unknown as TaskSyncClient);
     const context = makeContext();
-    context.links = [{ text: "Revision guide", url, sameCanvasOrigin: false }];
+    context.links = [{ text: "Assignment guide", url, sameCanvasOrigin: false }];
     const session = sessions.create(makeTask(), context, makeWorkspace(), defaultSettings);
 
     const first = await sessions.execute(session.token, "browser-resource", { url });
     const repeated = await sessions.execute(session.token, "browser-resource", { url });
 
     expect(first).toEqual(repeated);
-    expect(first).toMatchObject({ ok: true, title: "Revision guide", captureStatus: "captured" });
+    expect(first).toMatchObject({ ok: true, title: "Assignment guide", captureStatus: "captured" });
     expect(readBrowserResource).toHaveBeenCalledTimes(1);
   });
 
@@ -165,11 +211,11 @@ describe("Directions tool profile", () => {
       profile: "directions",
     });
 
-    await expect(sessions.execute(session.token, "search", { query: "  Revision   Instructions " }))
+    await expect(sessions.execute(session.token, "search", { query: "  Assignment   Instructions " }))
       .rejects.toThrow(/unavailable/);
-    await expect(sessions.execute(session.token, "search", { query: "revision instructions" }))
+    await expect(sessions.execute(session.token, "search", { query: "assignment instructions" }))
       .rejects.toThrow(/already failed/);
-    await expect(sessions.execute(session.token, "search", { query: "revision guide" }))
+    await expect(sessions.execute(session.token, "search", { query: "assignment requirements" }))
       .rejects.toThrow(/at most one focused/i);
     expect(searchCourse).toHaveBeenCalledTimes(1);
   });
@@ -183,14 +229,14 @@ describe("Directions tool profile", () => {
 
     await expect(sessions.execute(session.token, "batch", {
       operations: [
-        { action: "search", input: { query: "revision instructions" } },
-        { action: "search", input: { query: "revision guide" } },
+        { action: "search", input: { query: "assignment instructions" } },
+        { action: "search", input: { query: "assignment requirements" } },
       ],
     })).rejects.toThrow(/at most one focused/i);
     expect(searchCourse).not.toHaveBeenCalled();
   });
 
-  it("recovers unresolved Canvas context through a cached structured operation", async () => {
+  it("recovers unresolved Canvas context once and stops when the recovered row is sufficient", async () => {
     const recoverTaskSourceContext = vi.fn(async () => ({
       kind: "page",
       title: "Weekly agenda",
@@ -271,20 +317,68 @@ describe("Directions tool profile", () => {
       await client.connect(transport);
       const tools = await client.listTools();
       const preloaded = await client.callTool({ name: "get_preloaded_context", arguments: {} });
-      const first = await client.callTool({ name: "recover_canvas_context", arguments: {} });
-      const repeated = await client.callTool({ name: "recover_canvas_context", arguments: {} });
+      const recovered = await client.callTool({ name: "recover_canvas_context", arguments: {} });
 
       expect(tools.tools.map((tool) => tool.name)).toContain("get_preloaded_context");
-      expect(first.structuredContent).toEqual(repeated.structuredContent);
       expect(JSON.stringify(preloaded.structuredContent)).toContain("moduleNeighborhood");
       expect(JSON.stringify(preloaded.structuredContent)).toContain("Revise one paragraph");
       expect(recoverTaskSourceContext).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(first.structuredContent)).toContain("printed draft");
+      expect(JSON.stringify(recovered.structuredContent)).toContain("printed draft");
+      await expect(sessions.execute(session.token, "search", { query: "revise paragraph" }))
+        .rejects.toThrow(/evidence is sufficient/i);
+      expect(recoverTaskSourceContext).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();
       sessions.revoke(session.token);
       await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     }
+  });
+
+  it("switches from recovery directly to a discovered instruction link instead of searching", async () => {
+    const instructionUrl = "https://docs.google.com/document/d/assignment-instructions/edit";
+    const recoverTaskSourceContext = vi.fn(async () => ({
+      kind: "page",
+      title: "Weekly agenda",
+      url: "https://canvas.test/courses/9/pages/week",
+      matchedBy: "source_anchor",
+      contextMarkdown: "Complete the assignment by Monday. Instructions are linked.",
+      cells: ["Complete the assignment", "Monday"],
+      links: [{ text: "Instructions", url: instructionUrl, sameCanvasOrigin: false }],
+      resource: {},
+    }));
+    const searchCourse = vi.fn();
+    const readBrowserResource = vi.fn(async () => ({
+      ok: true as const,
+      source_type: "google_docs",
+      source_url: instructionUrl,
+      resource_id: "assignment-instructions",
+      title: "Instructions",
+      captured_at: "2026-08-29T12:00:00Z",
+      content: "Use one quotation and explain its significance.",
+      content_truncated: false,
+      items: [],
+      items_truncated: false,
+      metadata: {},
+      warnings: [],
+      capture_status: "captured" as const,
+    }));
+    const sessions = makeSessions(
+      { recoverTaskSourceContext, searchCourse } as unknown as CanvasClient,
+      { readBrowserResource } as unknown as TaskSyncClient,
+    );
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings, {
+      profile: "directions",
+      preflight: { directionsEvidenceSufficient: false },
+    });
+
+    await sessions.execute(session.token, "recover-context", {});
+    await expect(sessions.execute(session.token, "search", { query: "assignment instructions" }))
+      .rejects.toThrow(/directly referenced instruction resource/i);
+    const resource = await sessions.execute(session.token, "browser-resource", { url: instructionUrl });
+
+    expect(resource).toMatchObject({ ok: true, title: "Instructions" });
+    expect(searchCourse).not.toHaveBeenCalled();
+    expect(readBrowserResource).toHaveBeenCalledTimes(1);
   });
 });
 
