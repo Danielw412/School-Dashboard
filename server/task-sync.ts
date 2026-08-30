@@ -112,7 +112,27 @@ export class TaskSyncClient {
   }
 
   async readBrowserResource(url: string, timeoutSeconds = 75): Promise<BrowserResource> {
-    const csrfToken = await this.csrfToken();
+    let csrfToken = await this.csrfToken();
+    try {
+      return await this.readBrowserResourceWithToken(url, timeoutSeconds, csrfToken);
+    } catch (error) {
+      if (!(error instanceof TaskSyncRequestError)
+        || error.status !== 403
+        || error.code !== "csrf_failed") {
+        throw error;
+      }
+
+      this.csrfTokenPromise = null;
+      csrfToken = await this.csrfToken();
+      return this.readBrowserResourceWithToken(url, timeoutSeconds, csrfToken);
+    }
+  }
+
+  private async readBrowserResourceWithToken(
+    url: string,
+    timeoutSeconds: number,
+    csrfToken: string,
+  ): Promise<BrowserResource> {
     return browserResourceSchema.parse(await this.request(
       "/agent/browser-resources/read",
       {
