@@ -9,10 +9,11 @@ import { ActivityStore } from "./activity.js";
 import { buildAgentProgress } from "./agent-progress.js";
 import { AgentRunner, AgentRunStore } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
+import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { APP_ROOT, env, TEMP_WORKSPACE_ROOT } from "./env.js";
 import { SettingsStore } from "./settings.js";
 import { TaskSyncClient } from "./task-sync.js";
-import { CanvasToolSessions, ToolAuthorizationError } from "./tool-sessions.js";
+import { ToolAuthorizationError } from "./tool-sessions.js";
 import { safeChild, WorkspaceManager } from "./workspace.js";
 
 const app = express();
@@ -31,7 +32,7 @@ const canvas = new CanvasClient(settings.connections.canvasBaseUrl || env.canvas
 const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
 await runs.failInterrupted();
-const toolSessions = new CanvasToolSessions(canvas, workspaces, activity, taskSync);
+const toolSessions = new CompactingCanvasToolSessions(canvas, workspaces, activity, taskSync);
 const agentRunner = new AgentRunner(
   settingsStore,
   taskSync,
