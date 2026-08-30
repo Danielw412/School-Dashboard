@@ -193,8 +193,9 @@ function compactResourceIdentity(value: unknown): unknown {
 function compactPreflight(value: unknown): unknown {
   const preflight = asRecord(value);
   if (!preflight) return value;
-  const { recoveredSourceContext: _duplicateSourceContext, ...rest } = preflight;
-  return rest;
+  const compact = { ...preflight };
+  delete compact.recoveredSourceContext;
+  return compact;
 }
 
 function compactBrowserResource(value: unknown): unknown {
@@ -202,7 +203,7 @@ function compactBrowserResource(value: unknown): unknown {
   if (!resource || resource.ok !== true) return value;
   const rawContent = typeof resource.content === "string" ? resource.content : "";
   const content = rawContent.slice(0, MAX_BROWSER_CONTENT_CHARS);
-  const compact = compactDefined({
+  const compact: Record<string, unknown> = compactDefined({
     ok: true,
     sourceType: resource.sourceType,
     url: resource.url,
