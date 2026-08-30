@@ -194,6 +194,16 @@ export class CanvasToolSessions {
       case "recover-context": {
         const sourceContext = await sessionCached(session, "recover-context", () =>
           this.canvas.recoverTaskSourceContext(session.task, courseId ?? undefined));
+        if (sourceContext) {
+          session.context = { ...session.context, sourceContext };
+          session.preflight.recoveredSourceContext = sourceContext;
+          if (session.profile === "directions") {
+            session.preflight.directionsEvidenceSufficient = directionsEvidenceSufficient(
+              session.task,
+              session.context,
+            );
+          }
+        }
         return {
           taskIdentifiers: taskRecoveryIdentifiers(session.task),
           assignment: session.context.assignment,
@@ -205,6 +215,7 @@ export class CanvasToolSessions {
       case "browser-resource": {
         const url = z.string().url().parse(input.url);
         requireKnownResourceUrl(session, url);
+        requireDirectionsInstructionUrl(session, url);
         return sessionCached(session, `browser-resource:${normalizeResourceUrl(url)}`, async () => {
           if (!this.taskSync) {
             return browserResourceFailure(url, new Error("Canvas Task Sync browser-resource support is unavailable."));
@@ -263,6 +274,7 @@ export class CanvasToolSessions {
       case "follow": {
         requireCourse(courseId);
         const url = z.string().url().parse(input.url);
+        requireDirectionsInstructionUrl(session, url);
         requireCourseScopedUrl(url, courseId);
         return sessionCached(session, `follow:${url}`, () => this.canvas.followLinkedResource(url));
       }
@@ -515,7 +527,7 @@ export class CanvasToolSessions {
     );
     register(
       "follow_canvas_link",
-      "Read one directly relevant same-course Canvas URL, including assignment pages, agenda pages, files, module items, discussions, quizzes, or linked revision instructions.",
+      "Read one directly relevant same-course Canvas URL, including assignment pages, agenda pages, files, module items, discussions, quizzes, or linked assignment instructions.",
       "follow",
       z.object({ url: z.string().url() }),
     );
@@ -767,10 +779,30 @@ function directTaskLinks(task: TrackedTask, context: AssignmentContext): string[
   ].filter((value): value is string => Boolean(value)))];
 }
 
+const directionsInstructionLinkPattern =
+  /\b(?:instructions?|directions?|guidelines?|rubric|requirements?|checklist|criteria)\b/iu;
+
+function directionsInstructionLinks(context: AssignmentContext) {
+  const links = new Map<string, (typeof context.links)[number]>();
+  for (const link of [...context.links, ...(context.sourceContext?.links ?? [])]) {
+    if (!directionsInstructionLinkPattern.test(link.text)) continue;
+    links.set(normalizeResourceUrl(link.url), link);
+  }
+  return [...links.values()];
+}
+
+function directionsNeedsSourceRecovery(task: TrackedTask, context: AssignmentContext): boolean {
+  const contextualSource = /agenda|page|table|syllabus/iu.test(task.source.type) ||
+    Boolean(task.source.url?.match(/\/pages\//iu)) ||
+    Boolean(task.source.anchor && task.source.anchor !== task.source.key);
+  return contextualSource && context.resolution.method === "not_found" && !context.sourceContext;
+}
+
 export function directionsEvidenceSufficient(
   task: TrackedTask,
   context: AssignmentContext,
 ): boolean {
+  if (directionsNeedsSourceRecovery(task, context)) return false;
   const evidence = [
     task.source.text,
     task.details,
@@ -783,14 +815,11 @@ export function directionsEvidenceSufficient(
     task.due_date || context.assignment?.due_at ||
     /\b(?:due|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b|\b\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)?/iu.test(evidence),
   );
-  const relevantInstructionLinks = [
-    ...context.links,
-    ...(context.sourceContext?.links ?? []),
-  ].filter((link) => /\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/iu.test(link.text));
+  const relevantInstructionLinks = directionsInstructionLinks(context);
   const explicitlyNeedsLinkedInstructions =
-    /\b(?:follow|see|use|read|review)\b.{0,50}\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/isu.test(evidence) ||
-    (relevantInstructionLinks.length > 0 &&
-      /\b(?:linked|below|attached)\b.{0,30}\b(?:instructions?|directions?|guidelines?|rubric|requirements?)\b/isu.test(evidence));
+    relevantInstructionLinks.length > 0 ||
+    /\b(?:follow|see|use|read|review)\b.{0,50}\b(?:instructions?|directions?|guidelines?|rubric|requirements?|checklist|criteria)\b/isu.test(evidence) ||
+    /\b(?:linked|below|attached|here (?:are|is))\b.{0,30}\b(?:instructions?|directions?|guidelines?|rubric|requirements?|checklist|criteria)\b/isu.test(evidence);
   return hasAssignedWork && hasDueEvidence && !explicitlyNeedsLinkedInstructions;
 }
 
@@ -810,6 +839,18 @@ function requireKnownResourceUrl(session: ToolSession, value: string) {
   if (!session.knownResourceUrls.has(normalized)) {
     throw new ToolAuthorizationError(
       "The Chrome extension may open only a URL already present in preloaded assignment context or returned by a prior scoped Canvas tool.",
+    );
+  }
+}
+
+function requireDirectionsInstructionUrl(session: ToolSession, value: string) {
+  if (session.profile !== "directions") return;
+  const instructionLinks = directionsInstructionLinks(session.context);
+  if (instructionLinks.length === 0) return;
+  const normalized = normalizeResourceUrl(value);
+  if (!instructionLinks.some((link) => normalizeResourceUrl(link.url) === normalized)) {
+    throw new ToolAuthorizationError(
+      "Directions already has a directly referenced instruction resource. Read only that relevant instruction link instead of opening unrelated resources.",
     );
   }
 }
@@ -921,7 +962,7 @@ function normalizeOperationValue(value: unknown): unknown {
 function mcpServerInstructions(profile: ToolSession["profile"]): string {
   const common = "Call get_preloaded_context first. If it answers the request, stop without another tool. Otherwise use direct Canvas URLs and known IDs first, then recovered source context, then at most one focused search. Use the Chrome extension only for one already-known linked resource that the Canvas API cannot read; never use it for discovery, and never retry a failed URL. Index each PDF once. Prefer cached text, then contact-sheet/rendered vision, then OCR only for unusable text. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
   return profile === "directions"
-    ? `${common} Directions may recover and follow only directly relevant Canvas context; file/PDF content inspection is intentionally unavailable.`
+    ? `${common} If Directions context directly references instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only the relevant linked resource before finalizing and do not search or inspect unrelated resources. Directions may otherwise recover and follow only directly relevant Canvas context; file/PDF content inspection is intentionally unavailable.`
     : `${common} For problem extraction, use automatic problem detection before manual page inspection and semantic crops before full-page visuals.`;
 }
 
@@ -1004,23 +1045,29 @@ const directionsBlockedActions = new Set([
   "image-crop",
 ]);
 
+const directInstructionActions = new Set(["preloaded-context", "browser-resource", "follow"]);
+
 function requireProfileAction(session: ToolSession, action: string) {
   if (!sessionActionAllowed(session, action)) {
+    const hasDirectInstructionLink = directionsInstructionLinks(session.context).length > 0;
     throw new ToolAuthorizationError(
       session.profile === "directions" && session.preflight.directionsEvidenceSufficient === true
         ? `The preloaded Directions evidence is sufficient, so ${action} is intentionally unavailable. Produce the answer now without more retrieval.`
-        : `The ${action} action is unavailable in Directions. Use the authoritative preloaded context and leave file/PDF inspection to problem extraction.`,
+        : session.profile === "directions" && hasDirectInstructionLink
+          ? `Directions already has a directly referenced instruction resource, so ${action} is unavailable. Read that link directly and then stop.`
+          : `The ${action} action is unavailable in Directions. Use the authoritative preloaded context and leave file/PDF inspection to problem extraction.`,
     );
   }
 }
 
 function sessionActionAllowed(session: ToolSession, action: string) {
   if (!toolActionAllowed(session.profile, action)) return false;
-  return !(
-    session.profile === "directions" &&
-    session.preflight.directionsEvidenceSufficient === true &&
-    action !== "preloaded-context"
-  );
+  if (session.profile !== "directions") return true;
+  if (session.preflight.directionsEvidenceSufficient === true) return action === "preloaded-context";
+  if (directionsInstructionLinks(session.context).length > 0) {
+    return directInstructionActions.has(action);
+  }
+  return true;
 }
 
 export function toolActionAllowed(profile: "standard" | "directions", action: string) {
@@ -1052,8 +1099,8 @@ const STANDARD_TOOL_DOCUMENTATION = [
   "",
   "On Windows, run tools with named PowerShell parameters; never pass JSON through the command line:",
   "",
-  "- & .\\canvas-tool.ps1 -Action search -Query 'revision instructions'",
-  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/revision'",
+  "- & .\\canvas-tool.ps1 -Action search -Query 'assignment instructions'",
+  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/instructions'",
   "- For complex batched input, write JSON to a file and use -InputFile input.json.",
   "",
   "- context or assignment: selected assignment, directions, links, and submission requirements",
@@ -1092,8 +1139,8 @@ const DIRECTIONS_TOOL_DOCUMENTATION = [
   "Only when a specific assignment instruction remains missing or ambiguous, run one targeted lookup with named PowerShell parameters; never pass JSON through the command line:",
   "",
   "- & .\\canvas-tool.ps1 -Action page -Slug 'page-slug'",
-  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/revision'",
-  "- & .\\canvas-tool.ps1 -Action search -Query 'specific phrase'",
+  "- & .\\canvas-tool.ps1 -Action follow -Url 'https://canvas.example.edu/courses/42/pages/instructions'",
+  "- & .\\canvas-tool.ps1 -Action search -Query 'specific assignment phrase'",
   "",
   "- page {\"slug\":\"page-slug\"}: read one specifically relevant Canvas page",
   "- follow {\"url\":\"https://...\"}: classify/read one specifically relevant linked Canvas resource",
@@ -1102,7 +1149,7 @@ const DIRECTIONS_TOOL_DOCUMENTATION = [
   "- modules or module-items {\"moduleId\":123}: inspect module structure only when preflight does not resolve a necessary ambiguity",
   "- course, announcements, discussion, or quiz: use only when the assignment explicitly points there for a missing instruction",
   "",
-  "File listing, file metadata, downloads, PDF inspection/text/rendering, image cropping, and duplicate assignment/context/submission/preflight requests are disabled for Directions. Question-content inspection belongs to problem extraction. Stop as soon as assigned work, submission method, and due information are sufficiently verified.",
+  "If the relevant context directly links instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only that direct resource and do not search the course or visit unrelated links. File listing, file metadata, downloads, PDF inspection/text/rendering, image cropping, and duplicate assignment/context/submission/preflight requests are disabled for Directions. Question-content inspection belongs to problem extraction. Stop as soon as assigned work, submission method, due information, and directly referenced instruction resources are sufficiently verified.",
   "",
 ].join("\n");
 
