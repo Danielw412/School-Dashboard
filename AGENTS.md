@@ -17,7 +17,7 @@ Agent features are `directions`, `problemExtraction`, `answerKey`, and `studyGui
 - `src/api.ts` — frontend API boundary. `src/types.ts` mirrors data returned by the server.
 - `src/components/` — shared shell/status/Markdown UI. `src/styles.css` contains most styling.
 - `server/index.ts` — application composition and HTTP routes. Start here for request flow.
-- `server/task-sync.ts` — typed client for Canvas Task Sync. Do not duplicate Task Sync's task-discovery/reconciliation logic here.
+- `server/task-sync.ts` — typed client for Canvas Task Sync's canonical `/api/v1/tasks` and browser-resource APIs. Do not duplicate Task Sync's discovery/reconciliation/completion logic or Chrome capture broker here; `completed=false` intentionally includes only tasks whose live Google status is `needsAction`.
 - `server/canvas-client.ts` — Canvas API access, assignment resolution, course search, source-context recovery, HTML normalization, downloads/submissions.
 - `server/agent-runner.ts` — Luna/Codex run lifecycle, feature schemas/prompts, model settings, workspace setup, structured-output validation.
 - `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to Luna. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
@@ -35,11 +35,12 @@ Tests are generally colocated with the implementation as `*.test.ts` / `*.test.t
 - Keep Canvas credentials in `.env`; never expose them to the browser, Luna workspace, persisted logs, or output.
 - Luna runs are intentionally **read-only**, sandboxed to one temporary assignment workspace, and given only the short-lived `school_dashboard` MCP capability. Do not bypass this with shell, direct Canvas HTTP, browser tools, or extra MCP servers.
 - `CanvasToolSessions` is the policy layer; `CanvasClient` performs Canvas operations; `WorkspaceManager` performs local document/image work. Add behavior at the correct layer rather than duplicating it elsewhere.
+- Canvas Task Sync owns tracked-task identity/completion and the in-memory Chrome capture queue. Dashboard may request one already-known linked resource through Task Sync, but must not turn that bridge into browsing/discovery or persist captured browser content.
 - Reuse preloaded context, direct identifiers/URLs, caches, and batched operations before adding broader searches or repeated retrieval.
 - Keep PDF processing centralized in `WorkspaceManager`. The intended order is roughly: index -> cached text/contact sheet/problem detection -> targeted render/OCR -> semantic crop.
 - Submissions are user-confirmed HTTP actions in `server/index.ts`; agent runs should not gain mutation access.
 - Persistent runtime data lives in `.school-dashboard/`; temporary run workspaces live under the OS temp directory. Neither is source code.
-- When changing API shapes, update server validation/types and the corresponding frontend types/consumers together.
+- When changing API shapes, update server validation/types and the corresponding frontend types/consumers together. If the Canvas Task Sync `/api/v1/tasks` or browser-resource contract changes, update both repositories.
 
 ## Run and verify
 
