@@ -83,7 +83,8 @@ export const problemExtractionSchema = z.object({
       provenance: z.array(provenanceSchema).min(1),
       visual: z
         .object({ path: z.string(), page: z.number().int().positive(), caption: z.string() })
-        .nullable(),
+        .nullable()
+        .describe("Null unless the question requires a supplied figure, diagram, graph, table, map, image, or other non-text visual to be understood or solved."),
       confidence: z.enum(["high", "medium", "low"]),
     }),
   ),
@@ -328,13 +329,34 @@ export class AgentRunner {
         summary: run.taskTitle,
         metadata: { runId: run.id, model: run.model, reasoningEffort: run.reasoningEffort },
       });
+      await this.activity.record({
+        category: "agent",
+        action: "workspace.prepare",
+        status: "started",
+        summary: run.taskTitle,
+        metadata: { runId: run.id },
+      });
       const workspace = await this.workspaces.create(task.logical_id);
+      await this.activity.record({
+        category: "agent",
+        action: "workspace.prepare",
+        status: "completed",
+        summary: run.taskTitle,
+        metadata: { runId: run.id, workspace: workspace.id },
+      });
       let predictor: PredictorResult | null = null;
       let toolSession: ReturnType<CanvasToolSessions["create"]> | null = null;
       if (run.feature === "answerKey") {
         const answerSource = await this.prepareAnswerSource(input, task.logical_id, workspace);
         await this.workspaces.writeJson(workspace, "extracted-problems.json", answerSource);
       } else {
+        await this.activity.record({
+          category: "agent",
+          action: "source-context",
+          status: "started",
+          summary: run.taskTitle,
+          metadata: { runId: run.id, workspace: workspace.id },
+        });
         const context = await this.canvas.assignmentContext(task);
         await this.workspaces.writeJson(workspace, "task.json", task);
         await this.workspaces.writeJson(workspace, "assignment-context.json", context);
@@ -374,6 +396,20 @@ export class AgentRunner {
         });
         toolToken = toolSession.token;
         await this.workspaces.writeJson(workspace, "canvas-tool-preflight.json", preflight);
+        await this.activity.record({
+          category: "agent",
+          action: "source-context",
+          status: "completed",
+          summary: run.taskTitle,
+          metadata: { runId: run.id, workspace: workspace.id },
+        });
+        await this.activity.record({
+          category: "agent",
+          action: "mcp.connect",
+          status: "completed",
+          summary: run.taskTitle,
+          metadata: { runId: run.id, workspace: workspace.id, tool: "school_dashboard" },
+        });
       }
       const instructions = buildInstructions(run.feature, run.prompt, predictor);
       const configuredMcpServers = await configuredMcpServerNames();
@@ -410,6 +446,13 @@ export class AgentRunner {
         approvalPolicy: "never",
         threadSource: "school-dashboard",
       });
+      await this.activity.record({
+        category: "agent",
+        action: "codex.start",
+        status: "completed",
+        summary: run.taskTitle,
+        metadata: { runId: run.id, workspace: workspace.id, model: run.model },
+      });
       await this.runs.update(run.id, { workspaceId: workspace.id });
       const { events } = await thread.runStreamed(instructions, {
         outputSchema: schemaForFeature(run.feature),
@@ -427,6 +470,17 @@ export class AgentRunner {
         if (event.type === "item.completed" && event.item.type === "agent_message") {
           rawStructuredOutput = event.item.text;
         }
+        if (event.type === "item.started") {
+          await this.activity.record({
+            category: "agent",
+            action: event.item.type,
+            status: "started",
+            summary: event.item.type === "reasoning"
+              ? "Reasoning about inspected evidence"
+              : `${event.item.type.replaceAll("_", " ")} in progress`,
+            metadata: { runId: run.id },
+          });
+        }
         if (event.type === "item.completed") {
           await this.activity.record({
             category: "agent",
@@ -439,7 +493,10 @@ export class AgentRunner {
       }
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
       const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
-      const safeOutput = sanitizeForLog(parsedOutput);
+      const policyCheckedOutput = run.feature === "problemExtraction"
+        ? enforceProblemVisualPolicy(problemExtractionSchema.parse(parsedOutput))
+        : parsedOutput;
+      const safeOutput = sanitizeForLog(policyCheckedOutput);
       const safeRawStructuredOutput = JSON.stringify(safeOutput);
       await this.runs.update(run.id, {
         status: "completed",
@@ -526,12 +583,12 @@ export function buildInstructions(
 ): string {
   const workspaceRules = `You are operating inside one temporary assignment workspace. Do not inspect skills, plugins, MCP servers, browser tools, repositories, environment variables, or files outside this workspace. Return only the requested structured JSON.`;
   const canvasRules = `Call get_preloaded_context exactly once first. Treat its task, assignment context, sourceContext, and preflight data as authoritative. If they answer the request, stop immediately without another retrieval. Use only structured school_dashboard tools for missing information; shell access is disabled, and you must never invoke Canvas through PowerShell, shell commands, JavaScript helpers, direct HTTP, or handwritten JSON. Prefer direct URLs and known assignment/file/page/module identifiers, then source-anchor/source-text recovery, and only then one focused course search. Use the authenticated Chrome-extension tool only for an already-known linked resource that Canvas cannot read, never for discovery. Do not repeat a failed URL or retry a failed operation with near-identical wording. External links may be reported but must not be claimed as read unless a structured tool returned readable content.`;
-  const pdfRules = `For every unfamiliar PDF, call index_pdf once with any requested problem numbers. Use its per-page recommendation and the cheapest reliable representation: cached text first; a low-resolution contact sheet when page navigation is unclear; automatic problem detection before manual inspection; batched full-resolution rendering only for necessary visual pages; OCR only where the text layer is missing or unusable. Use semantic_crop_pdf for complete problem/diagram/table regions and crop_image_regions only for known coordinates. Reuse cached outputs, batch independent operations, and stop when exact requested content is sufficiently verified.`;
+  const pdfRules = `For every unfamiliar PDF, call index_pdf once with any requested problem numbers. Use cached text and detected problem sections first. Create a low-resolution contact sheet only when the index cannot narrow candidate pages; a contact sheet created inside batch_canvas_operations is already displayed, so never call it again. For every scanned document over four pages, pass only contact-sheet-selected candidate pages into detect_pdf_problems. Do not call ocr_pdf_pages for pages already processed by detection. Never OCR broad page ranges: OCR only unresolved likely pages whose text layer is missing or unusable. Render one targeted page only when needed to verify unclear text/OCR. If detection returned every requested section and a required semantic crop completed, do not render that page merely to verify the same evidence again. Crop and return an image only when a required non-text visual must appear in the final problem. Reuse cached outputs, batch independent operations, and stop when exact requested content is sufficiently verified.`;
   if (feature === "directions") {
     return `${workspaceRules}\n${canvasRules}\n\nFeature prompt:\n${customPrompt}\n\nMandatory Directions scope: determine only the assigned work, relevant instructions, submission requirements, and due date. If preflight.directionsEvidenceSufficient is true, answer immediately from the preloaded data; every other retrieval tool is intentionally unavailable. For agenda/table tasks, treat sourceContext.contextMarkdown and sourceContext.cells as the relevant surrounding row, not merely the classified homework sentence: preserve exact due times, submission method, required materials, related links, and nearby instructions. If resolution is missing or incomplete, call recover_canvas_context once; it uses the task title, source sentence, source anchor, source/page metadata, and direct URLs. If the relevant context directly references instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only the minimum directly relevant linked resource(s) needed before finalizing and prefer those direct links over any course search. If a known required link is external or API-inaccessible, use read_linked_resource_with_chrome once for that URL. Do not search the course while a directly relevant instruction link is already known, do not open unrelated links, do not open or inspect PDF/file question content in Directions, and do not search broadly. Stop immediately once assigned work, submission method, due information, and explicitly referenced instructions are sufficiently verified. Everything in the response must be a brief Luna-authored paraphrase, never raw Canvas HTML: overviewMarkdown is at most two short sentences; use no more than five instructions; keep assigned-work items exact and terse; make submission.methodMarkdown one short sentence; use short deliverable phrases; and make dueMarkdown the concise verified date/time. Never include attempt counts, solve problems, repeat facts, or invent missing details.`;
   }
   if (feature === "problemExtraction") {
-    return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources, page renders, OCR pages, or crops together when possible. A visual path must be relative to this workspace and should be the smallest semantic crop that still contains the complete problem and any required diagram/table/answer area. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
+    return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources together when possible. Set visual to null by default. A visual is allowed if and only if the problem requires a supplied figure, diagram, graph, table, map, or other non-text image to understand or solve it; a source-page screenshot is not provenance and must never be attached merely because the question came from a PDF. A targeted page render may be inspected to correct unclear OCR, but it must not be attached to a text-only problem. When a visual is required, call semantic_crop_pdf once with the exact figure or diagram label whenever one exists; its completed output is the final crop and must not be cropped again. The tool skips ordinary text queries, so never send problem text merely to obtain a screenshot. Only if a genuinely required unlabeled visual returns not_found may you use known render coordinates once. Do not retry near-identical semantic queries. Do not crop or attach text-only problems. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
   }
   if (feature === "answerKey") {
     return `${workspaceRules}\nRead only extracted-problems.json and the local visual paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question in extracted-problems.json and inspect its attached visual whenever it affects the question. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
@@ -574,6 +631,28 @@ export async function configuredMcpServerNames(
   } catch {
     return [];
   }
+}
+
+export function problemRequiresVisual(markdown: string): boolean {
+  const visual = String.raw`(?:figure|fig\.?|diagram|graph|chart|table|map|illustration|photo|circuit|free[- ]body diagram)`;
+  return new RegExp(String.raw`\b(?:use|using|from|according to|refer(?:ring)? to)\s+(?:the\s+)?${visual}\b`, "iu").test(markdown) ||
+    new RegExp(String.raw`\b(?:following|provided|attached)\s+${visual}\b`, "iu").test(markdown) ||
+    new RegExp(String.raw`\b${visual}\s+(?:above|below|shown|provided|attached|depicts?|illustrates?|shows?|lists?)\b`, "iu").test(markdown) ||
+    /\b(?:figure|fig\.?)\s*[A-Z]?\d+(?:\.\d+)?\b/iu.test(markdown) ||
+    new RegExp(String.raw`\b(?:shown|depicted|pictured|illustrated)\s+(?:above|below|in|on)\s+(?:the\s+)?${visual}\b`, "iu").test(markdown) ||
+    /\b(?:as\s+)?(?:shown|depicted|pictured|illustrated)\s+(?:above|below)\b/iu.test(markdown);
+}
+
+export function enforceProblemVisualPolicy(
+  output: z.infer<typeof problemExtractionSchema>,
+): z.infer<typeof problemExtractionSchema> {
+  return {
+    ...output,
+    problems: output.problems.map((problem) => ({
+      ...problem,
+      visual: problem.visual && problemRequiresVisual(problem.markdown) ? problem.visual : null,
+    })),
+  };
 }
 
 function outputParser(feature: AgentFeature) {

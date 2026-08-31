@@ -42,6 +42,89 @@ describe("PDF render page selection", () => {
   });
 });
 
+describe("PDF tool payloads", () => {
+  it("keeps OCR layout coordinates internal instead of sending them to Luna", async () => {
+    const ocrPdfPages = vi.fn(async () => [{
+      page: 2,
+      text: "12. Calculate the dot product.",
+      confidence: 91,
+      imageWidth: 1200,
+      imageHeight: 1600,
+      regions: [{ text: "12.", left: 40, top: 60, width: 30, height: 20 }],
+    }]);
+    const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
+    const sessions = new CanvasToolSessions(
+      {} as CanvasClient,
+      { ocrPdfPages } as unknown as WorkspaceManager,
+      activity,
+    );
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings);
+
+    const result = await sessions.execute(session.token, "pdf-ocr", {
+      path: "resources/packet.pdf",
+      page: 2,
+    });
+
+    expect(result).toEqual({ pages: [{ page: 2, text: "12. Calculate the dot product.", confidence: 91 }] });
+    expect(JSON.stringify(result)).not.toContain("regions");
+    expect(JSON.stringify(result)).not.toContain("imageWidth");
+  });
+
+  it("skips a duplicate page render after problem detection and semantic crops complete", async () => {
+    const detectPdfProblems = vi.fn(async () => ({
+      matches: [{
+        problemNumber: "15",
+        page: 1,
+        text: "15. Use Figure P3.15.",
+        representation: "text" as const,
+        confidence: "high" as const,
+      }],
+      searchedPages: [1],
+      usedOcr: false,
+      unresolvedProblemNumbers: [],
+      ocrSkippedPages: [],
+    }));
+    const semanticCropPdfRegions = vi.fn(async () => [{
+      page: 1,
+      query: "Figure P3.15",
+      status: "completed" as const,
+      path: "C:\\tmp\\workspace\\renders\\figure.png",
+      rect: { left: 10, top: 20, width: 200, height: 180 },
+      basis: "figure-layout" as const,
+      error: null,
+    }]);
+    const renderPdfPages = vi.fn();
+    const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
+    const sessions = new CanvasToolSessions(
+      {} as CanvasClient,
+      { detectPdfProblems, semanticCropPdfRegions, renderPdfPages } as unknown as WorkspaceManager,
+      activity,
+    );
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings);
+
+    await sessions.execute(session.token, "pdf-detect-problems", {
+      path: "resources/serway.pdf",
+      pages: [1],
+      problemNumbers: ["15"],
+    });
+    await sessions.execute(session.token, "pdf-semantic-crop", {
+      path: "resources/serway.pdf",
+      regions: [{ page: 1, query: "Figure P3.15" }],
+    });
+    const result = await sessions.execute(session.token, "pdf-render", {
+      path: "resources/serway.pdf",
+      page: 1,
+    });
+
+    expect(renderPdfPages).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      renders: [],
+      skippedPages: [1],
+      reason: expect.stringContaining("already complete"),
+    }));
+  });
+});
+
 describe("Directions tool profile", () => {
   it("blocks duplicate preloaded fetches and all file/PDF inspection", () => {
     for (const action of ["context", "assignment", "submission-requirements", "download", "pdf-inspect", "pdf-index", "pdf-text", "pdf-render", "pdf-contact-sheet", "pdf-ocr", "pdf-detect-problems", "pdf-semantic-crop", "image-crop"]) {

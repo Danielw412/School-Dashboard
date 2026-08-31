@@ -36,6 +36,8 @@ type ToolSession = {
   preflight: Record<string, unknown>;
   cache: Map<string, Promise<unknown>>;
   failedOperations: Map<string, string>;
+  completeProblemPages: Set<string>;
+  completedVisualPages: Set<string>;
   knownResourceUrls: Set<string>;
   focusedSearchKey: string | null;
 };
@@ -87,6 +89,8 @@ export class CanvasToolSessions {
       preflight: options?.preflight ?? {},
       cache: new Map(),
       failedOperations: new Map(),
+      completeProblemPages: new Set(),
+      completedVisualPages: new Set(),
       knownResourceUrls: new Set(
         directTaskLinks(task, context).map(normalizeResourceUrl).filter(Boolean),
       ),
@@ -141,6 +145,15 @@ export class CanvasToolSessions {
     return path;
   }
 
+  health(): { connected: true; name: string; transport: string; toolCount: number } {
+    return {
+      connected: true,
+      name: "school_dashboard",
+      transport: "Streamable HTTP",
+      toolCount: 20,
+    };
+  }
+
   async execute(token: string | undefined, rawAction: unknown, rawInput: unknown): Promise<unknown> {
     if (!token) throw new ToolAuthorizationError("Missing Canvas tool capability.");
     const session = this.sessions.get(token);
@@ -167,7 +180,12 @@ export class CanvasToolSessions {
       action: `canvas_tool.${action}`,
       status: "started",
       summary: session.task.display_title,
-      metadata: { workspace: session.workspace.id, runId: session.runId },
+      metadata: {
+        workspace: session.workspace.id,
+        runId: session.runId,
+        tool: action,
+        progressLabel: describeToolAction(action, input),
+      },
     });
 
     try {
@@ -347,16 +365,28 @@ export class CanvasToolSessions {
       case "pdf-render": {
         const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
         const pages = parsePdfRenderPages(input);
+        const skippedPages = pages.filter((page) =>
+          session.completeProblemPages.has(pdfPageKey(path, page)) &&
+          session.completedVisualPages.has(pdfPageKey(path, page)));
+        const renderPages = pages.filter((page) => !skippedPages.includes(page));
+        if (renderPages.length === 0) {
+          return {
+            renders: [],
+            skippedPages,
+            reason: "Skipped duplicate rendering because requested problem text and required semantic crops are already complete for these pages.",
+          };
+        }
         const dpi = input.dpi === undefined ? 170 : z.number().int().min(36).max(300).parse(input.dpi);
-        const renders = (await this.workspaces.renderPdfPages(path, pages, session.workspace, 4, dpi)).map(
+        const renders = (await this.workspaces.renderPdfPages(path, renderPages, session.workspace, 4, dpi)).map(
           (render) => ({
             page: render.page,
             path: relative(session.workspace.path, render.path).replaceAll("\\", "/"),
           }),
         );
-        return renders.length === 1
+        const result = renders.length === 1
           ? { page: renders[0].page, path: renders[0].path, renders }
           : { renders };
+        return skippedPages.length > 0 ? { ...result, skippedPages } : result;
       }
       case "pdf-contact-sheet": {
         const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
@@ -373,7 +403,11 @@ export class CanvasToolSessions {
         const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
         const pages = parsePdfPageSelection(input, true)!;
         return {
-          pages: await this.workspaces.ocrPdfPages(path, pages, session.workspace),
+          pages: (await this.workspaces.ocrPdfPages(path, pages, session.workspace)).map((page) => ({
+            page: page.page,
+            text: page.text,
+            confidence: page.confidence,
+          })),
         };
       }
       case "pdf-detect-problems": {
@@ -382,7 +416,13 @@ export class CanvasToolSessions {
         const pages = input.pages === undefined
           ? undefined
           : z.array(z.number().int().positive()).min(1).max(80).parse(input.pages);
-        return this.workspaces.detectPdfProblems(path, problemNumbers, session.workspace, pages);
+        const result = await this.workspaces.detectPdfProblems(path, problemNumbers, session.workspace, pages);
+        if (problemNumbers.length > 0 && result.unresolvedProblemNumbers.length === 0) {
+          for (const page of new Set(result.matches.map((match) => match.page))) {
+            session.completeProblemPages.add(pdfPageKey(path, page));
+          }
+        }
+        return result;
       }
       case "image-crop": {
         if (input.crops !== undefined) {
@@ -408,10 +448,25 @@ export class CanvasToolSessions {
           padding: z.number().int().min(0).max(100).optional(),
         })).min(1).max(20).parse(input.regions);
         const crops = await this.workspaces.semanticCropPdfRegions(path, regions, session.workspace);
-        return { crops: crops.map((crop) => ({
+        const normalized = crops.map((crop) => ({
           ...crop,
-          path: relative(session.workspace.path, crop.path).replaceAll("\\", "/"),
-        })) };
+          path: crop.path
+            ? relative(session.workspace.path, crop.path).replaceAll("\\", "/")
+            : null,
+        }));
+        for (const page of new Set(normalized.map((crop) => crop.page))) {
+          const visualCrops = normalized.filter((crop) =>
+            crop.page === page && crop.status !== "skipped_text_only");
+          if (visualCrops.length > 0 && visualCrops.every((crop) => crop.status === "completed")) {
+            session.completedVisualPages.add(pdfPageKey(path, page));
+          }
+        }
+        return {
+          crops: normalized,
+          completed: normalized.filter((crop) => crop.status === "completed").length,
+          notFound: normalized.filter((crop) => crop.status === "not_found").length,
+          skippedTextOnly: normalized.filter((crop) => crop.status === "skipped_text_only").length,
+        };
       }
       case "batch": {
         const operations = batchOperationsSchema.parse(input.operations);
@@ -460,7 +515,12 @@ export class CanvasToolSessions {
         action: `canvas_tool.${action}`,
         status: "completed",
         summary: session.task.display_title,
-        metadata: { workspace: session.workspace.id, runId: session.runId },
+        metadata: {
+          workspace: session.workspace.id,
+          runId: session.runId,
+          tool: action,
+          progressLabel: describeToolAction(action, input),
+        },
       });
       const sanitized = sanitizeForLog(result);
       rememberDiscoveredResourceUrls(session, sanitized);
@@ -475,6 +535,8 @@ export class CanvasToolSessions {
         metadata: {
           workspace: session.workspace.id,
           runId: session.runId,
+          tool: action,
+          progressLabel: describeToolAction(action, input),
           error: error instanceof Error ? error.message : "Canvas tool failed",
         },
       });
@@ -575,7 +637,7 @@ export class CanvasToolSessions {
     );
     register(
       "batch_canvas_operations",
-      "Run independent read-only Canvas retrieval operations together. Each result succeeds or fails independently.",
+      "Run independent read-only Canvas and PDF operations together. Each result succeeds or fails independently, and contact sheets or renders are displayed inline without a duplicate tool call.",
       "batch",
       z.object({ operations: batchOperationsSchema }),
     );
@@ -593,13 +655,13 @@ export class CanvasToolSessions {
     );
     register(
       "ocr_pdf_pages",
-      "OCR multiple scanned or image-heavy PDF pages locally in one batch. Use only when the PDF index says text is missing or unusable.",
+      "OCR only selected scanned pages in one batch and return compact text without internal layout coordinates. Prefer detect_pdf_problems with selected pages when locating numbered questions.",
       "pdf-ocr",
       pdfPathSelectionSchema(true),
     );
     register(
       "render_pdf_pages",
-      "Render multiple selected pages together. Use after indexing and only when visual evidence is required.",
+      "Render selected pages only to inspect unresolved text or a required unlabeled visual. Do not render after detection and an exact-label semantic crop already completed.",
       "pdf-render",
       pdfPathSelectionSchema(true).extend({ dpi: z.number().int().min(36).max(300).optional() }),
     );
@@ -611,7 +673,7 @@ export class CanvasToolSessions {
     );
     register(
       "detect_pdf_problems",
-      "Automatically locate requested or visible problem numbers and extract their sections from worksheet/textbook text, with OCR fallback for scanned pages.",
+      "Locate requested problem numbers from cached PDF text. For any scanned document over four pages, first use its contact sheet and pass only the selected pages so OCR stays bounded.",
       "pdf-detect-problems",
       z.object({
         path: z.string().min(1),
@@ -621,7 +683,7 @@ export class CanvasToolSessions {
     );
     register(
       "crop_image_regions",
-      "Crop one or many already-rendered image regions together. Identical crops reuse cached output.",
+      "Fallback for a required visual with known coordinates. Do not crop text-only problems, and do not re-crop a successful semantic_crop_pdf result.",
       "image-crop",
       z.object({
         path: z.string().min(1).optional(),
@@ -631,13 +693,13 @@ export class CanvasToolSessions {
     );
     register(
       "semantic_crop_pdf",
-      "Locate and crop complete problem, diagram, table, or answer regions by page and semantic query. Uses PDF layout first and OCR layout only when needed; supports batches.",
+      "Create final, tight crops only for non-text visuals required by a problem. Use the exact figure/diagram label when available; captioned figures are automatically bounded above their label. Text-only queries are skipped without rendering or OCR, and one missed region does not abort the batch.",
       "pdf-semantic-crop",
       z.object({
         path: z.string().min(1),
         regions: z.array(z.object({
           page: z.number().int().positive(),
-          query: z.string().min(1),
+          query: z.string().min(1).describe("Exact figure/diagram label or another explicit required-visual reference; never submit ordinary problem text."),
           padding: z.number().int().min(0).max(100).optional(),
         })).min(1).max(20),
       }),
@@ -656,6 +718,59 @@ export class CanvasToolSessions {
       if (session.expiresAt <= now) this.sessions.delete(token);
     }
   }
+}
+
+export function describeToolAction(action: string, input: Record<string, unknown>): string {
+  const path = typeof input.path === "string" ? basename(input.path) : null;
+  const pages = selectedPages(input);
+  const query = typeof input.query === "string" ? input.query.trim().slice(0, 80) : null;
+  const labels: Record<string, string> = {
+    "preloaded-context": "Reading the assignment and preloaded Canvas context",
+    context: "Reading the resolved assignment context",
+    assignment: "Reading the Canvas assignment",
+    "submission-requirements": "Checking Canvas submission requirements",
+    "recover-context": "Recovering the originating Canvas page and row",
+    "browser-resource": "Reading the known linked resource through Chrome",
+    search: query ? `Searching the course for “${query}”` : "Searching the Canvas course",
+    course: "Reading course information",
+    pages: query ? `Finding Canvas pages matching “${query}”` : "Listing Canvas pages",
+    files: query ? `Finding Canvas files matching “${query}”` : "Listing Canvas files",
+    modules: "Reading the course module structure",
+    "module-items": `Reading items in module ${String(input.moduleId ?? "")}`.trim(),
+    "module-neighborhood": "Inspecting material near this assignment",
+    page: `Opening Canvas page ${String(input.slug ?? "")}`.trim(),
+    follow: "Following a directly linked Canvas resource",
+    announcements: "Checking course announcements",
+    discussion: `Reading discussion ${String(input.topicId ?? "")}`.trim(),
+    quiz: `Reading quiz ${String(input.quizId ?? "")}`.trim(),
+    "quiz-questions": `Checking available questions for quiz ${String(input.quizId ?? "")}`.trim(),
+    file: `Reading Canvas file ${String(input.fileId ?? "")}`.trim(),
+    download: `Downloading Canvas file ${String(input.fileId ?? "")}`.trim(),
+    "pdf-inspect": path ? `Inspecting ${path}` : "Inspecting PDF structure",
+    "pdf-index": path ? `Indexing ${path}${pages ? ` (${pages})` : ""}` : "Indexing PDF pages and problems",
+    "pdf-text": path ? `Reading text from ${path}${pages ? ` (${pages})` : ""}` : "Reading PDF text",
+    "pdf-render": path ? `Rendering ${path}${pages ? ` (${pages})` : ""}` : "Rendering PDF pages",
+    "pdf-contact-sheet": path ? `Building an overview of ${path}` : "Building a PDF overview",
+    "pdf-ocr": path ? `Running OCR on ${path}${pages ? ` (${pages})` : ""}` : "Reading scanned PDF pages with OCR",
+    "pdf-detect-problems": path ? `Locating assigned problems in ${path}` : "Locating assigned PDF problems",
+    "pdf-semantic-crop": path ? `Cropping complete problem regions from ${path}` : "Cropping complete problem regions",
+    "image-crop": "Cropping the required problem visuals",
+    batch: "Retrieving independent Canvas resources together",
+  };
+  return labels[action] ?? action.replaceAll("-", " ");
+}
+
+function selectedPages(input: Record<string, unknown>): string | null {
+  if (typeof input.page === "number") return `page ${input.page}`;
+  if (Array.isArray(input.pages) && input.pages.length) return `pages ${input.pages.join(", ")}`;
+  const range = input.range;
+  if (range && typeof range === "object") {
+    const record = range as Record<string, unknown>;
+    if (typeof record.start === "number" && typeof record.end === "number") {
+      return `pages ${record.start}-${record.end}`;
+    }
+  }
+  return null;
 }
 
 export class ToolAuthorizationError extends Error {}
@@ -946,6 +1061,10 @@ function operationFingerprint(action: string, input: Record<string, unknown>): s
   return `${action}:${JSON.stringify(normalizeOperationValue(input))}`;
 }
 
+function pdfPageKey(path: string, page: number): string {
+  return `${path.toLocaleLowerCase()}:${page}`;
+}
+
 function normalizeOperationValue(value: unknown): unknown {
   if (typeof value === "string") {
     return /^https?:\/\//iu.test(value) ? normalizeResourceUrl(value) : normalizeSearchQuery(value);
@@ -960,13 +1079,14 @@ function normalizeOperationValue(value: unknown): unknown {
 }
 
 function mcpServerInstructions(profile: ToolSession["profile"]): string {
-  const common = "Call get_preloaded_context first. If it answers the request, stop without another tool. Otherwise use direct Canvas URLs and known IDs first, then recovered source context, then at most one focused search. Use the Chrome extension only for one already-known linked resource that the Canvas API cannot read; never use it for discovery, and never retry a failed URL. Index each PDF once. Prefer cached text, then contact-sheet/rendered vision, then OCR only for unusable text. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
+  const common = "Call get_preloaded_context first. If it answers the request, stop without another tool. Otherwise use direct Canvas URLs and known IDs first, then recovered source context, then at most one focused search. Use the Chrome extension only for one already-known linked resource that the Canvas API cannot read; never use it for discovery, and never retry a failed URL. Index each PDF once. Prefer cached text, then one contact sheet, then OCR only on selected unusable-text pages. Images produced inside a batch are already displayed, so do not repeat their tools. Do not render a page after detection and an exact-label semantic crop have already completed. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
   return profile === "directions"
     ? `${common} If Directions context directly references instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only the relevant linked resource before finalizing and do not search or inspect unrelated resources. Directions may otherwise recover and follow only directly relevant Canvas context; file/PDF content inspection is intentionally unavailable.`
-    : `${common} For problem extraction, use automatic problem detection before manual page inspection and semantic crops before full-page visuals.`;
+    : `${common} For problem extraction, use automatic problem detection before manual page inspection. Crop only a required non-text visual, using one exact figure-label semantic crop as the final image; never crop ordinary problem text.`;
 }
 
 const imageResultActions = new Set([
+  "batch",
   "pdf-render",
   "pdf-contact-sheet",
   "image-crop",

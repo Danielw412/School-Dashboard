@@ -14,6 +14,9 @@ export type AgentProgress = {
     timestamp: string;
     status: ActivityEvent["status"];
     message: string;
+    category: ActivityEvent["category"];
+    action: string;
+    tool: string | null;
   }>;
 };
 
@@ -34,6 +37,9 @@ export function buildAgentProgress(
       timestamp: event.timestamp,
       status: event.status,
       message: progressMessage(event),
+      category: event.category,
+      action: event.action,
+      tool: typeof event.metadata?.tool === "string" ? event.metadata.tool : null,
     }));
   const end = run.completedAt ? Date.parse(run.completedAt) : now.getTime();
   const start = Date.parse(run.startedAt);
@@ -44,7 +50,9 @@ export function buildAgentProgress(
     completedAt: run.completedAt,
     serverNow: now.toISOString(),
     elapsedMs: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0,
-    current: entries[0]?.message ?? (run.status === "queued" ? "Waiting to start Luna" : "Starting Luna"),
+    current: entries.find((entry) => entry.status === "started")?.message
+      ?? entries[0]?.message
+      ?? (run.status === "queued" ? "Waiting to start" : "Starting the assignment agent"),
     entries,
   };
 }
@@ -60,7 +68,14 @@ function collapseStartedEvents(events: ActivityEvent[]): ActivityEvent[] {
 }
 
 function progressMessage(event: ActivityEvent): string {
+  const specific = typeof event.metadata?.progressLabel === "string"
+    ? event.metadata.progressLabel
+    : null;
   const labels: Record<string, string> = {
+    "workspace.prepare": "Preparing an isolated assignment workspace",
+    "source-context": "Loading the resolved assignment and nearby module material",
+    "mcp.connect": "Connecting the scoped school_dashboard tools",
+    "codex.start": "Starting the configured Codex model",
     directions: "Synthesizing concise directions",
     problemExtraction: "Extracting assigned problems",
     answerKey: "Building the answer key",
@@ -98,7 +113,7 @@ function progressMessage(event: ActivityEvent): string {
     reasoning: "Reasoning about inspected evidence",
     agent_message: "Preparing the structured result",
   };
-  let label = labels[event.action];
+  let label = specific ?? labels[event.action];
   if (!label && event.category === "cache") {
     label = event.action === "hit"
       ? `Using cached resource: ${event.summary}`

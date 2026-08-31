@@ -1,38 +1,60 @@
 import {
   ArrowUpRight,
-  BookOpenText,
   CalendarDays,
   ChevronRight,
-  Clock3,
   FileQuestion,
+  FileText,
+  Grid2X2,
   GraduationCap,
+  List,
+  ListChecks,
+  LoaderCircle,
+  RefreshCw,
   Search,
-  SlidersHorizontal,
-  Sparkles,
+  Workflow,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { schoolApi } from "../api";
+import { ProgressTimeline } from "../components/AgentProgress";
 import { EmptyState, ErrorNotice } from "../components/Status";
-import { classTone, dueBucket, formatDue, isAssessment, isPastDue, parseDueDate } from "../format";
+import { classTone, dueBucket, formatDue, isPastDue, parseDueDate } from "../format";
 import { usePolling } from "../hooks/usePolling";
-import type { AssignmentContext, TrackedTask } from "../types";
+import type {
+  ActiveWork,
+  AgentProgress,
+  AgentRun,
+  AgentWorkflow,
+  AssignmentContext,
+  TrackedTask,
+} from "../types";
 
 type GroupMode = "due" | "class";
 type FilterMode = "all" | "overdue" | "week";
+type ViewMode = "tiles" | "list";
+type WorkflowFeature = Exclude<AgentRun["feature"], "studyGuide">;
+
+type ActiveAssignment = {
+  workflow: AgentWorkflow | null;
+  run: AgentRun | null;
+  progress: AgentProgress | null;
+  current: string;
+};
 
 export function MyWork() {
-  const { data: tasks, error, loading, refresh } = usePolling(schoolApi.tasks);
+  const tasksState = usePolling(schoolApi.tasks);
+  const activeState = usePolling(schoolApi.activeWork, 2_500);
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [groupMode, setGroupMode] = useState<GroupMode>("due");
   const [filter, setFilter] = useState<FilterMode>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("tiles");
   const selectedId = searchParams.get("task");
   const unfinishedTasks = useMemo(
-    () => (tasks ?? []).filter((task) => task.completed === false),
-    [tasks],
+    () => (tasksState.data ?? []).filter((task) => task.completed === false),
+    [tasksState.data],
   );
   const selectedTask = unfinishedTasks.find((task) => task.logical_id === selectedId) ?? null;
 
@@ -68,28 +90,31 @@ export function MyWork() {
   return (
     <div className={`page-grid ${selectedTask ? "has-inspector" : ""}`}>
       <section className="page-content work-page">
-        <div className="eyebrow"><span className="live-dot" />Live from Canvas Task Sync</div>
-        <div className="page-heading-row">
-          <div>
-            <h1>My work</h1>
-            <p>Unfinished assignments, organized for the next decision.</p>
-          </div>
-          <button className="secondary-button" onClick={() => void refresh()}><Clock3 size={16} />Refresh</button>
+        <div className="page-heading-row work-heading">
+          <h1>My work</h1>
+          <button className="secondary-button compact-button" onClick={() => void tasksState.refresh()}>
+            <RefreshCw size={15} />Refresh
+          </button>
         </div>
 
         <div className="work-toolbar">
           <label className="search-field">
             <Search size={17} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assignments or classes" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search assignments" />
           </label>
-          <div className="segmented" aria-label="Group assignments">
-            <button className={groupMode === "due" ? "active" : ""} onClick={() => setGroupMode("due")}><CalendarDays size={15} />Due date</button>
-            <button className={groupMode === "class" ? "active" : ""} onClick={() => setGroupMode("class")}><GraduationCap size={15} />Class</button>
+          <div className="toolbar-controls">
+            <div className="segmented" aria-label="Group assignments">
+              <button className={groupMode === "due" ? "active" : ""} onClick={() => setGroupMode("due")}><CalendarDays size={15} />Due date</button>
+              <button className={groupMode === "class" ? "active" : ""} onClick={() => setGroupMode("class")}><GraduationCap size={15} />Class</button>
+            </div>
+            <div className="segmented view-toggle" aria-label="Assignment view">
+              <button className={viewMode === "tiles" ? "active" : ""} onClick={() => setViewMode("tiles")} aria-label="Tiles view"><Grid2X2 size={15} />Tiles</button>
+              <button className={viewMode === "list" ? "active" : ""} onClick={() => setViewMode("list")} aria-label="List view"><List size={16} />List</button>
+            </div>
           </div>
         </div>
 
-        <div className="filter-row">
-          <SlidersHorizontal size={15} />
+        <div className="filter-row" aria-label="Filter assignments">
           {(["all", "overdue", "week"] as FilterMode[]).map((item) => (
             <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>
               {item === "all" ? "All unfinished" : item === "overdue" ? "Overdue" : "Next 7 days"}
@@ -97,66 +122,127 @@ export function MyWork() {
           ))}
         </div>
 
-        {Boolean(error) && <ErrorNotice error={error} />}
-        {loading && <AssignmentSkeleton />}
-        {!loading && !error && groups.length === 0 && (
+        {tasksState.error ? <ErrorNotice error={tasksState.error} /> : null}
+        {tasksState.loading ? <AssignmentSkeleton viewMode={viewMode} /> : null}
+        {!tasksState.loading && !tasksState.error && groups.length === 0 ? (
           <EmptyState title="Nothing here" detail="No unfinished assignments match these filters." />
-        )}
+        ) : null}
         <div className="assignment-groups">
           {groups.map(([group, items]) => (
             <section className="assignment-group" key={group}>
-              <header><h2>{group}</h2><span>{items.length} {items.length === 1 ? "item" : "items"}</span></header>
-              <div className="assignment-list">
+              <header><h2>{group}</h2><span>{items.length}</span></header>
+              <div className={`assignment-collection ${viewMode}`}>
                 {items.map((task) => (
-                  <AssignmentRow key={task.logical_id} task={task} selected={task.logical_id === selectedId} onSelect={() => setSelected(task)} />
+                  <AssignmentItem
+                    key={task.logical_id}
+                    task={task}
+                    viewMode={viewMode}
+                    selected={task.logical_id === selectedId}
+                    active={activeForTask(task.logical_id, activeState.data)}
+                    onSelect={() => setSelected(task)}
+                  />
                 ))}
               </div>
             </section>
           ))}
         </div>
       </section>
-      {selectedTask && <AssignmentInspector task={selectedTask} onClose={() => setSelected(null)} />}
+      {selectedTask ? (
+        <AssignmentInspector
+          task={selectedTask}
+          active={activeForTask(selectedTask.logical_id, activeState.data)}
+          refreshActive={() => void activeState.refresh()}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function AssignmentRow({ task, selected, onSelect }: { task: TrackedTask; selected: boolean; onSelect: () => void }) {
+function AssignmentItem({
+  task,
+  viewMode,
+  selected,
+  active,
+  onSelect,
+}: {
+  task: TrackedTask;
+  viewMode: ViewMode;
+  selected: boolean;
+  active: ActiveAssignment | null;
+  onSelect: () => void;
+}) {
   const overdue = task.due_date ? isPastDue(task.due_date) : false;
   return (
-    <button className={`assignment-row ${selected ? "selected" : ""}`} onClick={onSelect}>
-      <span className={`course-mark tone-${classTone(task.course.id)}`}>{task.course.prefix.slice(0, 3).toUpperCase()}</span>
+    <button className={`assignment-item ${viewMode === "tiles" ? "assignment-tile" : "assignment-row"} ${selected ? "selected" : ""} ${active ? "is-running" : ""}`} onClick={onSelect}>
+      <span className={`course-mark tone-${classTone(task.course.id)}`}>
+        {active ? <LoaderCircle className="spin" size={18} /> : task.course.prefix.slice(0, 3).toUpperCase()}
+      </span>
       <span className="assignment-main">
         <span className="course-name">{task.course.name}</span>
         <strong>{task.display_title}</strong>
         <span className="assignment-meta">
-          {task.task_type && <span>{task.task_type.replaceAll("_", " ")}</span>}
-          {task.due_uncertain && <span className="uncertain">Due date inferred</span>}
+          {task.task_type ? <span>{task.task_type.replaceAll("_", " ")}</span> : null}
+          {task.due_uncertain ? <span className="uncertain">Due date inferred</span> : null}
         </span>
       </span>
       <span className={`due-cell ${overdue ? "overdue" : ""}`}>
-        <span>{overdue ? "Overdue" : "Due"}</span>
+        <CalendarDays size={14} />
         <strong>{formatDue(task.due_date)}</strong>
       </span>
-      {isAssessment(task) ? <Sparkles className="row-kind" size={18} /> : <BookOpenText className="row-kind" size={18} />}
+      {active ? <span className="assignment-running"><LoaderCircle className="spin" size={13} />{active.current}</span> : null}
       <ChevronRight className="row-chevron" size={18} />
     </button>
   );
 }
 
-function AssignmentInspector({ task, onClose }: { task: TrackedTask; onClose: () => void }) {
+function AssignmentInspector({
+  task,
+  active,
+  refreshActive,
+  onClose,
+}: {
+  task: TrackedTask;
+  active: ActiveAssignment | null;
+  refreshActive: () => void;
+  onClose: () => void;
+}) {
   const navigate = useNavigate();
   const [result, setResult] = useState<{ logicalId: string; context: AssignmentContext | null; error: unknown }>({ logicalId: "", context: null, error: null });
+  const [starting, setStarting] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<unknown>(null);
   useEffect(() => {
-    let active = true;
+    let current = true;
     void schoolApi.context(task.logical_id)
-      .then((context) => { if (active) setResult({ logicalId: task.logical_id, context, error: null }); })
-      .catch((error: unknown) => { if (active) setResult({ logicalId: task.logical_id, context: null, error }); });
-    return () => { active = false; };
+      .then((context) => { if (current) setResult({ logicalId: task.logical_id, context, error: null }); })
+      .catch((error: unknown) => { if (current) setResult({ logicalId: task.logical_id, context: null, error }); });
+    return () => { current = false; };
   }, [task.logical_id]);
   const context = result.logicalId === task.logical_id ? result.context : null;
-  const error = result.logicalId === task.logical_id ? result.error : null;
+  const contextError = result.logicalId === task.logical_id ? result.error : null;
   const canvasUrl = context?.assignment?.html_url ?? task.canvas.assignment_url ?? task.source.assignment_url;
   const externalUrl = context?.externalAssignment.url;
+
+  const startWorkflow = async (label: string, steps: WorkflowFeature[]) => {
+    setStarting(label);
+    setWorkflowError(null);
+    try {
+      await schoolApi.startWorkflow({ logicalId: task.logical_id, steps });
+      refreshActive();
+    } catch (error) {
+      setWorkflowError(error);
+    } finally {
+      setStarting(null);
+    }
+  };
+
+  const workflowActions: Array<{ label: string; steps: WorkflowFeature[]; icon: typeof FileText; primary?: boolean }> = [
+    { label: "Get directions", steps: ["directions"], icon: FileText },
+    { label: "Directions + problems", steps: ["directions", "problemExtraction"], icon: ListChecks },
+    { label: "Full workflow", steps: ["directions", "problemExtraction", "answerKey"], icon: Workflow, primary: true },
+    { label: "Problems + answer key", steps: ["problemExtraction", "answerKey"], icon: FileQuestion },
+  ];
+
   return (
     <aside className="assignment-inspector" aria-label="Assignment details">
       <div className="inspector-top">
@@ -166,39 +252,94 @@ function AssignmentInspector({ task, onClose }: { task: TrackedTask; onClose: ()
       <p className="inspector-course">{task.course.name}</p>
       <h2>{task.display_title}</h2>
       <div className="inspector-due"><CalendarDays size={16} /><span><small>Due</small>{formatDue(task.due_date, true)}</span></div>
-      <div className="inspector-section">
-        <div className="section-kicker">Directions</div>
-        {error ? <ErrorNotice error={error} /> : context ? (
-          <p className="muted">Open the assignment workspace and choose Get Directions for a Luna-generated, source-grounded summary.</p>
-        ) : <div className="text-skeleton"><span /><span /><span /></div>}
-      </div>
-      {context?.externalAssignment.isExternal && (
-        <div className="notice amber"><ArrowUpRight size={18} /><div><strong>External assignment</strong><p>Canvas can show the link and requirements, but cannot read the external platform automatically.</p></div></div>
-      )}
-      <div className="inspector-actions">
-        <button className="primary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
-          <FileQuestion size={17} />Open workspace
-        </button>
-        {canvasUrl && <a className="secondary-button" href={canvasUrl} target="_blank" rel="noreferrer">Open Canvas<ArrowUpRight size={15} /></a>}
-        {externalUrl && <a className="secondary-button" href={externalUrl} target="_blank" rel="noreferrer">Open assignment<ArrowUpRight size={15} /></a>}
-      </div>
-      {context && (
-        <div className="requirements-block">
-          <div className="section-kicker">Submission</div>
-          <p>{humanSubmissionTypes(context.submissionRequirements.submissionTypes)}</p>
-          {context.submissionRequirements.allowedExtensions.length > 0 && <span>Allowed: {context.submissionRequirements.allowedExtensions.join(", ")}</span>}
-          {context.submissionRequirements.locked && <span className="danger-text">Locked: {context.submissionRequirements.lockExplanation || "Canvas reports this assignment is locked."}</span>}
+
+      {workflowError ? <ErrorNotice error={workflowError} /> : null}
+      {contextError ? <ErrorNotice error={contextError} /> : null}
+
+      <section className="workflow-picker">
+        <h3>Choose a workflow</h3>
+        <div className="workflow-actions">
+          {workflowActions.map(({ label, steps, icon: Icon, primary }) => (
+            <button
+              className={primary ? "workflow-action primary" : "workflow-action"}
+              disabled={Boolean(active || starting)}
+              key={label}
+              onClick={() => void startWorkflow(label, steps)}
+            >
+              {starting === label ? <LoaderCircle className="spin" size={18} /> : <Icon size={18} />}
+              <span>{label}</span>
+              <ChevronRight size={17} />
+            </button>
+          ))}
         </div>
-      )}
+      </section>
+
+      {active ? (
+        <div className="inspector-progress">
+          <ProgressTimeline progress={active.progress} active compact fallbackCurrent={active.current} />
+          {active.workflow ? <WorkflowSequence workflow={active.workflow} /> : null}
+        </div>
+      ) : null}
+
+      <div className="inspector-actions">
+        <button className="secondary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
+          <ArrowUpRight size={16} />Open workspace
+        </button>
+        {canvasUrl ? <a className="text-link" href={canvasUrl} target="_blank" rel="noreferrer">Open Canvas<ArrowUpRight size={14} /></a> : null}
+        {externalUrl ? <a className="text-link" href={externalUrl} target="_blank" rel="noreferrer">Open assignment<ArrowUpRight size={14} /></a> : null}
+      </div>
+      {context ? (
+        <div className="requirements-block">
+          <strong>Submission</strong>
+          <p>{humanSubmissionTypes(context.submissionRequirements.submissionTypes)}</p>
+          {context.submissionRequirements.allowedExtensions.length > 0 ? <span>Allowed: {context.submissionRequirements.allowedExtensions.join(", ")}</span> : null}
+          {context.submissionRequirements.locked ? <span className="danger-text">{context.submissionRequirements.lockExplanation || "Canvas reports this assignment is locked."}</span> : null}
+        </div>
+      ) : null}
     </aside>
   );
 }
 
-function humanSubmissionTypes(types: string[]): string {
-  if (types.length === 0 || types.includes("none")) return "No online submission is listed in Canvas.";
-  return types.map((type) => type.replace(/^online_/, "").replaceAll("_", " ")).join(" · ");
+function WorkflowSequence({ workflow }: { workflow: AgentWorkflow }) {
+  return (
+    <ol className="workflow-sequence">
+      {workflow.steps.map((step, index) => (
+        <li className={step.status} key={`${step.feature}-${index}`}>
+          <span>{step.status === "running" ? <LoaderCircle className="spin" size={13} /> : index + 1}</span>
+          {workflowStepLabel(step.feature)}
+        </li>
+      ))}
+    </ol>
+  );
 }
 
-function AssignmentSkeleton() {
-  return <div className="assignment-groups skeleton-group"><div className="skeleton-heading" />{[1, 2, 3, 4].map((item) => <div className="row-skeleton" key={item}><span /><div><i /><i /></div><b /></div>)}</div>;
+function workflowStepLabel(feature: WorkflowFeature): string {
+  if (feature === "directions") return "Directions";
+  if (feature === "problemExtraction") return "Assigned problems";
+  return "Answer key";
+}
+
+function activeForTask(logicalId: string, activeWork: ActiveWork | null): ActiveAssignment | null {
+  if (!activeWork) return null;
+  const workflow = activeWork.workflows.find((item) => item.logicalId === logicalId) ?? null;
+  const runWithProgress = workflow?.currentRunId
+    ? activeWork.runs.find((item) => item.run.id === workflow.currentRunId)
+    : activeWork.runs.find((item) => item.run.logicalId === logicalId);
+  if (!workflow && !runWithProgress) return null;
+  const currentStep = workflow && workflow.currentStep !== null ? workflow.steps[workflow.currentStep] : null;
+  return {
+    workflow,
+    run: runWithProgress?.run ?? null,
+    progress: runWithProgress?.progress ?? null,
+    current: runWithProgress?.progress.current ?? (currentStep ? workflowStepLabel(currentStep.feature) : "Starting workflow"),
+  };
+}
+
+function humanSubmissionTypes(types: string[]): string {
+  if (types.length === 0 || types.includes("none")) return "No online submission is listed in Canvas.";
+  return types.map((type) => type.replace(/^online_/, "").replaceAll("_", " ")).join(", ");
+}
+
+function AssignmentSkeleton({ viewMode }: { viewMode: ViewMode }) {
+  return <div className={`assignment-skeletons ${viewMode}`}>{[1, 2, 3, 4].map((item) => <div className="assignment-skeleton" key={item}><span /><i /><i /><b /></div>)}</div>;
 }

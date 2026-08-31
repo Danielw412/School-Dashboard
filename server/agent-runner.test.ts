@@ -4,6 +4,8 @@ import {
   buildInstructions,
   buildMcpConfigOverrides,
   compactEventForLog,
+  enforceProblemVisualPolicy,
+  problemRequiresVisual,
   resolveAgentPreferences,
   sanitizeStoredAgentEvents,
   stripLegacyAnswerMetadata,
@@ -74,14 +76,52 @@ describe("agent run preferences", () => {
     expect(buildMcpConfigOverrides(false, 8780).every((value) => value.endsWith(".enabled=false"))).toBe(true);
   });
 
-  it("directs problem extraction through indexing, detection, batching, OCR fallback, and semantic crops", () => {
+  it("directs problem extraction through bounded text-first lookup and visual-only crops", () => {
     const instructions = buildInstructions("problemExtraction", defaultSettings.prompts.problemExtraction, null);
 
     expect(instructions).toContain("call index_pdf once");
-    expect(instructions).toContain("automatic problem detection before manual inspection");
-    expect(instructions).toContain("OCR only where the text layer is missing or unusable");
-    expect(instructions).toContain("Use semantic_crop_pdf");
+    expect(instructions).toContain("cached text and detected problem sections first");
+    expect(instructions).toContain("Never OCR broad page ranges");
+    expect(instructions).toContain("Set visual to null by default");
+    expect(instructions).toContain("if and only if the problem requires");
+    expect(instructions).toContain("call semantic_crop_pdf once");
+    expect(instructions).toContain("Render one targeted page only when needed");
+    expect(instructions).toContain("Do not crop or attach text-only problems");
     expect(instructions).toContain("Stop as soon as every requested problem is verified");
+  });
+
+  it("removes page crops from text-only problems while retaining required figures", () => {
+    expect(problemRequiresVisual("Calculate $A \\cdot B$ from the listed components.")).toBe(false);
+    expect(problemRequiresVisual("Sketch a diagram, then calculate the resultant.")).toBe(false);
+    expect(problemRequiresVisual("Find the image distance for the lens.")).toBe(false);
+    expect(problemRequiresVisual("Use Figure P3.15 to determine the resultant.")).toBe(true);
+    expect(problemRequiresVisual("Determine the components of the force shown below.")).toBe(true);
+
+    const output = enforceProblemVisualPolicy({
+      assignmentTitle: "Vectors",
+      summary: "Two problems",
+      problems: [
+        {
+          number: "12",
+          markdown: "Calculate $A \\cdot B$ from the listed components.",
+          provenance: [{ sourceName: "Packet", sourceUrl: null, page: 2, evidence: "Problem 12" }],
+          visual: { path: "renders/page-2.png", page: 2, caption: "Source page" },
+          confidence: "high",
+        },
+        {
+          number: "15",
+          markdown: "Use Figure P3.15 to determine the resultant.",
+          provenance: [{ sourceName: "Packet", sourceUrl: null, page: 3, evidence: "Problem 15" }],
+          visual: { path: "renders/figure-15.png", page: 3, caption: "Figure P3.15" },
+          confidence: "high",
+        },
+      ],
+      unresolved: [],
+      sourcesInspected: [{ name: "Packet", type: "PDF", url: null, pages: [2, 3] }],
+    });
+
+    expect(output.problems[0]?.visual).toBeNull();
+    expect(output.problems[1]?.visual?.path).toBe("renders/figure-15.png");
   });
 
   it("keeps answer generation local to parsed questions and visuals", () => {

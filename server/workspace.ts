@@ -22,6 +22,7 @@ import { CACHE_DIR, TEMP_WORKSPACE_ROOT } from "./env.js";
 import type { AppSettings } from "./settings.js";
 
 const execFileAsync = promisify(execFile);
+const PDF_OCR_DPI = 170;
 
 export type CacheStats = {
   files: number;
@@ -68,8 +69,58 @@ export type PdfOcrPage = {
   page: number;
   text: string;
   confidence: number;
+  imageWidth?: number;
+  imageHeight?: number;
   regions: Array<{ text: string; left: number; top: number; width: number; height: number }>;
 };
+
+type OcrBoxedText = {
+  text: string;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+};
+
+function ocrRegion(region: OcrBoxedText): PdfOcrPage["regions"][number] {
+  return {
+    text: region.text,
+    left: region.bbox.x0,
+    top: region.bbox.y0,
+    width: Math.max(1, region.bbox.x1 - region.bbox.x0),
+    height: Math.max(1, region.bbox.y1 - region.bbox.y0),
+  };
+}
+
+function splitOcrLineRegions(
+  words: OcrBoxedText[],
+  fallback: OcrBoxedText,
+): PdfOcrPage["regions"] {
+  const sorted = [...words]
+    .filter((word) => word.text.trim())
+    .sort((left, right) => left.bbox.x0 - right.bbox.x0);
+  if (sorted.length === 0) return [ocrRegion(fallback)];
+  const segments: OcrBoxedText[][] = [[]];
+  for (const word of sorted) {
+    const segment = segments.at(-1)!;
+    const previous = segment.at(-1);
+    const lineHeight = Math.max(1, fallback.bbox.y1 - fallback.bbox.y0);
+    // OCR line boxes can span a printed question column and a handwritten answer
+    // column. Their noisy height made the old 3x threshold too large to split the
+    // columns, which interleaved answers into problem text. Normal word spacing is
+    // far smaller than this conservative 1.2x/45px boundary at our render DPI.
+    if (previous && word.bbox.x0 - previous.bbox.x1 > Math.max(45, lineHeight * 1.2)) {
+      segments.push([]);
+    }
+    segments.at(-1)!.push(word);
+  }
+  return segments.map((segment) => ocrRegion({
+    text: segment.map((word) => word.text).join(" "),
+    bbox: {
+      x0: Math.min(...segment.map((word) => word.bbox.x0)),
+      y0: Math.min(...segment.map((word) => word.bbox.y0)),
+      x1: Math.max(...segment.map((word) => word.bbox.x1)),
+      y1: Math.max(...segment.map((word) => word.bbox.y1)),
+    },
+  }));
+}
 
 export type PdfProblemMatch = {
   problemNumber: string;
@@ -77,6 +128,16 @@ export type PdfProblemMatch = {
   text: string;
   representation: "text" | "ocr";
   confidence: "high" | "medium" | "low";
+};
+
+export type PdfSemanticCrop = {
+  page: number;
+  query: string;
+  status: "completed" | "not_found" | "skipped_text_only";
+  path: string | null;
+  rect: { left: number; top: number; width: number; height: number } | null;
+  basis: "text-layout" | "ocr-layout" | "figure-layout" | null;
+  error: string | null;
 };
 
 export class WorkspaceManager {
@@ -349,7 +410,7 @@ export class WorkspaceManager {
     }));
     const missing = cachedResults.filter((item) => !item.result).map((item) => item.page);
     if (missing.length > 0) {
-      const renders = await this.renderPdfPages(pdfPath, missing, workspace, 4, 220);
+      const renders = await this.renderPdfPages(pdfPath, missing, workspace, 4, PDF_OCR_DPI);
       const workerCount = Math.min(2, renders.length);
       const workers = await Promise.all(Array.from({ length: workerCount }, () => createWorker("eng", 1, {
         langPath: englishOcrData.langPath,
@@ -362,22 +423,27 @@ export class WorkspaceManager {
           while (cursor < renders.length) {
             const current = renders[cursor++];
             const key = `pdf-ocr:${pdfPath}:${current.page}:${workspace.id}`;
+            const imageMetadata = await sharp(current.path).metadata();
             const promise = worker.recognize(
               current.path,
               { rotateAuto: true },
               { text: true, blocks: true },
-            ).then(({ data }) => ({
-              page: current.page,
-              text: data.text,
-              confidence: data.confidence,
-              regions: (data.blocks ?? []).map((block) => ({
-                text: block.text,
-                left: block.bbox.x0,
-                top: block.bbox.y0,
-                width: Math.max(1, block.bbox.x1 - block.bbox.x0),
-                height: Math.max(1, block.bbox.y1 - block.bbox.y0),
-              })),
-            })).catch((error) => {
+            ).then(({ data }) => {
+              const blocks = data.blocks ?? [];
+              const lines = blocks.flatMap((block) =>
+                (block.paragraphs ?? []).flatMap((paragraph) => paragraph.lines ?? []));
+              const regions = lines.length > 0
+                ? lines.flatMap((line) => splitOcrLineRegions(line.words ?? [], line))
+                : blocks.map((block) => ocrRegion(block));
+              return {
+                page: current.page,
+                text: buildOcrReadingOrderText(regions, imageMetadata.width ?? 1),
+                confidence: data.confidence,
+                imageWidth: imageMetadata.width,
+                imageHeight: imageMetadata.height,
+                regions,
+              };
+            }).catch((error) => {
               this.operationCache.delete(key);
               throw error;
             });
@@ -400,7 +466,13 @@ export class WorkspaceManager {
     requestedProblems: string[],
     workspace: AssignmentWorkspace,
     selectedPages?: number[],
-  ): Promise<{ matches: PdfProblemMatch[]; searchedPages: number[]; usedOcr: boolean }> {
+  ): Promise<{
+    matches: PdfProblemMatch[];
+    searchedPages: number[];
+    usedOcr: boolean;
+    unresolvedProblemNumbers: string[];
+    ocrSkippedPages: number[];
+  }> {
     const index = await this.indexPdf(pdfPath, requestedProblems);
     const pages = selectedPages?.length
       ? [...new Set(selectedPages)]
@@ -412,9 +484,23 @@ export class WorkspaceManager {
     );
     const found = new Set(textMatches.map((match) => normalizeProblemNumber(match.problemNumber)));
     const requested = requestedProblems.map(normalizeProblemNumber).filter(Boolean);
-    const needOcr = requested.length === 0 || requested.some((problem) => !found.has(problem));
-    const ocrPages = needOcr
-      ? pages.filter((page) => index.pages[page - 1]?.strategy !== "text").slice(0, 40)
+    const unresolved = requested.filter((problem) => !found.has(problem));
+    const nonTextPages = pages.filter((page) => index.pages[page - 1]?.strategy !== "text");
+    const exactCandidatePages = new Set(index.pages
+      .filter((page) => page.problemNumbers.some((number) => unresolved.includes(normalizeProblemNumber(number))))
+      .map((page) => page.page));
+    const likelyCandidatePages = new Set(index.likelyRelevantPages);
+    const ocrCandidates = nonTextPages.filter((page) =>
+      exactCandidatePages.has(page) || likelyCandidatePages.has(page));
+    const ocrLimit = selectedPages?.length ? 40 : 8;
+    const shouldOcrVisibleProblems = requested.length === 0 && Boolean(selectedPages?.length);
+    const shouldOcrUnresolvedProblems = unresolved.length > 0;
+    const fallbackCandidates = index.pageCount <= 4 ? nonTextPages : [];
+    const eligibleOcrPages = selectedPages?.length
+      ? nonTextPages
+      : ocrCandidates.length > 0 ? ocrCandidates : fallbackCandidates;
+    const ocrPages = shouldOcrVisibleProblems || shouldOcrUnresolvedProblems
+      ? eligibleOcrPages.slice(0, ocrLimit)
       : [];
     const ocr = ocrPages.length > 0 ? await this.ocrPdfPages(pdfPath, ocrPages, workspace) : [];
     const ocrMatches = detectProblemMatches(
@@ -426,10 +512,14 @@ export class WorkspaceManager {
       })),
       requestedProblems,
     );
+    const matches = dedupeProblemMatches([...textMatches, ...ocrMatches]);
+    const resolved = new Set(matches.map((match) => normalizeProblemNumber(match.problemNumber)));
     return {
-      matches: dedupeProblemMatches([...textMatches, ...ocrMatches]),
+      matches,
       searchedPages: pages,
       usedOcr: ocr.length > 0,
+      unresolvedProblemNumbers: requestedProblems.filter((problem) => !resolved.has(normalizeProblemNumber(problem))),
+      ocrSkippedPages: nonTextPages.filter((page) => !ocrPages.includes(page)),
     };
   }
 
@@ -447,35 +537,81 @@ export class WorkspaceManager {
     pdfPath: string,
     regions: Array<{ page: number; query: string; padding?: number }>,
     workspace: AssignmentWorkspace,
-  ): Promise<Array<{ page: number; query: string; path: string; rect: { left: number; top: number; width: number; height: number }; basis: "text-layout" | "ocr-layout" }>> {
+  ): Promise<PdfSemanticCrop[]> {
     if (regions.length === 0) throw new Error("Choose at least one semantic PDF region.");
     if (regions.length > 20) throw new Error("One semantic crop batch may contain at most 20 regions.");
-    const pages = [...new Set(regions.map((region) => region.page))];
+    const pages = [...new Set(regions
+      .filter((region) => isVisualCropQuery(region.query))
+      .map((region) => region.page))];
+    if (pages.length === 0) {
+      return regions.map((region) => skippedTextCrop(region));
+    }
     const renders = await this.renderPdfPages(pdfPath, pages, workspace, 4, 170);
     const renderByPage = new Map(renders.map((render) => [render.page, render.path]));
     const layoutEntries = await Promise.all(pages.map(async (page) => [page, await this.extractPdfLayout(pdfPath, page)] as const));
     const layouts = new Map(layoutEntries);
-    const results = [];
+    const index = await this.indexPdf(pdfPath);
+    const results: PdfSemanticCrop[] = [];
     for (const region of regions) {
+      if (!isVisualCropQuery(region.query)) {
+        results.push(skippedTextCrop(region));
+        continue;
+      }
       const renderPath = renderByPage.get(region.page)!;
       const metadata = await sharp(renderPath).metadata();
       const width = metadata.width ?? 1;
       const height = metadata.height ?? 1;
       const layout = layouts.get(region.page)!;
-      let rect = semanticRectFromLines(layout.lines, region.query, layout.width, layout.height, width, height, region.padding);
-      let basis: "text-layout" | "ocr-layout" = "text-layout";
-      if (!rect) {
+      const figureLabelQuery = /\b(?:figure|fig\.?)\s*[A-Z]?\d/iu.test(region.query);
+      let rect = figureLabelQuery
+        ? await semanticFigureRectFromImage(
+            renderPath,
+            semanticAnchorFromLines(layout.lines, region.query, layout.width, layout.height, width, height),
+            region.padding,
+          )
+        : semanticRectFromLines(layout.lines, region.query, layout.width, layout.height, width, height, region.padding);
+      let basis: "text-layout" | "ocr-layout" | "figure-layout" = figureLabelQuery
+        ? "figure-layout"
+        : "text-layout";
+      const pageStrategy = index.pages[region.page - 1]?.strategy;
+      if (!rect && (pageStrategy !== "text" || isVisualCropQuery(region.query))) {
         const [ocr] = await this.ocrPdfPages(pdfPath, [region.page], workspace);
-        rect = semanticRectFromRegions(ocr.regions, region.query, width, height, region.padding);
-        basis = "ocr-layout";
+        const anchor = semanticAnchorFromRegions(
+          ocr.regions, region.query, width, height, ocr.imageWidth, ocr.imageHeight,
+        );
+        rect = figureLabelQuery
+          ? await semanticFigureRectFromImage(renderPath, anchor, region.padding)
+          : semanticRectFromRegions(
+              ocr.regions,
+              region.query,
+              width,
+              height,
+              region.padding,
+              ocr.imageWidth,
+              ocr.imageHeight,
+            );
+        basis = figureLabelQuery ? "figure-layout" : "ocr-layout";
       }
-      if (!rect) throw new Error(`Could not locate a complete region for ${region.query} on page ${region.page}.`);
+      if (!rect) {
+        results.push({
+          page: region.page,
+          query: region.query,
+          status: "not_found",
+          path: null,
+          rect: null,
+          basis: null,
+          error: `Could not locate a complete region for ${region.query} on page ${region.page}. Use an exact problem number or figure label, or crop known render coordinates.`,
+        });
+        continue;
+      }
       results.push({
         page: region.page,
         query: region.query,
+        status: "completed",
         rect,
         basis,
         path: await this.cropImage(relative(workspace.path, renderPath), rect, workspace),
+        error: null,
       });
     }
     return results;
@@ -687,12 +823,16 @@ export function detectProblemMatches(
   const wanted = new Set(requestedProblems.map(normalizeProblemNumber).filter(Boolean));
   const matches: PdfProblemMatch[] = [];
   for (const page of pages) {
-    const starts = detectProblemStarts(page.text);
+    const starts = page.representation === "ocr"
+      ? detectProblemStartsWithOcrHints(page.text, wanted)
+      : detectProblemStarts(page.text);
     for (let index = 0; index < starts.length; index += 1) {
       const start = starts[index];
       const normalized = normalizeProblemNumber(start.number);
       if (wanted.size > 0 && !wanted.has(normalized)) continue;
-      const end = starts[index + 1]?.offset ?? page.text.length;
+      const end = page.representation === "ocr"
+        ? findOcrProblemEnd(starts, index, page.text.length)
+        : starts[index + 1]?.offset ?? page.text.length;
       const text = page.text.slice(start.offset, end).trim();
       if (!text) continue;
       matches.push({
@@ -709,13 +849,231 @@ export function detectProblemMatches(
   return matches;
 }
 
+function findOcrProblemEnd(
+  starts: Array<{ number: string; offset: number }>,
+  index: number,
+  textLength: number,
+): number {
+  const current = Number.parseInt(normalizeProblemNumber(starts[index]!.number), 10);
+  if (!Number.isFinite(current)) return starts[index + 1]?.offset ?? textLength;
+  const later = starts.slice(index + 1);
+  const consecutive = later.find((start) =>
+    Number.parseInt(normalizeProblemNumber(start.number), 10) === current + 1);
+  if (consecutive) return consecutive.offset;
+  const plausible = later.find((start) => {
+    const number = Number.parseInt(normalizeProblemNumber(start.number), 10);
+    return Number.isFinite(number) && number > current && number <= current + 10;
+  });
+  return plausible?.offset ?? later[0]?.offset ?? textLength;
+}
+
 function detectProblemStarts(text: string): Array<{ number: string; offset: number }> {
   const starts: Array<{ number: string; offset: number }> = [];
-  const pattern = /^(?:\s*(?:problem|question|exercise|review|example)\s*)?(\d{1,4}[a-z]?)(?:\s*[.)\]:-]|\s{2,})\s*\S/imug;
+  const pattern = /^(?:[^\S\r\n]*(?:problem|question|exercise|review|example)[^\S\r\n]*)?(\d{1,4}[a-z]?)(?:[^\S\r\n]*[.)\]:-]|[^\S\r\n]{2,})[^\S\r\n]*\S/imug;
   for (const match of text.matchAll(pattern)) {
     starts.push({ number: match[1]!, offset: match.index ?? 0 });
   }
   return starts;
+}
+
+function detectProblemStartsWithOcrHints(
+  text: string,
+  wanted: ReadonlySet<string>,
+): Array<{ number: string; offset: number }> {
+  const starts = detectProblemStarts(text);
+  if (wanted.size === 0) return starts;
+  const seenOffsets = new Set(starts.map((start) => start.offset));
+  const alreadyFound = new Set(starts.map((start) => normalizeProblemNumber(start.number)));
+  const pattern = /^[^\S\r\n]*[[(]?[^\S\r\n]*([0-9A-Z|]{1,4})[^\S\r\n]*[\])}.:]?[^\S\r\n]+\S/gimu;
+  for (const match of text.matchAll(pattern)) {
+    const offset = match.index ?? 0;
+    if (seenOffsets.has(offset)) continue;
+    const token = match[1]!;
+    const requestedCandidates = [...wanted].filter((problem) =>
+      !alreadyFound.has(problem) && ocrNumberCouldMatch(token, problem));
+    if (requestedCandidates.length === 1) {
+      const problem = requestedCandidates[0]!;
+      starts.push({ number: problem, offset });
+      seenOffsets.add(offset);
+      alreadyFound.add(problem);
+      continue;
+    }
+    const interpreted = parseOcrLeadingNumber(match[0]);
+    if (interpreted !== null && interpreted > 0 && hasExplicitOcrProblemDelimiter(match[0])) {
+      starts.push({ number: String(interpreted), offset });
+      seenOffsets.add(offset);
+      alreadyFound.add(String(interpreted));
+      continue;
+    }
+  }
+  const ordered = starts.sort((left, right) => left.offset - right.offset);
+  const lines = [...text.matchAll(/^([^\r\n]+)$/gmu)].map((match) => ({
+    text: match[1]!,
+    offset: match.index ?? 0,
+  }));
+  for (const problem of wanted) {
+    if (!/^\d{1,4}$/u.test(problem) || alreadyFound.has(problem)) continue;
+    const number = Number.parseInt(problem, 10);
+    const previous = [...ordered].reverse().find((start) =>
+      Number.parseInt(normalizeProblemNumber(start.number), 10) === number - 1);
+    const next = ordered.find((start) =>
+      start.offset > (previous?.offset ?? -1) &&
+      Number.parseInt(normalizeProblemNumber(start.number), 10) === number + 1);
+    if (!previous || !next) continue;
+    const intervalLines = lines.filter((line) =>
+      line.offset > previous.offset && line.offset < next.offset);
+    const visualReferenceStart = inferFigureReferencedProblemStart(intervalLines, problem);
+    if (visualReferenceStart) {
+      starts.push({ number: problem, offset: visualReferenceStart.offset });
+      alreadyFound.add(problem);
+      continue;
+    }
+    const candidates = intervalLines.filter((line) => {
+      const token = line.text.match(/^\s*(\S{1,6})\s+\S/u)?.[1];
+      return Boolean(token) && isCorruptOcrProblemToken(token!) && parseOcrLeadingNumber(line.text) === null;
+    });
+    if (candidates.length === 0) continue;
+    starts.push({ number: problem, offset: candidates[0]!.offset });
+    alreadyFound.add(problem);
+  }
+  return starts.sort((left, right) => left.offset - right.offset);
+}
+
+function inferFigureReferencedProblemStart(
+  lines: Array<{ text: string; offset: number }>,
+  problem: string,
+): { text: string; offset: number } | null {
+  const anchorIndex = lines.findIndex((line) => figureReferenceMatchesProblem(line.text, problem));
+  if (anchorIndex < 0) return null;
+  let startIndex = anchorIndex;
+  for (let steps = 0; startIndex > 0 && steps < 4; steps += 1) {
+    const previous = lines[startIndex - 1]!.text.trim();
+    if (isProblemStartLine(previous) || /[.!?]["')\]]?$/u.test(previous)) break;
+    startIndex -= 1;
+  }
+  return lines[startIndex]!;
+}
+
+function figureReferenceMatchesProblem(text: string, problem: string): boolean {
+  const expected = normalizeProblemNumber(problem);
+  const labels = text.matchAll(/\b(?:figure|fig\.?)\s*[A-Z]?(\d+(?:\.\d+)*)\b/giu);
+  for (const match of labels) {
+    const components = match[1]!.split(".");
+    if (normalizeProblemNumber(components.at(-1)!) === expected) return true;
+  }
+  return false;
+}
+
+function isCorruptOcrProblemToken(token: string): boolean {
+  const normalized = token.trim();
+  return /[\[\](){}]/u.test(normalized) ||
+    (/^[A-Z0-9|.,:]{1,4}$/u.test(normalized) && /[A-Z|]/u.test(normalized));
+}
+
+function hasExplicitOcrProblemDelimiter(text: string): boolean {
+  return /^\s*[[(]?\s*[0-9A-Z|]{1,4}\s*[\])}.:]/u.test(text);
+}
+
+export function buildOcrReadingOrderText(
+  regions: PdfOcrPage["regions"],
+  imageWidth: number,
+): string {
+  const repaired = repairOcrProblemNumberSequence(regions, imageWidth);
+  return [...repaired]
+    .sort((left, right) => {
+      const leftColumn = ocrReadingColumn(left, imageWidth);
+      const rightColumn = ocrReadingColumn(right, imageWidth);
+      if (leftColumn !== rightColumn) return leftColumn - rightColumn;
+      const topDelta = left.top - right.top;
+      // Tesseract occasionally gives a tall new-problem line the same top as the
+      // short final line of the prior problem. Preserve the continuation first.
+      if (Math.abs(topDelta) <= 3) {
+        const leftMarker = isLikelyOcrProblemMarker(left.text);
+        const rightMarker = isLikelyOcrProblemMarker(right.text);
+        if (leftMarker !== rightMarker) return leftMarker ? 1 : -1;
+      }
+      return topDelta || left.left - right.left;
+    })
+    .map((region) => region.text.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isLikelyOcrProblemMarker(text: string): boolean {
+  const token = text.match(/^\s*(\S{1,6})\s+\S/u)?.[1];
+  return hasExplicitOcrProblemDelimiter(text) || Boolean(token && isCorruptOcrProblemToken(token));
+}
+
+function repairOcrProblemNumberSequence(
+  regions: PdfOcrPage["regions"],
+  imageWidth: number,
+): PdfOcrPage["regions"] {
+  const output = regions.map((region) => ({ ...region }));
+  for (const column of [1, 2]) {
+    const columnRegions = output
+      .filter((region) => ocrReadingColumn(region, imageWidth) === column)
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    const known = columnRegions
+      .map((region, index) => ({ index, region, number: parseOcrLeadingNumber(region.text) }))
+      .filter((entry): entry is { index: number; region: PdfOcrPage["regions"][number]; number: number } =>
+        entry.number !== null);
+    if (known.length < 2) continue;
+    const tolerance = Math.max(18, imageWidth * 0.015);
+    for (let index = 0; index < known.length - 1; index += 1) {
+      const current = known[index]!;
+      const next = known[index + 1]!;
+      const missing = next.number - current.number - 1;
+      if (missing < 1 || missing > 4) continue;
+      const alignedLeft = (current.region.left + next.region.left) / 2;
+      const candidates = columnRegions.slice(current.index + 1, next.index).filter((region) =>
+        parseOcrLeadingNumber(region.text) === null &&
+        Math.abs(region.left - alignedLeft) <= tolerance &&
+        region.text.trim().length >= 12);
+      if (candidates.length !== missing) continue;
+      candidates.forEach((region, offset) => {
+        region.text = `${current.number + offset + 1}. ${region.text.trim()}`;
+      });
+    }
+  }
+  return output;
+}
+
+function ocrReadingColumn(region: PdfOcrPage["regions"][number], imageWidth: number): number {
+  if (region.width >= imageWidth * 0.9) return 0;
+  return region.left + region.width / 2 < imageWidth / 2 ? 1 : 2;
+}
+
+function parseOcrLeadingNumber(text: string): number | null {
+  const match = text.match(/^\s*[[(]?\s*([0-9A-Z|]{1,3})\s*[\])}.,:]?\s+/u);
+  if (!match) return null;
+  const token = match[1]!.toLocaleUpperCase();
+  if (/^\d{1,3}$/u.test(token)) return Number.parseInt(token, 10);
+  const lookalikes: Record<string, string> = {
+    I: "1", L: "1", "|": "1", Z: "2", A: "4", S: "5", G: "6", B: "8", R: "8", O: "0", Q: "0",
+  };
+  const normalized = [...token].map((character) => /\d/u.test(character) ? character : lookalikes[character]).join("");
+  return /^\d{1,3}$/u.test(normalized) ? Number.parseInt(normalized, 10) : null;
+}
+
+
+function ocrNumberCouldMatch(value: string, expected: string): boolean {
+  if (!/^\d{1,4}[a-z]?$/u.test(expected)) return false;
+  const expectedDigits = expected.replace(/[a-z]$/u, "");
+  const normalizedValue = value.toLocaleUpperCase().replace(/[^0-9A-Z|]/gu, "");
+  if (normalizedValue.length !== expectedDigits.length) return false;
+  const lookalikes: Record<string, string> = {
+    "0": "0OQ",
+    "1": "1IL|",
+    "2": "2Z",
+    "3": "3",
+    "4": "4A",
+    "5": "5S",
+    "6": "6G",
+    "7": "7Z",
+    "8": "8B",
+    "9": "9GQ",
+  };
+  return [...expectedDigits].every((digit, index) => lookalikes[digit]?.includes(normalizedValue[index]!) ?? false);
 }
 
 function detectHeadings(text: string): string[] {
@@ -784,7 +1142,7 @@ export function semanticRectFromLines(
   imageHeight: number,
   requestedPadding = 18,
 ): { left: number; top: number; width: number; height: number } | null {
-  const startIndex = lines.findIndex((line) => lineMatchesProblemQuery(line.text, query));
+  const startIndex = bestSemanticMatchIndex(lines.map((line) => line.text), query);
   if (startIndex < 0) return null;
   const start = lines[startIndex]!;
   const leftColumn = start.xMin < pageWidth / 2;
@@ -813,18 +1171,183 @@ function semanticRectFromRegions(
   imageWidth: number,
   imageHeight: number,
   padding = 18,
+  sourceWidth = imageWidth,
+  sourceHeight = imageHeight,
 ): { left: number; top: number; width: number; height: number } | null {
-  const startIndex = regions.findIndex((region) => lineMatchesProblemQuery(region.text, query));
+  const scaleX = imageWidth / sourceWidth;
+  const scaleY = imageHeight / sourceHeight;
+  const scaledRegions = regions.map((region) => ({
+    ...region,
+    left: region.left * scaleX,
+    top: region.top * scaleY,
+    width: region.width * scaleX,
+    height: region.height * scaleY,
+  }));
+  const startIndex = bestSemanticMatchIndex(scaledRegions.map((region) => region.text), query);
   if (startIndex < 0) return null;
-  const start = regions[startIndex]!;
-  const next = regions.slice(startIndex + 1).find((region) => isProblemStartLine(region.text));
+  const start = scaledRegions[startIndex]!;
+  const useColumn = start.width < imageWidth * 0.7;
+  const leftColumn = start.left + start.width / 2 < imageWidth / 2;
+  const inStartColumn = (region: PdfOcrPage["regions"][number]) =>
+    !useColumn || (region.left + region.width / 2 < imageWidth / 2) === leftColumn;
+  const next = scaledRegions.slice(startIndex + 1).find((region) =>
+    inStartColumn(region) && isProblemStartLine(region.text));
   const bottom = next?.top ?? Math.min(imageHeight, start.top + Math.max(start.height * 4, 400));
-  const selected = regions.filter((region) => region.top >= start.top && region.top < bottom);
+  const selected = scaledRegions.filter((region) =>
+    inStartColumn(region) && region.top >= start.top && region.top < bottom);
   const left = Math.max(0, Math.min(...selected.map((region) => region.left)) - padding);
   const right = Math.min(imageWidth, Math.max(...selected.map((region) => region.left + region.width)) + padding);
   const top = Math.max(0, start.top - padding);
   const finalBottom = Math.min(imageHeight, Math.max(bottom, ...selected.map((region) => region.top + region.height)) + padding);
   return clampPixelRect({ left, top, width: right - left, height: finalBottom - top }, imageWidth, imageHeight);
+}
+
+export function isVisualCropQuery(query: string): boolean {
+  return /\b(?:figure|fig\.?|diagram|graph|chart|table|map|illustration|photo|circuit|free[- ]body|shown|depicted|pictured)\b/iu.test(query);
+}
+
+function skippedTextCrop(region: { page: number; query: string }): PdfSemanticCrop {
+  return {
+    page: region.page,
+    query: region.query,
+    status: "skipped_text_only",
+    path: null,
+    rect: null,
+    basis: null,
+    error: "Skipped because the request does not identify a required visual. Return the problem as Markdown without an image.",
+  };
+}
+
+function semanticAnchorFromLines(
+  lines: PdfLayoutLine[],
+  query: string,
+  pageWidth: number,
+  pageHeight: number,
+  imageWidth: number,
+  imageHeight: number,
+) {
+  const index = bestSemanticMatchIndex(lines.map((line) => line.text), query);
+  if (index < 0) return null;
+  const line = lines[index]!;
+  return scaleAndClampRect({
+    left: line.xMin,
+    top: line.yMin,
+    width: line.xMax - line.xMin,
+    height: line.yMax - line.yMin,
+  }, pageWidth, pageHeight, imageWidth, imageHeight, 0);
+}
+
+function semanticAnchorFromRegions(
+  regions: PdfOcrPage["regions"],
+  query: string,
+  imageWidth: number,
+  imageHeight: number,
+  sourceWidth = imageWidth,
+  sourceHeight = imageHeight,
+) {
+  const index = bestSemanticMatchIndex(regions.map((region) => region.text), query);
+  if (index < 0) return null;
+  const region = regions[index]!;
+  return clampPixelRect({
+    left: region.left * imageWidth / sourceWidth,
+    top: region.top * imageHeight / sourceHeight,
+    width: region.width * imageWidth / sourceWidth,
+    height: region.height * imageHeight / sourceHeight,
+  }, imageWidth, imageHeight);
+}
+
+export async function semanticFigureRectFromImage(
+  imagePath: string,
+  anchor: { left: number; top: number; width: number; height: number } | null,
+  padding = 18,
+): Promise<{ left: number; top: number; width: number; height: number } | null> {
+  if (!anchor) return null;
+  const { data, info } = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const { width, height } = info;
+  const anchorCenter = anchor.left + anchor.width / 2;
+  const centered = anchorCenter >= width * 0.42 && anchorCenter <= width * 0.58;
+  const columnLeft = centered ? Math.floor(width * 0.025)
+    : anchorCenter < width / 2 ? Math.floor(width * 0.025) : Math.floor(width * 0.51);
+  const columnRight = centered ? Math.ceil(width * 0.975)
+    : anchorCenter < width / 2 ? Math.ceil(width * 0.49) : Math.ceil(width * 0.975);
+  const columnWidth = Math.max(1, columnRight - columnLeft);
+  const rowMinimum = Math.max(3, Math.round(columnWidth * 0.002));
+  const activeRows = new Array<boolean>(height).fill(false);
+  for (let y = 0; y < height; y += 1) {
+    let ink = 0;
+    const rowOffset = y * width;
+    for (let x = columnLeft; x < columnRight; x += 1) {
+      if (data[rowOffset + x]! < 225 && ++ink >= rowMinimum) {
+        activeRows[y] = true;
+        break;
+      }
+    }
+  }
+  const bands = inkBands(activeRows, Math.max(4, Math.round(height * 0.0035)));
+  const anchorTop = anchor.top;
+  const anchorBottom = anchor.top + anchor.height;
+  let anchorIndex = bands.findIndex((band) => band.end >= anchorTop - 3 && band.start <= anchorBottom + 3);
+  if (anchorIndex < 0) {
+    bands.push({ start: Math.max(0, anchorTop), end: Math.min(height - 1, anchorBottom) });
+    bands.sort((left, right) => left.start - right.start);
+    anchorIndex = bands.findIndex((band) => band.start === Math.max(0, anchorTop));
+  }
+  const anchorBand = bands[anchorIndex]!;
+  const minimumFigureHeight = Math.max(30, Math.round(height * 0.025));
+  const maximumLabelGap = Math.max(60, Math.round(height * 0.095));
+  let contentBand = anchorBand;
+  if (anchorBand.end - anchorBand.start + 1 < minimumFigureHeight) {
+    for (let index = anchorIndex - 1; index >= 0; index -= 1) {
+      const candidate = bands[index]!;
+      const gap = anchorBand.start - candidate.end - 1;
+      if (gap > maximumLabelGap) break;
+      if (candidate.end - candidate.start + 1 >= minimumFigureHeight) {
+        contentBand = { start: candidate.start, end: anchorBand.end };
+        break;
+      }
+    }
+  }
+  if (contentBand === anchorBand && anchorBand.end - anchorBand.start + 1 < minimumFigureHeight) return null;
+
+  const contentHeight = contentBand.end - contentBand.start + 1;
+  const columnMinimum = Math.max(2, Math.round(contentHeight * 0.004));
+  let left = columnRight;
+  let right = columnLeft;
+  for (let x = columnLeft; x < columnRight; x += 1) {
+    let ink = 0;
+    for (let y = contentBand.start; y <= contentBand.end; y += 1) {
+      if (data[y * width + x]! < 225 && ++ink >= columnMinimum) break;
+    }
+    if (ink >= columnMinimum) {
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+    }
+  }
+  if (right <= left) return null;
+  return clampPixelRect({
+    left: left - padding,
+    top: contentBand.start - padding,
+    width: right - left + 1 + padding * 2,
+    height: contentHeight + padding * 2,
+  }, width, height);
+}
+
+function inkBands(active: boolean[], joinGap: number): Array<{ start: number; end: number }> {
+  const bands: Array<{ start: number; end: number }> = [];
+  let start = -1;
+  let lastActive = -1;
+  for (let index = 0; index < active.length; index += 1) {
+    if (active[index]) {
+      if (start < 0) start = index;
+      lastActive = index;
+    } else if (start >= 0 && index - lastActive > joinGap) {
+      bands.push({ start, end: lastActive });
+      start = -1;
+      lastActive = -1;
+    }
+  }
+  if (start >= 0) bands.push({ start, end: lastActive });
+  return bands;
 }
 
 function scaleAndClampRect(
@@ -857,11 +1380,67 @@ function clampPixelRect(
   return { left, top, width: right - left, height: bottom - top };
 }
 
-function lineMatchesProblemQuery(text: string, query: string): boolean {
-  const normalizedQuery = normalizeProblemNumber(query);
+function bestSemanticMatchIndex(texts: string[], query: string): number {
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (const [index, text] of texts.entries()) {
+    const score = semanticMatchScore(text, query);
+    if (score > bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0.58 ? bestIndex : -1;
+}
+
+function semanticMatchScore(text: string, query: string): number {
+  const requestedProblem = problemNumberFromQuery(query);
   const lineProblem = detectProblemStarts(`${text}\n`)[0]?.number;
-  return Boolean(lineProblem && normalizeProblemNumber(lineProblem) === normalizedQuery) ||
-    text.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+  if (requestedProblem && lineProblem && normalizeProblemNumber(lineProblem) === requestedProblem) return 1;
+
+  const normalizedText = normalizeSearchText(text);
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedText || !normalizedQuery) return 0;
+  if (normalizedText === normalizedQuery) {
+    const letters = text.replace(/[^A-Za-z]+/gu, "");
+    return letters.length > 0 && letters === letters.toLocaleUpperCase() ? 1.05 : 1;
+  }
+  if (
+    normalizedText.length >= 4 && normalizedQuery.length >= 4 &&
+    (normalizedText.includes(normalizedQuery) || normalizedQuery.includes(normalizedText))
+  ) return 0.92;
+
+  const queryTokens = semanticTokens(normalizedQuery);
+  const textTokens = new Set(semanticTokens(normalizedText));
+  if (queryTokens.length === 0 || textTokens.size === 0) return 0;
+  const matched = queryTokens.filter((token) => textTokens.has(token)).length;
+  const coverage = matched / queryTokens.length;
+  const evidence = matched / Math.min(5, queryTokens.length);
+  return coverage * 0.7 + evidence * 0.3;
+}
+
+function problemNumberFromQuery(query: string): string | null {
+  const explicit = query.match(/\b(?:problem|question|exercise)\s*#?\s*(\d{1,4}[a-z]?)\b/iu)?.[1];
+  const leading = query.match(/^\s*(\d{1,4}[a-z]?)(?:\s*[.)\]:-]|\s*$)/iu)?.[1];
+  return explicit || leading ? normalizeProblemNumber(explicit ?? leading!) : null;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .toLocaleLowerCase()
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .replace(/\s+/gu, " ");
+}
+
+function semanticTokens(value: string): string[] {
+  const ignored = new Set([
+    "a", "an", "and", "complete", "for", "including", "of", "on", "page", "part", "parts",
+    "problem", "question", "the", "through", "to", "with",
+  ]);
+  return [...new Set(value.split(" ").filter((token) => token.length > 1 && !ignored.has(token)))];
 }
 
 function isProblemStartLine(text: string): boolean {

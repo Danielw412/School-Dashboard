@@ -82,7 +82,7 @@ describe("AssignmentWorkspace directions", () => {
     const user = userEvent.setup();
     renderWorkspace();
 
-    const button = await screen.findByRole("button", { name: "Get Directions" });
+    const button = await screen.findByRole("button", { name: "Get directions" });
     expect(screen.queryByText("RAW CANVAS DIRECTIONS")).not.toBeInTheDocument();
     expect(screen.queryByText(/Task Sync fallback/)).not.toBeInTheDocument();
 
@@ -135,7 +135,7 @@ describe("AssignmentWorkspace directions", () => {
 
     expect(await screen.findByText("Inspecting PDF structure and text layer", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
-    expect(screen.getByText(/Private reasoning text is not recorded/)).toBeInTheDocument();
+    expect(screen.queryByText(/chain of thought/i)).not.toBeInTheDocument();
   });
 
   it("keeps problem sources collapsed and reveals an existing answer below the problem", async () => {

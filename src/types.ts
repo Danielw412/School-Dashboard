@@ -119,6 +119,45 @@ export type AgentProgress = {
     timestamp: string;
     status: "started" | "completed" | "warning" | "failed";
     message: string;
+    category: string;
+    action: string;
+    tool: string | null;
+  }>;
+};
+
+export type AgentWorkflow = {
+  id: string;
+  logicalId: string;
+  taskTitle: string;
+  courseName: string;
+  status: "queued" | "running" | "completed" | "failed";
+  steps: Array<{
+    feature: Exclude<AgentRun["feature"], "studyGuide">;
+    status: "pending" | "running" | "completed" | "failed" | "skipped";
+    runId: string | null;
+  }>;
+  currentStep: number | null;
+  currentRunId: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  error: string | null;
+};
+
+export type ActiveWork = {
+  workflows: AgentWorkflow[];
+  runs: Array<{ run: AgentRun; progress: AgentProgress }>;
+};
+
+export type ConnectionTestResult = {
+  testedAt: string;
+  status: "ready" | "degraded";
+  checks: Array<{
+    id: string;
+    label: string;
+    status: "passed" | "warning" | "failed";
+    detail: string;
+    latencyMs: number;
+    optional?: boolean;
   }>;
 };
 

@@ -38,7 +38,9 @@ vi.mock("../api", () => ({
       { ...task, logical_id: "physics:assignment:99", display_title: "Checked off task", completed: true, completion_status: "completed" },
       { ...task, logical_id: "physics:assignment:100", display_title: "Unknown task", completed: null, completion_status: "unavailable" },
     ]),
+    activeWork: vi.fn(async () => ({ workflows: [], runs: [] })),
     context: vi.fn(async () => context),
+    startWorkflow: vi.fn(async () => ({ id: "workflow-1" })),
   },
 }));
 
@@ -52,7 +54,7 @@ describe("MyWork", () => {
     expect(screen.queryByText("Checked off task")).not.toBeInTheDocument();
     expect(screen.queryByText("Unknown task")).not.toBeInTheDocument();
     await user.click(screen.getByText("Problem Set 4"));
-    await waitFor(() => expect(screen.getByText(/Get Directions/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Get directions/)).toBeInTheDocument());
     expect(screen.queryByText(/Complete questions/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open Canvas/i })).toHaveAttribute("href", task.canvas.assignment_url);
     expect(screen.getByText(/Allowed: pdf/)).toBeInTheDocument();
@@ -64,5 +66,17 @@ describe("MyWork", () => {
     await screen.findByText("Problem Set 4");
     await user.click(screen.getByRole("button", { name: /Class/i }));
     expect(screen.getAllByText("AP Physics C").length).toBeGreaterThan(0);
+  });
+
+  it("starts the full assignment workflow in sequence", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await user.click(await screen.findByText("Problem Set 4"));
+    await user.click(await screen.findByRole("button", { name: /Full workflow/i }));
+    await waitFor(() => expect(schoolApi.startWorkflow).toHaveBeenCalledWith({
+      logicalId: task.logical_id,
+      steps: ["directions", "problemExtraction", "answerKey"],
+    }));
   });
 });

@@ -1,9 +1,12 @@
 import type {
   AgentRun,
   AgentProgress,
+  AgentWorkflow,
+  ActiveWork,
   AppSettings,
   AssignmentContext,
   Diagnostics,
+  ConnectionTestResult,
   ModelName,
   ReasoningEffort,
   TrackedTask,
@@ -33,6 +36,7 @@ export const schoolApi = {
   task: (logicalId: string) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`),
   context: (logicalId: string) => api<AssignmentContext>(`/api/tasks/${encodeURIComponent(logicalId)}/context`),
   runs: () => api<AgentRun[]>("/api/agent-runs"),
+  activeWork: () => api<ActiveWork>("/api/active-work"),
   run: (id: string) => api<AgentRun>(`/api/agent-runs/${id}`),
   runProgress: (id: string) => api<AgentProgress>(`/api/agent-runs/${id}/progress`),
   startRun: (input: {
@@ -43,6 +47,10 @@ export const schoolApi = {
     useTestQuestionPredictor?: boolean;
     extractionRunId?: string;
   }) => api<AgentRun>("/api/agent-runs", { method: "POST", body: JSON.stringify(input) }),
+  startWorkflow: (input: {
+    logicalId: string;
+    steps: Array<Exclude<AgentRun["feature"], "studyGuide">>;
+  }) => api<AgentWorkflow>("/api/agent-workflows", { method: "POST", body: JSON.stringify(input) }),
   settings: () => api<AppSettings>("/api/settings"),
   saveSettings: (settings: AppSettings) =>
     api<{ settings: AppSettings; restartRequired: boolean }>("/api/settings", {
@@ -51,5 +59,6 @@ export const schoolApi = {
     }),
   restoreDefaults: () => api<AppSettings>("/api/settings/defaults", { method: "POST", body: "{}" }),
   diagnostics: () => api<Diagnostics>("/api/diagnostics"),
+  testConnections: () => api<ConnectionTestResult>("/api/connection-test", { method: "POST", body: "{}" }),
   clearCache: () => api<void>("/api/cache/clear", { method: "POST", body: "{}" }),
 };

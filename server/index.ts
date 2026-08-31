@@ -10,10 +10,12 @@ import { buildAgentProgress } from "./agent-progress.js";
 import { AgentRunner, AgentRunStore } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
+import { runConnectionTest } from "./connection-test.js";
 import { APP_ROOT, env, TEMP_WORKSPACE_ROOT } from "./env.js";
 import { SettingsStore } from "./settings.js";
 import { TaskSyncClient } from "./task-sync.js";
 import { ToolAuthorizationError } from "./tool-sessions.js";
+import { AgentWorkflowRunner } from "./workflow-runner.js";
 import { safeChild, WorkspaceManager } from "./workspace.js";
 
 const app = express();
@@ -42,6 +44,7 @@ const agentRunner = new AgentRunner(
   activity,
   runs,
 );
+const workflows = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
 
 app.get("/api/health", async (_request, response) => {
   const [taskSyncHealth, canvasHealth] = await Promise.all([
@@ -135,6 +138,19 @@ app.post("/api/agent-runs", async (request, response) => {
   response.status(202).json(run);
 });
 
+app.post("/api/agent-workflows", async (request, response) => {
+  response.status(202).json(await workflows.start(request.body));
+});
+
+app.get("/api/active-work", async (_request, response) => {
+  const [recentRuns, recentActivity] = await Promise.all([runs.list(100), activity.list(500)]);
+  const activeRuns = recentRuns.filter((run) => run.status === "queued" || run.status === "running");
+  response.json({
+    workflows: workflows.list().filter((workflow) => workflow.status === "queued" || workflow.status === "running"),
+    runs: activeRuns.map((run) => ({ run, progress: buildAgentProgress(run, recentActivity) })),
+  });
+});
+
 app.get("/api/diagnostics", async (_request, response) => {
   const [currentSettings, recentRuns, recentActivity, cache, taskSyncHealth, canvasHealth] =
     await Promise.all([
@@ -168,6 +184,21 @@ app.get("/api/diagnostics", async (_request, response) => {
     recentRuns,
     activity: recentActivity,
   });
+});
+
+app.post("/api/connection-test", async (_request, response) => {
+  const currentSettings = await settingsStore.get();
+  response.json(await runConnectionTest({
+    taskSyncHealth: () => taskSync.health(),
+    canvasHealth: () => canvas.health(),
+    canvasCredentialConfigured: Boolean(env.canvasToken && (currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl)),
+    canvasBaseUrl: currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl,
+    taskSyncApiBase: currentSettings.connections.taskSyncApiBase,
+    codexModel: currentSettings.defaultModel,
+    mcpHealth: () => toolSessions.health(),
+    workspaceStats: () => workspaces.stats(),
+    predictorConfigured: Boolean(env.predictorCommand),
+  }));
 });
 
 app.post("/api/cache/clear", async (_request, response) => {
