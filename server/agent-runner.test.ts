@@ -94,10 +94,13 @@ describe("agent run preferences", () => {
     expect(instructions).toContain("call index_pdf once");
     expect(instructions).toContain("cached text and detected problem sections first");
     expect(instructions).toContain("Never OCR broad page ranges");
+    expect(instructions).toContain("one distinct refinement contact sheet");
+    expect(instructions).toContain("every necessary page together in one render_pdf_pages call");
+    expect(instructions).toContain("pass that heading");
     expect(instructions).toContain("Set visual to null by default");
     expect(instructions).toContain("if and only if the problem requires");
     expect(instructions).toContain("call semantic_crop_pdf once");
-    expect(instructions).toContain("Render one targeted page only when needed");
+    expect(instructions).toContain("Render pages only when genuinely needed");
     expect(instructions).toContain("Do not crop or attach text-only problems");
     expect(instructions).toContain("Stop as soon as every requested problem is verified");
   });

@@ -10,6 +10,8 @@ import type {
   ModelName,
   ReasoningEffort,
   TrackedTask,
+  TaskCourse,
+  ManualTaskInput,
 } from "./types";
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -32,8 +34,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const schoolApi = {
-  tasks: () => api<TrackedTask[]>("/api/tasks?completed=false"),
+  tasks: () => api<TrackedTask[]>("/api/tasks?completed=all"),
   task: (logicalId: string) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`),
+  taskCourses: () => api<TaskCourse[]>("/api/task-courses"),
+  createTask: (input: ManualTaskInput) => api<TrackedTask>("/api/tasks", { method: "POST", body: JSON.stringify(input) }),
+  updateTask: (logicalId: string, input: ManualTaskInput) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`, { method: "PUT", body: JSON.stringify(input) }),
   context: (logicalId: string) => api<AssignmentContext>(`/api/tasks/${encodeURIComponent(logicalId)}/context`),
   runs: () => api<AgentRun[]>("/api/agent-runs"),
   activeWork: () => api<ActiveWork>("/api/active-work"),

@@ -39,6 +39,9 @@ vi.mock("../api", () => ({
       { ...task, logical_id: "physics:assignment:100", display_title: "Unknown task", completed: null, completion_status: "unavailable" },
     ]),
     activeWork: vi.fn(async () => ({ workflows: [], runs: [] })),
+    taskCourses: vi.fn(async () => [{ id: "physics", settings: { name: "AP Physics C", prefix: "PHY" } }]),
+    createTask: vi.fn(async () => task),
+    updateTask: vi.fn(async () => task),
     context: vi.fn(async () => context),
     startWorkflow: vi.fn(async () => ({ id: "workflow-1" })),
     cancelWorkflow: vi.fn(async () => ({ id: "workflow-1", status: "cancelled" })),
@@ -67,6 +70,41 @@ describe("MyWork", () => {
     await screen.findByText("Problem Set 4");
     expect(screen.getByRole("button", { name: /Class/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByText("AP Physics C").length).toBeGreaterThan(0);
+  });
+
+  it("creates a manual task from the work list", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await screen.findByText("Problem Set 4");
+
+    await user.click(screen.getByRole("button", { name: /New task/i }));
+    await user.type(screen.getByLabelText("Task name"), "Read chapter 6");
+    await user.type(screen.getByLabelText("Description / notes"), "Take notes on sections 6.1–6.3.");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    await waitFor(() => expect(schoolApi.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      course_id: "physics",
+      title: "Read chapter 6",
+      details: "Take notes on sections 6.1–6.3.",
+    })));
+  });
+
+  it("opens an existing task in the editor", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await user.click(await screen.findByText("Problem Set 4"));
+    await user.click(screen.getByRole("button", { name: /Edit task/i }));
+    const name = screen.getByLabelText("Task name");
+    await user.clear(name);
+    await user.type(name, "Problem Set 4 revised");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(schoolApi.updateTask).toHaveBeenCalledWith(
+      task.logical_id,
+      expect.objectContaining({ title: "Problem Set 4 revised" }),
+    ));
   });
 
   it("offers one ungrouped view sorted from the soonest due date to no due date", async () => {

@@ -84,6 +84,57 @@ describe("PDF inspection helpers", () => {
     expect(matches[0]?.text).not.toContain("Next problem");
   });
 
+  it("constrains repeated scanned-PDF problem numbers to the named worksheet section", () => {
+    const matches = detectProblemMatches([
+      {
+        page: 10,
+        representation: "ocr",
+        confidence: 82,
+        text: "Review Answers\n30. Unrelated answer value\n31. Another unrelated occurrence",
+      },
+      {
+        page: 18,
+        representation: "ocr",
+        confidence: 79,
+        text: [
+          "Advanced Problems Using the Equations of Kinematics",
+          "30. A cart accelerates from rest. Find its displacement.",
+          "31. A ball is launched vertically. Find its maximum height.",
+        ].join("\n"),
+      },
+      {
+        page: 19,
+        representation: "ocr",
+        confidence: 78,
+        text: "32. A cyclist brakes uniformly. Find the stopping time.\n33. Next problem",
+      },
+      {
+        page: 20,
+        representation: "ocr",
+        confidence: 80,
+        text: "Review Questions\n30. A repeated review question",
+      },
+    ], ["30", "31", "32"], "Advanced Problems Using the Equations of Kinematics");
+
+    expect(matches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ problemNumber: "30", page: 18, text: expect.stringContaining("cart accelerates") }),
+      expect.objectContaining({ problemNumber: "31", page: 18, text: expect.stringContaining("ball is launched") }),
+      expect.objectContaining({ problemNumber: "32", page: 19, text: expect.stringContaining("cyclist brakes") }),
+    ]));
+    expect(matches.some((match) => match.page === 10 || match.page === 20)).toBe(false);
+  });
+
+  it("returns no numbered candidates when a requested section heading is absent", () => {
+    const matches = detectProblemMatches([{
+      page: 4,
+      representation: "ocr",
+      confidence: 88,
+      text: "30. A number from the wrong worksheet.",
+    }], ["30"], "Advanced Problems Using the Equations of Kinematics");
+
+    expect(matches).toEqual([]);
+  });
+
   it("does not let a number-only answer line consume the following problem start", () => {
     const matches = detectProblemMatches([{
       page: 5,

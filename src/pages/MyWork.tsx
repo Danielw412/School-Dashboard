@@ -10,6 +10,8 @@ import {
   List,
   ListChecks,
   LoaderCircle,
+  Pencil,
+  Plus,
   RefreshCw,
   Search,
   Workflow,
@@ -29,11 +31,13 @@ import type {
   AgentRun,
   AgentWorkflow,
   AssignmentContext,
+  ManualTaskInput,
+  TaskCourse,
   TrackedTask,
 } from "../types";
 
 type GroupMode = "due" | "class" | "upcoming";
-type FilterMode = "all" | "overdue" | "week";
+type FilterMode = "all" | "overdue" | "week" | "completed";
 type ViewMode = "tiles" | "list";
 type WorkflowFeature = Exclude<AgentRun["feature"], "studyGuide">;
 
@@ -47,30 +51,36 @@ type ActiveAssignment = {
 export function MyWork() {
   const tasksState = usePolling(schoolApi.tasks);
   const activeState = usePolling(schoolApi.activeWork, 2_500);
+  const coursesState = usePolling(schoolApi.taskCourses);
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [groupMode, setGroupMode] = useState<GroupMode>("class");
   const [filter, setFilter] = useState<FilterMode>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("tiles");
+  const [editorTask, setEditorTask] = useState<TrackedTask | "new" | null>(null);
   const selectedId = searchParams.get("task");
   const unfinishedTasks = useMemo(
     () => (tasksState.data ?? []).filter((task) => task.completed === false),
     [tasksState.data],
   );
-  const selectedTask = unfinishedTasks.find((task) => task.logical_id === selectedId) ?? null;
+  const allTasks = useMemo(() => tasksState.data ?? [], [tasksState.data]);
+  const selectedTask = allTasks.find((task) => task.logical_id === selectedId) ?? null;
 
   const filtered = useMemo(() => {
     const now = new Date();
     const week = new Date(now);
     week.setDate(now.getDate() + 7);
-    return unfinishedTasks.filter((task) => {
+    const candidates = filter === "completed"
+      ? allTasks.filter((task) => task.completed === true)
+      : unfinishedTasks;
+    return candidates.filter((task) => {
       if (query && !`${task.display_title} ${task.course.name}`.toLowerCase().includes(query.toLowerCase())) return false;
       const due = task.due_date ? parseDueDate(task.due_date) : null;
       if (filter === "overdue" && (!task.due_date || !isPastDue(task.due_date, now))) return false;
       if (filter === "week" && (!due || (task.due_date && isPastDue(task.due_date, now)) || due > week)) return false;
       return true;
     });
-  }, [unfinishedTasks, query, filter]);
+  }, [allTasks, unfinishedTasks, query, filter]);
 
   const groups = useMemo(() => {
     if (groupMode === "upcoming") {
@@ -96,9 +106,10 @@ export function MyWork() {
       <section className="page-content work-page">
         <div className="page-heading-row work-heading">
           <h1>My work</h1>
-          <button className="secondary-button compact-button" onClick={() => void tasksState.refresh()}>
-            <RefreshCw size={15} />Refresh
-          </button>
+          <div className="work-heading-actions">
+            <button className="secondary-button compact-button" onClick={() => void tasksState.refresh()}><RefreshCw size={15} />Refresh</button>
+            <button className="primary-button compact-button" disabled={!coursesState.data?.length} onClick={() => setEditorTask("new")}><Plus size={15} />New task</button>
+          </div>
         </div>
 
         <div className="work-toolbar">
@@ -120,9 +131,9 @@ export function MyWork() {
         </div>
 
         <div className="filter-row" aria-label="Filter assignments">
-          {(["all", "overdue", "week"] as FilterMode[]).map((item) => (
+          {(["all", "overdue", "week", "completed"] as FilterMode[]).map((item) => (
             <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>
-              {item === "all" ? "All unfinished" : item === "overdue" ? "Overdue" : "Next 7 days"}
+              {item === "all" ? "All unfinished" : item === "overdue" ? "Overdue" : item === "week" ? "Next 7 days" : "Completed"}
             </button>
           ))}
         </div>
@@ -157,9 +168,20 @@ export function MyWork() {
           task={selectedTask}
           active={activeForTask(selectedTask.logical_id, activeState.data)}
           refreshActive={() => void activeState.refresh()}
+          onEdit={() => setEditorTask(selectedTask)}
           onClose={() => setSelected(null)}
         />
       ) : null}
+      {editorTask ? <TaskEditor
+        task={editorTask === "new" ? null : editorTask}
+        courses={coursesState.data ?? []}
+        onClose={() => setEditorTask(null)}
+        onSaved={async () => {
+          setEditorTask(null);
+          setSelected(null);
+          await tasksState.refresh();
+        }}
+      /> : null}
     </div>
   );
 }
@@ -205,11 +227,13 @@ function AssignmentInspector({
   task,
   active,
   refreshActive,
+  onEdit,
   onClose,
 }: {
   task: TrackedTask;
   active: ActiveAssignment | null;
   refreshActive: () => void;
+  onEdit: () => void;
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -217,13 +241,19 @@ function AssignmentInspector({
   const [starting, setStarting] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [workflowError, setWorkflowError] = useState<unknown>(null);
+  const hasCanvasContext = Boolean(
+    task.canvas.assignment_id || task.canvas.assignment_url || task.source.assignment_url,
+  );
   useEffect(() => {
+    if (!hasCanvasContext) {
+      return undefined;
+    }
     let current = true;
     void schoolApi.context(task.logical_id)
       .then((context) => { if (current) setResult({ logicalId: task.logical_id, context, error: null }); })
       .catch((error: unknown) => { if (current) setResult({ logicalId: task.logical_id, context: null, error }); });
     return () => { current = false; };
-  }, [task.logical_id]);
+  }, [hasCanvasContext, task.logical_id]);
   const context = result.logicalId === task.logical_id ? result.context : null;
   const contextError = result.logicalId === task.logical_id ? result.error : null;
   const canvasUrl = context?.assignment?.html_url ?? task.canvas.assignment_url ?? task.source.assignment_url;
@@ -277,7 +307,7 @@ function AssignmentInspector({
       {workflowError ? <ErrorNotice error={workflowError} /> : null}
       {contextError ? <ErrorNotice error={contextError} /> : null}
 
-      <section className="workflow-picker">
+      {hasCanvasContext ? <section className="workflow-picker">
         <h3>Choose a workflow</h3>
         <div className="workflow-actions">
           {workflowActions.map(({ label, steps, icon: Icon, primary }) => (
@@ -293,7 +323,7 @@ function AssignmentInspector({
             </button>
           ))}
         </div>
-      </section>
+      </section> : <div className="requirements-block manual-task-note"><strong>Manual task</strong><p>Add a Canvas assignment URL to enable Luna assignment workflows.</p></div>}
 
       {active ? (
         <div className="inspector-progress">
@@ -306,9 +336,10 @@ function AssignmentInspector({
       ) : null}
 
       <div className="inspector-actions">
-        <button className="secondary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
+        <button className="secondary-button" onClick={onEdit}><Pencil size={16} />Edit task</button>
+        {hasCanvasContext ? <button className="secondary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
           <ArrowUpRight size={16} />Open workspace
-        </button>
+        </button> : null}
         {canvasUrl ? <a className="text-link" href={canvasUrl} target="_blank" rel="noreferrer">Open Canvas<ArrowUpRight size={14} /></a> : null}
         {externalUrl ? <a className="text-link" href={externalUrl} target="_blank" rel="noreferrer">Open assignment<ArrowUpRight size={14} /></a> : null}
       </div>
@@ -322,6 +353,79 @@ function AssignmentInspector({
       ) : null}
     </aside>
   );
+}
+
+const TASK_ACTIONS: ManualTaskInput["action_kind"][] = [
+  "complete", "practice", "bring", "present", "submit", "read", "study", "write", "other",
+];
+
+function TaskEditor({ task, courses, onClose, onSaved }: {
+  task: TrackedTask | null;
+  courses: TaskCourse[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [form, setForm] = useState<ManualTaskInput>(() => taskForm(task, courses[0]?.id ?? ""));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const update = <K extends keyof ManualTaskInput>(key: K, value: ManualTaskInput[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (task) await schoolApi.updateTask(task.logical_id, form);
+      else await schoolApi.createTask(form);
+      await onSaved();
+    } catch (saveError) {
+      setError(saveError);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <section className="dialog task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title">
+      <button className="icon-button dialog-close" aria-label="Close task editor" disabled={saving} onClick={onClose}><X size={18} /></button>
+      <h2 id="task-dialog-title">{task ? "Edit task" : "New task"}</h2>
+      <p>Changes are saved directly to Google Tasks.</p>
+      {error ? <ErrorNotice error={error} /> : null}
+      <label>Task name<input autoFocus value={form.title} onChange={(event) => update("title", event.target.value)} /></label>
+      <div className="field-grid">
+        <label>Course<select value={form.course_id} disabled={Boolean(task)} onChange={(event) => update("course_id", event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.settings.name}</option>)}</select>{task ? <small>Course and Google task list stay fixed after creation.</small> : null}</label>
+        <label>Due date<input type="date" value={form.due_date ?? ""} onChange={(event) => update("due_date", event.target.value || null)} /></label>
+        <label>Task type<select value={form.task_type} onChange={(event) => update("task_type", event.target.value as ManualTaskInput["task_type"])}><option value="assignment">Assignment</option><option value="quiz">Quiz</option><option value="test">Test</option></select></label>
+        <label>Classification<select value={form.classification} onChange={(event) => update("classification", event.target.value as ManualTaskInput["classification"])}><option value="homework">Homework</option><option value="classwork">Classwork</option></select></label>
+        <label>Action<select value={form.action_kind} onChange={(event) => update("action_kind", event.target.value as ManualTaskInput["action_kind"])}>{TASK_ACTIONS.map((action) => <option key={action} value={action}>{action[0].toUpperCase() + action.slice(1)}</option>)}</select></label>
+        <label>Status<select value={form.completed ? "completed" : "open"} onChange={(event) => update("completed", event.target.value === "completed")}><option value="open">Open</option><option value="completed">Completed</option></select></label>
+      </div>
+      <label>Description / notes<textarea rows={5} value={form.details} onChange={(event) => update("details", event.target.value)} /></label>
+      <label>Source URL (optional)<input type="url" value={form.source_url ?? ""} onChange={(event) => update("source_url", event.target.value || null)} /></label>
+      <label>Canvas assignment URL (optional)<input type="url" value={form.assignment_url ?? ""} onChange={(event) => update("assignment_url", event.target.value || null)} /></label>
+      <div className="dialog-actions">
+        <button className="secondary-button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button className="primary-button" disabled={saving || !form.title.trim() || !form.course_id} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" size={15} /> : null}{task ? "Save changes" : "Create task"}</button>
+      </div>
+    </section>
+  </div>;
+}
+
+function taskForm(task: TrackedTask | null, courseId: string): ManualTaskInput {
+  return {
+    course_id: task?.course.id ?? courseId,
+    title: task?.display_title ?? "",
+    details: task?.details ?? "",
+    due_date: task?.due_date?.slice(0, 10) ?? null,
+    completed: task?.completed === true,
+    classification: task?.classification === "classwork" ? "classwork" : "homework",
+    task_type: task?.task_type === "quiz" || task?.task_type === "test" ? task.task_type : "assignment",
+    action_kind: TASK_ACTIONS.includes(task?.action_kind as ManualTaskInput["action_kind"])
+      ? task!.action_kind as ManualTaskInput["action_kind"]
+      : "complete",
+    source_url: task?.source.url ?? null,
+    assignment_url: task?.canvas.assignment_url ?? task?.source.assignment_url ?? null,
+  };
 }
 
 function WorkflowSequence({ workflow }: { workflow: AgentWorkflow }) {

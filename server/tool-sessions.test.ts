@@ -43,6 +43,37 @@ describe("PDF render page selection", () => {
 });
 
 describe("PDF tool payloads", () => {
+  it("allows one distinct refinement contact sheet but rejects duplicate or third selections", async () => {
+    const createPdfContactSheet = vi.fn(async (_path, _workspace, pages?: number[]) => ({
+      path: "C:\\tmp\\workspace\\renders\\sheet.png",
+      pages: pages ?? [1, 5, 10],
+    }));
+    const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
+    const sessions = new CanvasToolSessions(
+      {} as CanvasClient,
+      { createPdfContactSheet } as unknown as WorkspaceManager,
+      activity,
+    );
+    const session = sessions.create(makeTask(), makeContext(), makeWorkspace(), defaultSettings);
+
+    await expect(sessions.execute(session.token, "pdf-contact-sheet", {
+      path: "resources/packet.pdf",
+    })).resolves.toMatchObject({ pages: [1, 5, 10] });
+    await expect(sessions.execute(session.token, "pdf-contact-sheet", {
+      path: "resources/packet.pdf",
+      pages: [8, 9, 10, 9],
+    })).resolves.toMatchObject({ pages: [8, 9, 10, 9] });
+    await expect(sessions.execute(session.token, "pdf-contact-sheet", {
+      path: "resources/packet.pdf",
+      pages: [10, 9, 8],
+    })).rejects.toThrow(/identical PDF contact sheet/i);
+    await expect(sessions.execute(session.token, "pdf-contact-sheet", {
+      path: "resources/packet.pdf",
+      pages: [12, 13],
+    })).rejects.toThrow(/one distinct refinement/i);
+    expect(createPdfContactSheet).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps OCR layout coordinates internal instead of sending them to Luna", async () => {
     const ocrPdfPages = vi.fn(async () => [{
       page: 2,

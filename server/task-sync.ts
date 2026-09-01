@@ -28,6 +28,7 @@ const taskSchema = z.object({
   due_uncertain_reason: z.string().nullable().optional(),
   source_date: z.string().nullable().optional(),
   historical: z.boolean().default(false),
+  manually_managed: z.boolean().default(false),
   google_task: z.object({
     task_id: z.string().nullable().optional(),
     tasklist_id: z.string().nullable().optional(),
@@ -53,7 +54,35 @@ const taskSchema = z.object({
   }),
 });
 
-export type TrackedTask = z.infer<typeof taskSchema>;
+type ParsedTrackedTask = z.infer<typeof taskSchema>;
+export type TrackedTask = Omit<ParsedTrackedTask, "manually_managed"> & {
+  manually_managed?: boolean;
+};
+
+const taskCourseSchema = z.object({
+  id: z.string(),
+  settings: z.object({
+    name: z.string(),
+    prefix: z.string(),
+  }),
+});
+
+export type TaskCourse = z.infer<typeof taskCourseSchema>;
+
+export const manualTaskInputSchema = z.object({
+  course_id: z.string().min(1),
+  title: z.string().trim().min(1).max(1024),
+  details: z.string().max(8192).default(""),
+  due_date: z.string().date().nullable(),
+  completed: z.boolean(),
+  classification: z.enum(["homework", "classwork"]),
+  task_type: z.enum(["assignment", "quiz", "test"]),
+  action_kind: z.enum(["practice", "complete", "bring", "present", "submit", "read", "study", "write", "other"]),
+  source_url: z.string().url().nullable(),
+  assignment_url: z.string().url().nullable(),
+});
+
+export type ManualTaskInput = z.infer<typeof manualTaskInputSchema>;
 
 const browserResourceSchema = z.object({
   ok: z.literal(true),
@@ -92,12 +121,29 @@ export class TaskSyncClient {
     private readonly activity: ActivityStore,
   ) {}
 
-  async listTasks(completed = false): Promise<TrackedTask[]> {
-    return z.array(taskSchema).parse(await this.get(`/tasks?completed=${completed}`));
+  async listTasks(completed: boolean | undefined = false): Promise<TrackedTask[]> {
+    const query = completed === undefined ? "" : `?completed=${completed}`;
+    return z.array(taskSchema).parse(await this.get(`/tasks${query}`));
   }
 
   async getTask(logicalId: string): Promise<TrackedTask> {
     return taskSchema.parse(await this.get(`/tasks/${encodeURIComponent(logicalId)}`));
+  }
+
+  async listCourses(): Promise<TaskCourse[]> {
+    return z.array(taskCourseSchema).parse(await this.get("/courses"));
+  }
+
+  async createTask(input: ManualTaskInput): Promise<TrackedTask> {
+    return taskSchema.parse(await this.mutate("/tasks", "POST", input));
+  }
+
+  async updateTask(logicalId: string, input: ManualTaskInput): Promise<TrackedTask> {
+    return taskSchema.parse(await this.mutate(
+      `/tasks/${encodeURIComponent(logicalId)}`,
+      "PUT",
+      input,
+    ));
   }
 
   async health(): Promise<{ connected: boolean; apiVersion?: number; error?: string }> {
@@ -163,6 +209,26 @@ export class TaskSyncClient {
         throw error;
       });
     return this.csrfTokenPromise;
+  }
+
+  private async mutate(path: string, method: "POST" | "PUT", body: unknown): Promise<unknown> {
+    const execute = async () => this.request(path, {
+      method,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": await this.csrfToken(),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    }, true);
+    try {
+      return await execute();
+    } catch (error) {
+      if (!(error instanceof TaskSyncRequestError) || error.code !== "csrf_failed") throw error;
+      this.csrfTokenPromise = null;
+      return execute();
+    }
   }
 
   private async request(path: string, init: RequestInit, log: boolean): Promise<unknown> {

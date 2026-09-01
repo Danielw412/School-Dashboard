@@ -22,6 +22,7 @@ export type TrackedTask = {
   due_uncertain_reason?: string | null;
   source_date?: string | null;
   historical: boolean;
+  manually_managed?: boolean;
   google_task: {
     task_id?: string | null;
     tasklist_id?: string | null;
@@ -45,6 +46,24 @@ export type TrackedTask = {
     course_url?: string | null;
     assignment_url?: string | null;
   };
+};
+
+export type TaskCourse = {
+  id: string;
+  settings: { name: string; prefix: string };
+};
+
+export type ManualTaskInput = {
+  course_id: string;
+  title: string;
+  details: string;
+  due_date: string | null;
+  completed: boolean;
+  classification: "homework" | "classwork";
+  task_type: "assignment" | "quiz" | "test";
+  action_kind: "practice" | "complete" | "bring" | "present" | "submit" | "read" | "study" | "write" | "other";
+  source_url: string | null;
+  assignment_url: string | null;
 };
 
 export type AssignmentContext = {

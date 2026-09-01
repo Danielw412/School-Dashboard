@@ -13,7 +13,7 @@ import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
 import { APP_ROOT, env, TEMP_WORKSPACE_ROOT } from "./env.js";
 import { SettingsStore } from "./settings.js";
-import { TaskSyncClient } from "./task-sync.js";
+import { manualTaskInputSchema, TaskSyncClient } from "./task-sync.js";
 import { ToolAuthorizationError } from "./tool-sessions.js";
 import { AgentWorkflowRunner } from "./workflow-runner.js";
 import { safeChild, WorkspaceManager } from "./workspace.js";
@@ -60,9 +60,13 @@ app.get("/api/health", async (_request, response) => {
 });
 
 app.get("/api/tasks", async (request, response) => {
-  const completed = request.query.completed === "true";
+  const completed = request.query.completed === "all"
+    ? undefined
+    : request.query.completed === "true";
   const tasks = await taskSync.listTasks(completed);
-  response.json(tasks.filter((task) => task.completed === completed));
+  response.json(completed === undefined
+    ? tasks
+    : tasks.filter((task) => task.completed === completed));
 });
 
 app.get("/api/tasks/:logicalId", async (request, response) => {
@@ -137,6 +141,21 @@ app.get("/api/agent-runs/:id/progress", async (request, response) => {
 app.post("/api/agent-runs", async (request, response) => {
   const run = await agentRunner.start(request.body);
   response.status(202).json(run);
+});
+
+app.get("/api/task-courses", async (_request, response) => {
+  response.json(await taskSync.listCourses());
+});
+
+app.post("/api/tasks", async (request, response) => {
+  response.status(201).json(await taskSync.createTask(manualTaskInputSchema.parse(request.body)));
+});
+
+app.put("/api/tasks/:logicalId", async (request, response) => {
+  response.json(await taskSync.updateTask(
+    request.params.logicalId,
+    manualTaskInputSchema.parse(request.body),
+  ));
 });
 
 app.post("/api/agent-runs/:id/cancel", async (request, response) => {

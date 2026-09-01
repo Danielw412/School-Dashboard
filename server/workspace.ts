@@ -466,6 +466,7 @@ export class WorkspaceManager {
     requestedProblems: string[],
     workspace: AssignmentWorkspace,
     selectedPages?: number[],
+    sectionHeading?: string,
   ): Promise<{
     matches: PdfProblemMatch[];
     searchedPages: number[];
@@ -481,6 +482,7 @@ export class WorkspaceManager {
     const textMatches = detectProblemMatches(
       textPages.map((entry) => ({ ...entry, representation: "text" as const, confidence: 100 })),
       requestedProblems,
+      sectionHeading,
     );
     const found = new Set(textMatches.map((match) => normalizeProblemNumber(match.problemNumber)));
     const requested = requestedProblems.map(normalizeProblemNumber).filter(Boolean);
@@ -511,6 +513,7 @@ export class WorkspaceManager {
         confidence: entry.confidence,
       })),
       requestedProblems,
+      sectionHeading,
     );
     const matches = dedupeProblemMatches([...textMatches, ...ocrMatches]);
     const resolved = new Set(matches.map((match) => normalizeProblemNumber(match.problemNumber)));
@@ -819,10 +822,11 @@ function addRequestedProblemsToIndex(index: PdfDocumentIndex, requestedProblems:
 export function detectProblemMatches(
   pages: Array<{ page: number; text: string; representation: "text" | "ocr"; confidence: number }>,
   requestedProblems: string[],
+  sectionHeading?: string,
 ): PdfProblemMatch[] {
   const wanted = new Set(requestedProblems.map(normalizeProblemNumber).filter(Boolean));
   const matches: PdfProblemMatch[] = [];
-  for (const page of pages) {
+  for (const page of constrainPagesToSection(pages, sectionHeading)) {
     const starts = page.representation === "ocr"
       ? detectProblemStartsWithOcrHints(page.text, wanted)
       : detectProblemStarts(page.text);
@@ -847,6 +851,72 @@ export function detectProblemMatches(
     }
   }
   return matches;
+}
+
+function constrainPagesToSection<T extends { page: number; text: string }>(
+  pages: T[],
+  sectionHeading?: string,
+): T[] {
+  if (!sectionHeading?.trim()) return pages;
+  const headingTokens = normalizedHeadingTokens(sectionHeading);
+  if (headingTokens.length < 2) return [];
+  const candidates = pages.flatMap((page, pageIndex) =>
+    page.text.split(/\r?\n/u).map((line, lineIndex) => ({
+      page,
+      pageIndex,
+      lineIndex,
+      line,
+      score: headingSimilarity(line, headingTokens),
+    })));
+  const anchor = candidates.sort((left, right) => right.score - left.score)[0];
+  if (!anchor || anchor.score < 0.62) return [];
+  const sectionPages = pages.slice(anchor.pageIndex, anchor.pageIndex + 5);
+  const constrained: T[] = [];
+  for (let offset = 0; offset < sectionPages.length; offset += 1) {
+    const page = sectionPages[offset]!;
+    const lines = page.text.split(/\r?\n/u);
+    if (offset > 0) {
+      const openingHeading = lines.slice(0, 4).find((line) => looksLikeSectionHeading(line.trim()));
+      if (openingHeading && headingSimilarity(openingHeading, headingTokens) < 0.45) {
+        break;
+      }
+    }
+    const start = offset === 0 ? anchor.lineIndex : 0;
+    let end = lines.length;
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const line = lines[index]!.trim();
+      if (!looksLikeSectionHeading(line)) continue;
+      if (headingSimilarity(line, headingTokens) < 0.45) {
+        end = index;
+        break;
+      }
+    }
+    const text = lines.slice(start, end).join("\n");
+    if (text.trim()) constrained.push({ ...page, text });
+    if (end < lines.length) break;
+  }
+  return constrained;
+}
+
+function normalizedHeadingTokens(value: string): string[] {
+  return value.toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => token.length > 2);
+}
+
+function headingSimilarity(line: string, expectedTokens: string[]): number {
+  const actual = new Set(normalizedHeadingTokens(line));
+  if (actual.size === 0) return 0;
+  const overlap = expectedTokens.filter((token) => actual.has(token)).length;
+  return overlap / expectedTokens.length;
+}
+
+function looksLikeSectionHeading(line: string): boolean {
+  if (line.length < 5 || line.length > 160) return false;
+  return /^(?:chapter|section|unit|lesson|worksheet|practice|review|advanced|problems?|exercises?)\b/iu.test(line) ||
+    (line === line.toLocaleUpperCase() && /[A-Z]{3}/u.test(line));
 }
 
 function findOcrProblemEnd(

@@ -38,6 +38,7 @@ type ToolSession = {
   failedOperations: Map<string, string>;
   completeProblemPages: Set<string>;
   completedVisualPages: Set<string>;
+  contactSheetSelections: Map<string, Set<string>>;
   knownResourceUrls: Set<string>;
   focusedSearchKey: string | null;
 };
@@ -91,6 +92,7 @@ export class CanvasToolSessions {
       failedOperations: new Map(),
       completeProblemPages: new Set(),
       completedVisualPages: new Set(),
+      contactSheetSelections: new Map(),
       knownResourceUrls: new Set(
         directTaskLinks(task, context).map(normalizeResourceUrl).filter(Boolean),
       ),
@@ -393,7 +395,23 @@ export class CanvasToolSessions {
         const pages = input.pages === undefined
           ? undefined
           : z.array(z.number().int().positive()).min(1).max(20).parse(input.pages);
+        const selection = pages
+          ? [...new Set(pages)].sort((left, right) => left - right).join(",")
+          : "overview";
+        const priorSelections = session.contactSheetSelections.get(path) ?? new Set<string>();
+        if (priorSelections.has(selection)) {
+          throw new ToolAuthorizationError(
+            "This identical PDF contact sheet was already created and displayed in this run.",
+          );
+        }
+        if (priorSelections.size >= 2) {
+          throw new ToolAuthorizationError(
+            "Only the overview contact sheet and one distinct refinement contact sheet are allowed per PDF.",
+          );
+        }
         const contact = await this.workspaces.createPdfContactSheet(path, session.workspace, pages);
+        priorSelections.add(selection);
+        session.contactSheetSelections.set(path, priorSelections);
         return {
           pages: contact.pages,
           path: relative(session.workspace.path, contact.path).replaceAll("\\", "/"),
@@ -413,10 +431,17 @@ export class CanvasToolSessions {
       case "pdf-detect-problems": {
         const path = safeChild(session.workspace.path, z.string().min(1).parse(input.path));
         const problemNumbers = z.array(z.string()).max(100).default([]).parse(input.problemNumbers);
+        const sectionHeading = z.string().min(3).max(300).optional().parse(input.sectionHeading);
         const pages = input.pages === undefined
           ? undefined
           : z.array(z.number().int().positive()).min(1).max(80).parse(input.pages);
-        const result = await this.workspaces.detectPdfProblems(path, problemNumbers, session.workspace, pages);
+        const result = await this.workspaces.detectPdfProblems(
+          path,
+          problemNumbers,
+          session.workspace,
+          pages,
+          sectionHeading,
+        );
         if (problemNumbers.length > 0 && result.unresolvedProblemNumbers.length === 0) {
           for (const page of new Set(result.matches.map((match) => match.page))) {
             session.completeProblemPages.add(pdfPageKey(path, page));
@@ -661,24 +686,25 @@ export class CanvasToolSessions {
     );
     register(
       "render_pdf_pages",
-      "Render selected pages only to inspect unresolved text or a required unlabeled visual. Do not render after detection and an exact-label semantic crop already completed.",
+      "Render selected pages only to inspect unresolved text or a required unlabeled visual. If several pages need verification, include them together in this one call. Do not render after detection and an exact-label semantic crop already completed.",
       "pdf-render",
       pdfPathSelectionSchema(true).extend({ dpi: z.number().int().min(36).max(300).optional() }),
     );
     register(
       "create_pdf_contact_sheet",
-      "Create a cached low-resolution document overview for fast navigation before expensive full-resolution rendering.",
+      "Create a cached low-resolution document overview for fast navigation. One distinct refinement sheet over a narrowed region is allowed when the overview cannot identify exact pages; identical selections are rejected.",
       "pdf-contact-sheet",
       z.object({ path: z.string().min(1), pages: z.array(z.number().int().positive()).min(1).max(20).optional() }),
     );
     register(
       "detect_pdf_problems",
-      "Locate requested problem numbers from cached PDF text. For any scanned document over four pages, first use its contact sheet and pass only the selected pages so OCR stays bounded.",
+      "Locate requested problem numbers from cached PDF text. Pass sectionHeading when the assignment names a worksheet/section so repeated numbers outside that section are ignored. For any scanned document over four pages, first use its contact sheet and pass only the selected pages so OCR stays bounded.",
       "pdf-detect-problems",
       z.object({
         path: z.string().min(1),
         problemNumbers: z.array(z.string()).max(100).optional(),
         pages: z.array(z.number().int().positive()).min(1).max(80).optional(),
+        sectionHeading: z.string().min(3).max(300).optional(),
       }),
     );
     register(
