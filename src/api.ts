@@ -47,10 +47,18 @@ export const schoolApi = {
     useTestQuestionPredictor?: boolean;
     extractionRunId?: string;
   }) => api<AgentRun>("/api/agent-runs", { method: "POST", body: JSON.stringify(input) }),
+  cancelRun: (id: string) => api<AgentRun>(`/api/agent-runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: "{}",
+  }),
   startWorkflow: (input: {
     logicalId: string;
     steps: Array<Exclude<AgentRun["feature"], "studyGuide">>;
   }) => api<AgentWorkflow>("/api/agent-workflows", { method: "POST", body: JSON.stringify(input) }),
+  cancelWorkflow: (id: string) => api<AgentWorkflow>(`/api/agent-workflows/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: "{}",
+  }),
   settings: () => api<AppSettings>("/api/settings"),
   saveSettings: (settings: AppSettings) =>
     api<{ settings: AppSettings; restartRequired: boolean }>("/api/settings", {

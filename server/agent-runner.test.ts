@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rename, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  type AgentRun,
+  AgentRunStore,
   buildInstructions,
   buildMcpConfigOverrides,
   compactEventForLog,
@@ -11,6 +17,12 @@ import {
   stripLegacyAnswerMetadata,
 } from "./agent-runner.js";
 import { defaultSettings } from "./settings.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
 
 describe("agent run preferences", () => {
   it("defaults problem extraction to Luna with xhigh reasoning", () => {
@@ -155,3 +167,70 @@ describe("agent run preferences", () => {
     });
   });
 });
+
+describe("AgentRunStore", () => {
+  it("recovers after a failed file replacement instead of poisoning later status updates", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    let replacements = 0;
+    const replace = vi.fn(async (source: string, destination: string) => {
+      replacements += 1;
+      if (replacements === 2) throw Object.assign(new Error("file temporarily locked"), { code: "EPERM" });
+      await rename(source, destination);
+    });
+    const store = new AgentRunStore(join(directory, "runs.json"), replace);
+    const run = agentRun();
+
+    await store.create(run);
+    await expect(store.update(run.id, { status: "running" })).rejects.toThrow("file temporarily locked");
+    await store.update(run.id, {
+      status: "failed",
+      completedAt: "2026-08-31T20:05:00.000Z",
+      error: "Recovered after the write failure.",
+    });
+
+    await expect(store.get(run.id)).resolves.toMatchObject({
+      status: "failed",
+      error: "Recovered after the write failure.",
+    });
+    expect(replace).toHaveBeenCalledTimes(3);
+  });
+
+  it("marks persisted active records as failed when no live execution owns them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const store = new AgentRunStore(join(directory, "runs.json"));
+    await store.create({ ...agentRun(), status: "running" });
+
+    await expect(store.failOrphaned(() => false)).resolves.toBe(1);
+    await expect(store.get("run-1")).resolves.toMatchObject({
+      status: "failed",
+      error: "The run stopped without reporting a final status.",
+    });
+  });
+});
+
+function agentRun(): AgentRun {
+  return {
+    id: "run-1",
+    feature: "directions",
+    status: "queued",
+    logicalId: "physics:assignment:42",
+    taskTitle: "Problem Set 4",
+    courseName: "AP Physics C",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    effectiveReasoningEffort: "medium",
+    prompt: "Inspect the assignment.",
+    startedAt: "2026-08-31T20:00:00.000Z",
+    completedAt: null,
+    threadId: null,
+    workspaceId: null,
+    usage: null,
+    events: [],
+    rawStructuredOutput: null,
+    output: null,
+    error: null,
+    predictor: null,
+  };
+}

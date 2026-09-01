@@ -31,7 +31,6 @@ export function buildAgentProgress(
     return eventRunId === run.id || Boolean(run.workspaceId && workspace === run.workspaceId);
   });
   const entries = collapseStartedEvents(relevant)
-    .slice(0, 10)
     .map((event) => ({
       id: event.id,
       timestamp: event.timestamp,
@@ -52,7 +51,7 @@ export function buildAgentProgress(
     elapsedMs: Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0,
     current: entries.find((entry) => entry.status === "started")?.message
       ?? entries[0]?.message
-      ?? (run.status === "queued" ? "Waiting to start" : "Starting the assignment agent"),
+      ?? (run.status === "queued" ? "Waiting to start" : run.status === "cancelled" ? "Run cancelled" : "Starting the assignment agent"),
     entries,
   };
 }

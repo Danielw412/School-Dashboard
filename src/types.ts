@@ -80,7 +80,7 @@ export type AssignmentContext = {
 export type AgentRun = {
   id: string;
   feature: "directions" | "problemExtraction" | "answerKey" | "studyGuide";
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   logicalId: string;
   taskTitle: string;
   courseName: string;
@@ -130,10 +130,10 @@ export type AgentWorkflow = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   steps: Array<{
     feature: Exclude<AgentRun["feature"], "studyGuide">;
-    status: "pending" | "running" | "completed" | "failed" | "skipped";
+    status: "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
     runId: string | null;
   }>;
   currentStep: number | null;

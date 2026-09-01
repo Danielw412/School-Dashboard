@@ -1,7 +1,7 @@
-import { AlertCircle, CheckCircle2, LoaderCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, CircleOff, LoaderCircle } from "lucide-react";
 
-export function RunStatus({ status }: { status: "queued" | "running" | "completed" | "failed" }) {
-  const Icon = status === "completed" ? CheckCircle2 : status === "failed" ? AlertCircle : LoaderCircle;
+export function RunStatus({ status }: { status: "queued" | "running" | "completed" | "failed" | "cancelled" }) {
+  const Icon = status === "completed" ? CheckCircle2 : status === "failed" ? AlertCircle : status === "cancelled" ? CircleOff : LoaderCircle;
   return <span className={`run-status ${status}`}><Icon size={14} className={status === "running" ? "spin" : ""} />{status}</span>;
 }
 

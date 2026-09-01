@@ -28,6 +28,24 @@ describe("agent progress", () => {
     ]);
     expect(JSON.stringify(progress)).not.toContain("chain of thought");
   });
+
+  it("keeps the complete available activity history for a scrollable timeline", () => {
+    const run = {
+      id: "run-1",
+      status: "running",
+      startedAt: "2026-08-28T12:00:00.000Z",
+      completedAt: null,
+      workspaceId: "workspace-1",
+    } as AgentRun;
+    const events = Array.from({ length: 14 }, (_, index) => ({
+      ...event(`step-${index}`, "completed", { runId: "run-1" }),
+      id: `event-${index}`,
+    }));
+
+    const progress = buildAgentProgress(run, events);
+
+    expect(progress.entries).toHaveLength(14);
+  });
 });
 
 function event(action: string, status: ActivityEvent["status"], metadata: Record<string, unknown>): ActivityEvent {

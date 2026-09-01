@@ -52,4 +52,42 @@ describe("AgentWorkflowRunner", () => {
       ],
     });
   });
+
+  it("cancels the current run and leaves the workflow cancelled", async () => {
+    let cancelled = false;
+    const agentRunner = {
+      start: vi.fn(async () => ({ id: "run-directions" }) as AgentRun),
+      cancel: vi.fn(async () => {
+        cancelled = true;
+        return { id: "run-directions", status: "cancelled" } as AgentRun;
+      }),
+    } as unknown as AgentRunner;
+    const runs = {
+      get: vi.fn(async () => ({
+        id: "run-directions",
+        status: cancelled ? "cancelled" : "running",
+        error: cancelled ? "Cancelled by the user." : null,
+      }) as AgentRun),
+    } as unknown as AgentRunStore;
+    const taskSync = {
+      getTask: vi.fn(async () => ({
+        display_title: "Problem Set 4",
+        course: { name: "AP Physics C" },
+      })),
+    } as unknown as TaskSyncClient;
+    const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
+    const runner = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
+    const workflow = await runner.start({ logicalId: "physics:assignment:42", steps: ["directions"] });
+    await vi.waitFor(() => expect(runner.list()[0].currentRunId).toBe("run-directions"));
+
+    await runner.cancel(workflow.id);
+
+    expect(agentRunner.cancel).toHaveBeenCalledWith("run-directions");
+    expect(runner.list()[0]).toMatchObject({
+      status: "cancelled",
+      currentRunId: null,
+      error: "Cancelled by the user.",
+      steps: [{ status: "cancelled" }],
+    });
+  });
 });

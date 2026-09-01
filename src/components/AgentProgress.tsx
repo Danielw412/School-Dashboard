@@ -30,7 +30,7 @@ export function ProgressTimeline({
   compact?: boolean;
   fallbackCurrent?: string;
 }) {
-  const entries = progress?.entries.slice(0, compact ? 3 : 7) ?? [];
+  const entries = progress?.entries ?? [];
   return (
     <section className={`progress-panel ${compact ? "compact" : ""}`} aria-live={active ? "polite" : "off"}>
       <div className="progress-current">

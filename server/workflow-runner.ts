@@ -14,7 +14,7 @@ const workflowInputSchema = z.object({
 
 export type AgentWorkflowStep = {
   feature: AgentFeature;
-  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "skipped";
   runId: string | null;
 };
 
@@ -23,7 +23,7 @@ export type AgentWorkflow = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   steps: AgentWorkflowStep[];
   currentStep: number | null;
   currentRunId: string | null;
@@ -41,6 +41,7 @@ const allowedSequences = new Set([
 
 export class AgentWorkflowRunner {
   private readonly workflows = new Map<string, AgentWorkflow>();
+  private readonly cancelledWorkflows = new Set<string>();
 
   constructor(
     private readonly agentRunner: AgentRunner,
@@ -84,12 +85,40 @@ export class AgentWorkflowRunner {
       .map((workflow) => structuredClone(workflow));
   }
 
+  async cancel(id: string): Promise<AgentWorkflow> {
+    const workflow = this.require(id);
+    if (!isActive(workflow.status)) return structuredClone(workflow);
+    this.cancelledWorkflows.add(id);
+    if (workflow.currentRunId) await this.agentRunner.cancel(workflow.currentRunId);
+    const steps = workflow.steps.map((step) => ({
+      ...step,
+      status: step.status === "running" ? "cancelled" as const : step.status === "pending" ? "skipped" as const : step.status,
+    }));
+    this.patch(id, {
+      status: "cancelled",
+      steps,
+      currentRunId: null,
+      completedAt: new Date().toISOString(),
+      error: "Cancelled by the user.",
+    });
+    await this.activity.record({
+      category: "agent",
+      action: "workflow",
+      status: "warning",
+      summary: `${workflow.taskTitle} cancelled`,
+      metadata: { workflowId: id, logicalId: workflow.logicalId },
+    });
+    return structuredClone(this.require(id));
+  }
+
   private async execute(id: string): Promise<void> {
+    if (this.cancelledWorkflows.has(id)) return;
     this.patch(id, { status: "running" });
     let extractionRunId: string | undefined;
     const workflow = this.require(id);
     try {
       for (let index = 0; index < workflow.steps.length; index += 1) {
+        this.throwIfCancelled(id);
         const feature = workflow.steps[index].feature;
         this.updateStep(id, index, { status: "running" });
         this.patch(id, { currentStep: index, currentRunId: null });
@@ -106,6 +135,10 @@ export class AgentWorkflowRunner {
           logicalId: workflow.logicalId,
           extractionRunId: feature === "answerKey" ? extractionRunId : undefined,
         });
+        if (this.cancelledWorkflows.has(id)) {
+          await this.agentRunner.cancel(run.id);
+          return;
+        }
         this.updateStep(id, index, { runId: run.id });
         this.patch(id, { currentRunId: run.id });
         const completedRun = await this.waitForTerminalRun(run.id);
@@ -129,6 +162,7 @@ export class AgentWorkflowRunner {
         completedAt: new Date().toISOString(),
       });
     } catch (error) {
+      if (this.cancelledWorkflows.has(id)) return;
       const message = error instanceof Error ? error.message : "Assignment workflow failed.";
       const current = this.require(id);
       if (current.currentStep !== null) {
@@ -158,7 +192,7 @@ export class AgentWorkflowRunner {
     while (Date.now() < deadline) {
       const run = await this.runs.get(runId);
       if (!run) throw new Error("The active agent run could not be found.");
-      if (run.status === "completed" || run.status === "failed") return run;
+      if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
     throw new Error("The assignment workflow timed out.");
@@ -168,6 +202,10 @@ export class AgentWorkflowRunner {
     const workflow = this.workflows.get(id);
     if (!workflow) throw new Error("Agent workflow was not found.");
     return workflow;
+  }
+
+  private throwIfCancelled(id: string): void {
+    if (this.cancelledWorkflows.has(id)) throw new Error("Cancelled by the user.");
   }
 
   private patch(id: string, patch: Partial<AgentWorkflow>) {

@@ -1,4 +1,5 @@
 import {
+  ArrowDownWideNarrow,
   ArrowUpRight,
   CalendarDays,
   ChevronRight,
@@ -31,7 +32,7 @@ import type {
   TrackedTask,
 } from "../types";
 
-type GroupMode = "due" | "class";
+type GroupMode = "due" | "class" | "upcoming";
 type FilterMode = "all" | "overdue" | "week";
 type ViewMode = "tiles" | "list";
 type WorkflowFeature = Exclude<AgentRun["feature"], "studyGuide">;
@@ -48,7 +49,7 @@ export function MyWork() {
   const activeState = usePolling(schoolApi.activeWork, 2_500);
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
-  const [groupMode, setGroupMode] = useState<GroupMode>("due");
+  const [groupMode, setGroupMode] = useState<GroupMode>("class");
   const [filter, setFilter] = useState<FilterMode>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("tiles");
   const selectedId = searchParams.get("task");
@@ -72,6 +73,9 @@ export function MyWork() {
   }, [unfinishedTasks, query, filter]);
 
   const groups = useMemo(() => {
+    if (groupMode === "upcoming") {
+      return [["", [...filtered].sort(compareByDueDate)] as [string, TrackedTask[]]];
+    }
     const output = new Map<string, TrackedTask[]>();
     for (const task of filtered) {
       const key = groupMode === "due" ? dueBucket(task) : task.course.name;
@@ -104,8 +108,9 @@ export function MyWork() {
           </label>
           <div className="toolbar-controls">
             <div className="segmented" aria-label="Group assignments">
-              <button className={groupMode === "due" ? "active" : ""} onClick={() => setGroupMode("due")}><CalendarDays size={15} />Due date</button>
-              <button className={groupMode === "class" ? "active" : ""} onClick={() => setGroupMode("class")}><GraduationCap size={15} />Class</button>
+              <button aria-pressed={groupMode === "class"} className={groupMode === "class" ? "active" : ""} onClick={() => setGroupMode("class")}><GraduationCap size={15} />Class</button>
+              <button aria-pressed={groupMode === "due"} className={groupMode === "due" ? "active" : ""} onClick={() => setGroupMode("due")}><CalendarDays size={15} />Due date</button>
+              <button aria-pressed={groupMode === "upcoming"} className={groupMode === "upcoming" ? "active" : ""} onClick={() => setGroupMode("upcoming")}><ArrowDownWideNarrow size={15} />Due soonest</button>
             </div>
             <div className="segmented view-toggle" aria-label="Assignment view">
               <button className={viewMode === "tiles" ? "active" : ""} onClick={() => setViewMode("tiles")} aria-label="Tiles view"><Grid2X2 size={15} />Tiles</button>
@@ -127,10 +132,10 @@ export function MyWork() {
         {!tasksState.loading && !tasksState.error && groups.length === 0 ? (
           <EmptyState title="Nothing here" detail="No unfinished assignments match these filters." />
         ) : null}
-        <div className="assignment-groups">
+        <div className={`assignment-groups ${groupMode === "upcoming" ? "is-ungrouped" : ""}`}>
           {groups.map(([group, items]) => (
-            <section className="assignment-group" key={group}>
-              <header><h2>{group}</h2><span>{items.length}</span></header>
+            <section className="assignment-group" key={group || "upcoming"}>
+              {group ? <header><h2>{group}</h2><span>{items.length}</span></header> : null}
               <div className={`assignment-collection ${viewMode}`}>
                 {items.map((task) => (
                   <AssignmentItem
@@ -210,6 +215,7 @@ function AssignmentInspector({
   const navigate = useNavigate();
   const [result, setResult] = useState<{ logicalId: string; context: AssignmentContext | null; error: unknown }>({ logicalId: "", context: null, error: null });
   const [starting, setStarting] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [workflowError, setWorkflowError] = useState<unknown>(null);
   useEffect(() => {
     let current = true;
@@ -233,6 +239,21 @@ function AssignmentInspector({
       setWorkflowError(error);
     } finally {
       setStarting(null);
+    }
+  };
+
+  const cancelActive = async () => {
+    if (!active) return;
+    setCancelling(true);
+    setWorkflowError(null);
+    try {
+      if (active.workflow) await schoolApi.cancelWorkflow(active.workflow.id);
+      else if (active.run) await schoolApi.cancelRun(active.run.id);
+      refreshActive();
+    } catch (error) {
+      setWorkflowError(error);
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -278,6 +299,9 @@ function AssignmentInspector({
         <div className="inspector-progress">
           <ProgressTimeline progress={active.progress} active compact fallbackCurrent={active.current} />
           {active.workflow ? <WorkflowSequence workflow={active.workflow} /> : null}
+          <button className="danger-button compact-button cancel-run-button" disabled={cancelling} onClick={() => void cancelActive()}>
+            {cancelling ? <LoaderCircle className="spin" size={15} /> : <X size={15} />}Cancel Luna
+          </button>
         </div>
       ) : null}
 
@@ -338,6 +362,14 @@ function activeForTask(logicalId: string, activeWork: ActiveWork | null): Active
 function humanSubmissionTypes(types: string[]): string {
   if (types.length === 0 || types.includes("none")) return "No online submission is listed in Canvas.";
   return types.map((type) => type.replace(/^online_/, "").replaceAll("_", " ")).join(", ");
+}
+
+function compareByDueDate(left: TrackedTask, right: TrackedTask): number {
+  if (!left.due_date && !right.due_date) return left.display_title.localeCompare(right.display_title);
+  if (!left.due_date) return 1;
+  if (!right.due_date) return -1;
+  const difference = parseDueDate(left.due_date).getTime() - parseDueDate(right.due_date).getTime();
+  return difference || left.display_title.localeCompare(right.display_title);
 }
 
 function AssignmentSkeleton({ viewMode }: { viewMode: ViewMode }) {

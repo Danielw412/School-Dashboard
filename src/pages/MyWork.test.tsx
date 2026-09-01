@@ -41,6 +41,8 @@ vi.mock("../api", () => ({
     activeWork: vi.fn(async () => ({ workflows: [], runs: [] })),
     context: vi.fn(async () => context),
     startWorkflow: vi.fn(async () => ({ id: "workflow-1" })),
+    cancelWorkflow: vi.fn(async () => ({ id: "workflow-1", status: "cancelled" })),
+    cancelRun: vi.fn(),
   },
 }));
 
@@ -60,12 +62,30 @@ describe("MyWork", () => {
     expect(screen.getByText(/Allowed: pdf/)).toBeInTheDocument();
   });
 
-  it("switches to grouping by class", async () => {
-    const user = userEvent.setup();
+  it("groups assignments by class by default", async () => {
     render(<MemoryRouter><MyWork /></MemoryRouter>);
     await screen.findByText("Problem Set 4");
-    await user.click(screen.getByRole("button", { name: /Class/i }));
+    expect(screen.getByRole("button", { name: /Class/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getAllByText("AP Physics C").length).toBeGreaterThan(0);
+  });
+
+  it("offers one ungrouped view sorted from the soonest due date to no due date", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.tasks).mockResolvedValueOnce([
+      { ...task, logical_id: "physics:assignment:later", display_title: "Later assignment", due_date: "2099-09-12T20:00:00Z" },
+      { ...task, logical_id: "physics:assignment:none", display_title: "No due date assignment", due_date: null },
+      { ...task, logical_id: "physics:assignment:soon", display_title: "Soon assignment", due_date: "2099-09-01T20:00:00Z" },
+    ]);
+    const { container } = render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await screen.findByText("Later assignment");
+
+    await user.click(screen.getByRole("button", { name: /Due soonest/i }));
+
+    const titles = [...container.querySelectorAll(".assignment-item .assignment-main > strong")]
+      .map((element) => element.textContent);
+    expect(titles).toEqual(["Soon assignment", "Later assignment", "No due date assignment"]);
+    expect(container.querySelectorAll(".assignment-group > header")).toHaveLength(0);
   });
 
   it("starts the full assignment workflow in sequence", async () => {
@@ -78,5 +98,32 @@ describe("MyWork", () => {
       logicalId: task.logical_id,
       steps: ["directions", "problemExtraction", "answerKey"],
     }));
+  });
+
+  it("offers cancellation for an active assignment workflow", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.activeWork).mockResolvedValue({
+      workflows: [{
+        id: "workflow-1",
+        logicalId: task.logical_id,
+        taskTitle: task.display_title,
+        courseName: task.course.name,
+        status: "running",
+        steps: [{ feature: "directions", status: "running", runId: "run-1" }],
+        currentStep: 0,
+        currentRunId: "run-1",
+        startedAt: "2026-08-31T20:00:00Z",
+        completedAt: null,
+        error: null,
+      }],
+      runs: [],
+    });
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await user.click(await screen.findByText("Problem Set 4"));
+
+    await user.click(await screen.findByRole("button", { name: "Cancel Luna" }));
+
+    await waitFor(() => expect(schoolApi.cancelWorkflow).toHaveBeenCalledWith("workflow-1"));
   });
 });

@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
   runs: vi.fn(),
   runProgress: vi.fn(),
   startRun: vi.fn(),
+  cancelRun: vi.fn(),
 }));
 
 vi.mock("../api", () => ({ schoolApi: apiMocks }));
@@ -76,6 +77,7 @@ describe("AssignmentWorkspace directions", () => {
       entries: [],
     });
     apiMocks.startRun.mockResolvedValue({ id: "new-run" });
+    apiMocks.cancelRun.mockResolvedValue({ id: "directions-run", status: "cancelled" });
   });
 
   it("does not expose raw Canvas directions and starts a Luna directions run", async () => {
@@ -136,6 +138,21 @@ describe("AssignmentWorkspace directions", () => {
     expect(await screen.findByText("Inspecting PDF structure and text layer", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText(/^\d+s$/)).toBeInTheDocument();
     expect(screen.queryByText(/chain of thought/i)).not.toBeInTheDocument();
+  });
+
+  it("cancels the active Luna run", async () => {
+    apiMocks.runs.mockResolvedValue([{
+      ...directionsRun(),
+      status: "running",
+      completedAt: null,
+      output: null,
+    }]);
+    const user = userEvent.setup();
+    renderWorkspace();
+
+    await user.click(await screen.findByRole("button", { name: "Cancel Luna" }));
+
+    await waitFor(() => expect(apiMocks.cancelRun).toHaveBeenCalledWith("directions-run"));
   });
 
   it("keeps problem sources collapsed and reveals an existing answer below the problem", async () => {

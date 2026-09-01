@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -142,7 +142,7 @@ export const studyGuideSchema = z.object({
 export type AgentRun = {
   id: string;
   feature: AgentFeature;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   logicalId: string;
   taskTitle: string;
   courseName: string;
@@ -174,6 +174,11 @@ export type StartAgentRun = {
 export class AgentRunStore {
   private writeChain: Promise<void> = Promise.resolve();
 
+  constructor(
+    private readonly path = RUNS_PATH,
+    private readonly replaceFile: (source: string, destination: string) => Promise<void> = replaceFileWithRetry,
+  ) {}
+
   async list(limit = 100): Promise<AgentRun[]> {
     const runs = await this.read();
     return runs.slice(-Math.max(1, Math.min(limit, 250))).reverse();
@@ -201,6 +206,19 @@ export class AgentRunStore {
     return updated;
   }
 
+  async updateIfActive(id: string, patch: Partial<AgentRun>): Promise<AgentRun> {
+    let updated: AgentRun | null = null;
+    await this.mutate((runs) =>
+      runs.map((run) => {
+        if (run.id !== id) return run;
+        updated = run.status === "queued" || run.status === "running" ? { ...run, ...patch } : run;
+        return updated;
+      }),
+    );
+    if (!updated) throw new Error(`Agent run ${id} was not found.`);
+    return updated;
+  }
+
   async failInterrupted(): Promise<number> {
     let count = 0;
     await this.mutate((runs) =>
@@ -218,9 +236,27 @@ export class AgentRunStore {
     return count;
   }
 
+  async failOrphaned(isActive: (id: string) => boolean): Promise<number> {
+    let count = 0;
+    await this.mutate((runs) => {
+      const next = runs.map((run) => {
+        if ((run.status !== "queued" && run.status !== "running") || isActive(run.id)) return run;
+        count += 1;
+        return {
+          ...run,
+          status: "failed" as const,
+          completedAt: new Date().toISOString(),
+          error: "The run stopped without reporting a final status.",
+        };
+      });
+      return count === 0 ? runs : next;
+    });
+    return count;
+  }
+
   private async read(): Promise<AgentRun[]> {
     try {
-      const runs = sanitizeForLog(JSON.parse(await readFile(RUNS_PATH, "utf8"))) as AgentRun[];
+      const runs = sanitizeForLog(JSON.parse(await readFile(this.path, "utf8"))) as AgentRun[];
       return runs.map((run) => {
         const normalizedOutput = run.feature === "answerKey"
           ? stripLegacyAnswerMetadata(run.output)
@@ -241,18 +277,53 @@ export class AgentRunStore {
   }
 
   private async mutate(transform: (runs: AgentRun[]) => AgentRun[]) {
-    this.writeChain = this.writeChain.then(async () => {
-      const next = transform(await this.read());
-      await mkdir(dirname(RUNS_PATH), { recursive: true });
-      const temporaryPath = `${RUNS_PATH}.${process.pid}.${randomUUID()}.tmp`;
-      await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-      await rename(temporaryPath, RUNS_PATH);
+    const operation = this.writeChain.catch(() => undefined).then(async () => {
+      const current = await this.read();
+      const next = transform(current);
+      if (next === current) return;
+      await mkdir(dirname(this.path), { recursive: true });
+      const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+        await this.replaceFile(temporaryPath, this.path);
+      } catch (error) {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
     });
-    await this.writeChain;
+    this.writeChain = operation;
+    await operation;
   }
 }
 
+async function replaceFileWithRetry(source: string, destination: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientFileReplacementError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+    }
+  }
+  try {
+    await copyFile(source, destination);
+    await rm(source, { force: true });
+  } catch {
+    throw lastError;
+  }
+}
+
+function isTransientFileReplacementError(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error)) return false;
+  return ["EACCES", "EBUSY", "EEXIST", "EPERM"].includes(String(error.code));
+}
+
 export class AgentRunner {
+  private readonly activeRuns = new Map<string, AbortController>();
+
   constructor(
     private readonly settingsStore: SettingsStore,
     private readonly taskSync: TaskSyncClient,
@@ -308,9 +379,42 @@ export class AgentRunner {
       error: null,
       predictor: null,
     };
-    await this.runs.create(run);
-    void this.execute(run, parsed, settings, task).catch(() => undefined);
+    const controller = new AbortController();
+    this.activeRuns.set(run.id, controller);
+    try {
+      await this.runs.create(run);
+    } catch (error) {
+      this.activeRuns.delete(run.id);
+      throw error;
+    }
+    void this.execute(run, parsed, settings, task, controller).finally(() => {
+      this.activeRuns.delete(run.id);
+    });
     return run;
+  }
+
+  async cancel(id: string): Promise<AgentRun> {
+    const run = await this.runs.get(id);
+    if (!run) throw new Error("Agent run not found.");
+    if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
+    this.activeRuns.get(id)?.abort(new Error("Cancelled by the user."));
+    const cancelled = await this.runs.update(id, {
+      status: "cancelled",
+      completedAt: new Date().toISOString(),
+      error: "Cancelled by the user.",
+    });
+    await this.activity.record({
+      category: "agent",
+      action: run.feature,
+      status: "warning",
+      summary: `${run.taskTitle} cancelled`,
+      metadata: { runId: run.id },
+    });
+    return cancelled;
+  }
+
+  async reconcileOrphanedRuns(): Promise<number> {
+    return this.runs.failOrphaned((id) => this.activeRuns.has(id));
   }
 
   private async execute(
@@ -318,9 +422,11 @@ export class AgentRunner {
     input: StartAgentRun,
     settings: AppSettings,
     task: Awaited<ReturnType<TaskSyncClient["getTask"]>>,
+    controller: AbortController,
   ) {
     let toolToken: string | null = null;
     try {
+      controller.signal.throwIfAborted();
       await this.runs.update(run.id, { status: "running" });
       await this.activity.record({
         category: "agent",
@@ -337,6 +443,7 @@ export class AgentRunner {
         metadata: { runId: run.id },
       });
       const workspace = await this.workspaces.create(task.logical_id);
+      controller.signal.throwIfAborted();
       await this.activity.record({
         category: "agent",
         action: "workspace.prepare",
@@ -358,6 +465,7 @@ export class AgentRunner {
           metadata: { runId: run.id, workspace: workspace.id },
         });
         const context = await this.canvas.assignmentContext(task);
+        controller.signal.throwIfAborted();
         await this.workspaces.writeJson(workspace, "task.json", task);
         await this.workspaces.writeJson(workspace, "assignment-context.json", context);
         if (run.feature === "studyGuide") {
@@ -413,6 +521,7 @@ export class AgentRunner {
       }
       const instructions = buildInstructions(run.feature, run.prompt, predictor);
       const configuredMcpServers = await configuredMcpServerNames();
+      controller.signal.throwIfAborted();
       const codex = new Codex({
         env: {
           ...sanitizedEnvironment(),
@@ -454,14 +563,16 @@ export class AgentRunner {
         metadata: { runId: run.id, workspace: workspace.id, model: run.model },
       });
       await this.runs.update(run.id, { workspaceId: workspace.id });
+      const timeoutSignal = AbortSignal.timeout(run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000);
       const { events } = await thread.runStreamed(instructions, {
         outputSchema: schemaForFeature(run.feature),
-        signal: AbortSignal.timeout(run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000),
+        signal: AbortSignal.any([controller.signal, timeoutSignal]),
       });
       const rawEvents: unknown[] = [];
       let usage: Usage | null = null;
       let rawStructuredOutput: string | null = null;
       for await (const event of events) {
+        controller.signal.throwIfAborted();
         rawEvents.push(sanitizeForLog(compactEventForLog(event)));
         if (event.type === "thread.started") {
           await this.runs.update(run.id, { threadId: event.thread_id });
@@ -491,6 +602,7 @@ export class AgentRunner {
           });
         }
       }
+      controller.signal.throwIfAborted();
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
       const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
       const policyCheckedOutput = run.feature === "problemExtraction"
@@ -498,7 +610,7 @@ export class AgentRunner {
         : parsedOutput;
       const safeOutput = sanitizeForLog(policyCheckedOutput);
       const safeRawStructuredOutput = JSON.stringify(safeOutput);
-      await this.runs.update(run.id, {
+      await this.runs.updateIfActive(run.id, {
         status: "completed",
         completedAt: new Date().toISOString(),
         threadId: thread.id,
@@ -516,16 +628,17 @@ export class AgentRunner {
         metadata: { runId: run.id, model: run.model, usage },
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Agent run failed";
-      await this.runs.update(run.id, {
-        status: "failed",
+      const cancelled = controller.signal.aborted;
+      const message = cancelled ? "Cancelled by the user." : error instanceof Error ? error.message : "Agent run failed";
+      await this.runs.updateIfActive(run.id, {
+        status: cancelled ? "cancelled" : "failed",
         completedAt: new Date().toISOString(),
         error: message,
       });
       await this.activity.record({
         category: "agent",
         action: run.feature,
-        status: "failed",
+        status: cancelled ? "warning" : "failed",
         summary: run.taskTitle,
         metadata: { runId: run.id, error: message },
       });

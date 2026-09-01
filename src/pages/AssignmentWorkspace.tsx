@@ -41,6 +41,7 @@ export function AssignmentWorkspace() {
   const contextState = usePolling(() => schoolApi.context(logicalId));
   const runsState = usePolling(schoolApi.runs, 2500);
   const [starting, setStarting] = useState<AgentRun["feature"] | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
   const [studyModel, setStudyModel] = useState<ModelName>("gpt-5.6-luna");
   const [reasoning, setReasoning] = useState<ReasoningEffort>("high");
@@ -53,6 +54,7 @@ export function AssignmentWorkspace() {
   const directionsRun = latestRun(runs, logicalId, "directions");
   const answerRun = latestRun(runs, logicalId, "answerKey");
   const studyRun = latestRun(runs, logicalId, "studyGuide");
+  const activeRun = [directionsRun, extractionRun, answerRun, studyRun].find(isActiveRun);
 
   const switchTab = (next: Tab) => {
     const params = new URLSearchParams(searchParams);
@@ -89,6 +91,20 @@ export function AssignmentWorkspace() {
     }
   };
 
+  const cancelActive = async () => {
+    if (!activeRun) return;
+    setCancelling(true);
+    setActionError(null);
+    try {
+      await schoolApi.cancelRun(activeRun.id);
+      await runsState.refresh();
+    } catch (error) {
+      setActionError(error);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   if (taskState.error) return <div className="standalone-page"><ErrorNotice error={taskState.error} /></div>;
   if (!task || !context) return <WorkspaceSkeleton />;
 
@@ -105,6 +121,11 @@ export function AssignmentWorkspace() {
           </div>
         </div>
         <div className="workspace-actions">
+          {activeRun ? (
+            <button className="danger-button" disabled={cancelling} onClick={() => void cancelActive()}>
+              {cancelling ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}Cancel Luna
+            </button>
+          ) : null}
           {canvasUrl && <a className="secondary-button" href={canvasUrl} target="_blank" rel="noreferrer">Canvas<ArrowUpRight size={15} /></a>}
           {context.externalAssignment.url && <a className="secondary-button" href={context.externalAssignment.url} target="_blank" rel="noreferrer">Open assignment<ArrowUpRight size={15} /></a>}
           {context.submissionRequirements.supported && !context.submissionRequirements.locked && (
@@ -186,8 +207,8 @@ function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () =
   return (
     <div>
       <FeatureHeader title="Directions">
-        <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>
-          {starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}
+        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>
+          {starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}
           {run ? "Get directions again" : "Get directions"}
         </button>
       </FeatureHeader>
@@ -243,7 +264,7 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
   return (
     <div>
       <FeatureHeader title="Assigned problems">
-        <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <FileQuestion size={17} />}{run ? "Extract again" : "Get assigned problems"}</button>
+        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <FileQuestion size={17} />}{run ? "Extract again" : "Get assigned problems"}</button>
       </FeatureHeader>
       {run && <RunBanner run={run} />}
       {!run && <EmptyState title="No problems extracted yet" detail="Start an extraction to locate exact questions in directions, linked files, pages, and PDFs." />}
@@ -281,7 +302,7 @@ function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRu
   const ready = extractionRun?.status === "completed";
   return <div>
     <FeatureHeader title="Answer key">
-      <button className="primary-button" disabled={!ready || starting || run?.status === "running"} onClick={onRun}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <BookOpenCheck size={17} />}{run ? "Generate again" : "Generate answer key"}</button>
+      <button className="primary-button" disabled={!ready || starting || isActiveRun(run)} onClick={onRun}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <BookOpenCheck size={17} />}{run ? "Generate again" : "Generate answer key"}</button>
     </FeatureHeader>
     {!ready && <div className="notice amber"><FileQuestion size={17} /><div><strong>Extract the assigned problems first</strong><p>The answer key never solves guessed problem descriptions.</p></div></div>}
     {run && <RunBanner run={run} />}
@@ -298,7 +319,7 @@ function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predic
       <label>Model<select value={model} onChange={(event) => setModel(event.target.value as ModelName)}>{(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as ModelName[]).map((item) => <option value={item} key={item}>{item.split("-").at(-1)}</option>)}</select></label>
       <label>Reasoning<select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningEffort)}>{["minimal", "low", "medium", "high", "xhigh", "max"].map((item) => <option key={item}>{item}</option>)}</select></label>
       <label className="check-field predictor-toggle"><input type="checkbox" checked={predictor} onChange={(event) => setPredictor(event.target.checked)} /><span><strong>Use Test Question Predictor</strong></span></label>
-      <button className="primary-button" onClick={onRun} disabled={starting || run?.status === "running"}>{starting || run?.status === "running" ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
+      <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
     </div>
     {run && <RunBanner run={run} />}
     {!run && <EmptyState title="No study guide yet" detail="Choose a model and reasoning level, then generate a focused guide from the assessment and nearby course evidence." />}
@@ -376,4 +397,8 @@ function SubmissionDialog({ logicalId, title, types, extensions, onClose }: { lo
 
 function WorkspaceSkeleton() {
   return <div className="workspace-page"><header className="workspace-header"><div className="skeleton-heading wide" /></header><div className="workspace-tabs"><span /><span /><span /></div><div className="workspace-body"><div className="paper-panel"><div className="text-skeleton"><span /><span /><span /><span /></div></div></div></div>;
+}
+
+function isActiveRun(run: AgentRun | undefined): run is AgentRun {
+  return run?.status === "queued" || run?.status === "running";
 }

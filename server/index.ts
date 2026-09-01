@@ -117,6 +117,7 @@ app.post("/api/settings/defaults", async (_request, response) => {
 });
 
 app.get("/api/agent-runs", async (request, response) => {
+  await agentRunner.reconcileOrphanedRuns();
   const limit = Number.parseInt(String(request.query.limit ?? "100"), 10);
   response.json(await runs.list(Number.isFinite(limit) ? limit : 100));
 });
@@ -138,11 +139,24 @@ app.post("/api/agent-runs", async (request, response) => {
   response.status(202).json(run);
 });
 
+app.post("/api/agent-runs/:id/cancel", async (request, response) => {
+  const run = await runs.get(request.params.id);
+  if (!run) return response.status(404).json({ error: "Agent run not found." });
+  response.json(await agentRunner.cancel(request.params.id));
+});
+
 app.post("/api/agent-workflows", async (request, response) => {
   response.status(202).json(await workflows.start(request.body));
 });
 
+app.post("/api/agent-workflows/:id/cancel", async (request, response) => {
+  const workflow = workflows.list().find((item) => item.id === request.params.id);
+  if (!workflow) return response.status(404).json({ error: "Agent workflow not found." });
+  response.json(await workflows.cancel(request.params.id));
+});
+
 app.get("/api/active-work", async (_request, response) => {
+  await agentRunner.reconcileOrphanedRuns();
   const [recentRuns, recentActivity] = await Promise.all([runs.list(100), activity.list(500)]);
   const activeRuns = recentRuns.filter((run) => run.status === "queued" || run.status === "running");
   response.json({
