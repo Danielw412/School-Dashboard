@@ -171,6 +171,51 @@ describe("AssignmentWorkspace directions", () => {
     expect(answerDetails).toHaveAttribute("open");
     expect(screen.getAllByText("5 m/s").length).toBeGreaterThan(0);
   });
+
+  it("renders shared answer banks once and uses structured tables", async () => {
+    const run = problemRun();
+    run.output = {
+      assignmentTitle: "Atomic theory",
+      summary: "Two problems found.",
+      answerBanks: [{
+        id: "bank-3-4",
+        title: "Questions 3-4",
+        markdown: "(A) First choice\n(B) Second choice",
+        problemNumbers: ["3", "4"],
+        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 26, evidence: "Shared choices" }],
+      }],
+      problems: [{
+        number: "3",
+        markdown: "3. Choose the impossible configuration.",
+        answerBankId: "bank-3-4",
+        table: {
+          caption: "Visible-light reference",
+          columns: ["Color", "Wavelength"],
+          rows: [["Violet", "410 nm"], ["Blue", "470 nm"]],
+        },
+        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 26, evidence: "Problem 3" }],
+        visual: null,
+        confidence: "high",
+      }, {
+        number: "4",
+        markdown: "4. Choose the transition element.",
+        answerBankId: "bank-3-4",
+        table: null,
+        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 26, evidence: "Problem 4" }],
+        visual: null,
+        confidence: "high",
+      }],
+      unresolved: [],
+      sourcesInspected: [],
+    };
+    apiMocks.runs.mockResolvedValue([run]);
+    renderWorkspace("?tab=problems");
+
+    expect(await screen.findByText("Questions 3-4")).toBeInTheDocument();
+    expect(screen.getAllByText("Answer bank")).toHaveLength(1);
+    expect(screen.getByRole("table", { name: "Visible-light reference" })).toBeInTheDocument();
+    expect(screen.getByText("410 nm")).toBeInTheDocument();
+  });
 });
 
 function renderWorkspace(search = "") {

@@ -9,6 +9,7 @@ dotenv.config({ path: join(APP_ROOT, ".env"), quiet: true });
 
 export const APP_DATA_DIR = join(APP_ROOT, ".school-dashboard");
 export const CACHE_DIR = join(APP_DATA_DIR, "cache");
+export const WORKSPACE_ASSET_DIR = join(APP_DATA_DIR, "workspace-assets");
 export const TEMP_WORKSPACE_ROOT = join(tmpdir(), "school-dashboard-workspaces");
 export const SETTINGS_PATH = join(APP_DATA_DIR, "settings.json");
 export const ACTIVITY_PATH = join(APP_DATA_DIR, "activity.json");

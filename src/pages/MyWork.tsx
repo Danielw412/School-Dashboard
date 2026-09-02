@@ -241,19 +241,14 @@ function AssignmentInspector({
   const [starting, setStarting] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [workflowError, setWorkflowError] = useState<unknown>(null);
-  const hasCanvasContext = Boolean(
-    task.canvas.assignment_id || task.canvas.assignment_url || task.source.assignment_url,
-  );
+  const isManualTask = Boolean(task.manually_managed);
   useEffect(() => {
-    if (!hasCanvasContext) {
-      return undefined;
-    }
     let current = true;
     void schoolApi.context(task.logical_id)
       .then((context) => { if (current) setResult({ logicalId: task.logical_id, context, error: null }); })
       .catch((error: unknown) => { if (current) setResult({ logicalId: task.logical_id, context: null, error }); });
     return () => { current = false; };
-  }, [hasCanvasContext, task.logical_id]);
+  }, [task.logical_id]);
   const context = result.logicalId === task.logical_id ? result.context : null;
   const contextError = result.logicalId === task.logical_id ? result.error : null;
   const canvasUrl = context?.assignment?.html_url ?? task.canvas.assignment_url ?? task.source.assignment_url;
@@ -307,7 +302,9 @@ function AssignmentInspector({
       {workflowError ? <ErrorNotice error={workflowError} /> : null}
       {contextError ? <ErrorNotice error={contextError} /> : null}
 
-      {hasCanvasContext ? <section className="workflow-picker">
+      {isManualTask ? <div className="requirements-block manual-task-note"><strong>Manual task</strong><p>Add a Canvas assignment URL to enable Luna assignment workflows.</p></div> : null}
+
+      <section className="workflow-picker">
         <h3>Choose a workflow</h3>
         <div className="workflow-actions">
           {workflowActions.map(({ label, steps, icon: Icon, primary }) => (
@@ -323,7 +320,7 @@ function AssignmentInspector({
             </button>
           ))}
         </div>
-      </section> : <div className="requirements-block manual-task-note"><strong>Manual task</strong><p>Add a Canvas assignment URL to enable Luna assignment workflows.</p></div>}
+      </section>
 
       {active ? (
         <div className="inspector-progress">
@@ -337,9 +334,9 @@ function AssignmentInspector({
 
       <div className="inspector-actions">
         <button className="secondary-button" onClick={onEdit}><Pencil size={16} />Edit task</button>
-        {hasCanvasContext ? <button className="secondary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
+        <button className="secondary-button" onClick={() => navigate(`/assignment/${encodeURIComponent(task.logical_id)}`)}>
           <ArrowUpRight size={16} />Open workspace
-        </button> : null}
+        </button>
         {canvasUrl ? <a className="text-link" href={canvasUrl} target="_blank" rel="noreferrer">Open Canvas<ArrowUpRight size={14} /></a> : null}
         {externalUrl ? <a className="text-link" href={externalUrl} target="_blank" rel="noreferrer">Open assignment<ArrowUpRight size={14} /></a> : null}
       </div>

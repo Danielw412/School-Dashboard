@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -7,16 +6,17 @@ import { z, ZodError } from "zod";
 
 import { ActivityStore } from "./activity.js";
 import { buildAgentProgress } from "./agent-progress.js";
-import { AgentRunner, AgentRunStore } from "./agent-runner.js";
+import { AgentRunner, AgentRunStore, parseProblemExtractionOutput } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
-import { APP_ROOT, env, TEMP_WORKSPACE_ROOT } from "./env.js";
+import { APP_ROOT, env } from "./env.js";
 import { SettingsStore } from "./settings.js";
 import { manualTaskInputSchema, TaskSyncClient } from "./task-sync.js";
 import { ToolAuthorizationError } from "./tool-sessions.js";
 import { AgentWorkflowRunner } from "./workflow-runner.js";
-import { safeChild, WorkspaceManager } from "./workspace.js";
+import { WorkspaceManager } from "./workspace.js";
+import { workspaceFilesRouter } from "./workspace-files.js";
 
 const app = express();
 const upload = multer({
@@ -312,19 +312,7 @@ app.post("/api/internal/canvas-mcp", async (request, response) => {
   await toolSessions.handleMcp(token, request, response, request.body);
 });
 
-app.get("/workspace-files/:workspaceId/*path", async (request, response) => {
-  const workspaceId = z.string().regex(/^[a-zA-Z0-9._-]+$/).parse(request.params.workspaceId);
-  const rawPath = request.params.path;
-  const requestedPath = Array.isArray(rawPath) ? rawPath.join("/") : String(rawPath ?? "");
-  const workspaceRoot = safeChild(TEMP_WORKSPACE_ROOT, workspaceId);
-  const filePath = safeChild(workspaceRoot, requestedPath);
-  try {
-    await readFile(filePath);
-    response.sendFile(filePath);
-  } catch {
-    response.status(404).json({ error: "Workspace file not found." });
-  }
-});
+app.use("/workspace-files", workspaceFilesRouter(workspaces));
 
 const distPath = join(APP_ROOT, "dist");
 app.use(express.static(distPath));
@@ -343,6 +331,16 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(status).json({ error: message });
 });
 
+// Preserve visuals from older saved runs before expiring their workspaces.
+for (const run of await runs.list(250)) {
+  if (run.feature !== "problemExtraction" || run.status !== "completed" || !run.workspaceId) continue;
+  const output = parseProblemExtractionOutput(run.output);
+  await workspaces.preserveWorkspaceAssets(
+    run.workspaceId,
+    output.problems.flatMap((problem) => problem.visual ? [problem.visual.path] : []),
+    true,
+  );
+}
 await workspaces.pruneWorkspaces(settings.cache.workspaceRetentionHours);
 app.listen(env.port, "127.0.0.1", () => {
   void activity.record({

@@ -234,11 +234,20 @@ export type Diagnostics = {
 export type ProblemExtraction = {
   assignmentTitle: string;
   summary: string;
+  answerBanks?: Array<{
+    id: string;
+    title: string;
+    markdown: string;
+    problemNumbers: string[];
+    provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
+  }>;
   problems: Array<{
     number: string;
     markdown: string;
+    answerBankId?: string | null;
+    table?: null | { caption: string | null; columns: string[]; rows: string[][] };
     provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
-    visual: null | { path: string; page: number; caption: string };
+    visual: null | { path: string; page: number; caption: string; kind?: "figure" | "diagram" | "graph" | "chart" | "table" | "spectrum" | "map" | "image" };
     confidence: "high" | "medium" | "low";
   }>;
   unresolved: Array<{ reference: string; reason: string; searched: string[] }>;

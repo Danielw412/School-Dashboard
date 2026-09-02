@@ -209,6 +209,18 @@ button:disabled { opacity: .52; cursor: not-allowed; transform: none !important;
 .feature-summary { max-width: 760px; margin: 25px 0; color: #56657a; line-height: 1.65; font-size: 13px; }
 .problem-stack, .answer-stack { width: min(840px,100%); margin: 0 auto; }
 .problem-panel, .answer-panel { margin: 16px 0; padding: 27px 31px; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 13px rgba(24,43,70,.03); }
+.problem-markdown p { white-space: pre-line; }
+.answer-bank { margin: 26px 0 12px; padding: 20px 24px; background: #f4f7ff; border: 1px solid #cfdaf5; border-left: 4px solid var(--blue); }
+.answer-bank header { margin-bottom: 13px; display: flex; align-items: baseline; gap: 9px; }
+.answer-bank header span { color: var(--blue); font-size: 8px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+.answer-bank header strong { color: var(--ink); font-size: 13px; }
+.answer-bank header small { margin-left: auto; color: #748299; font-size: 9px; }
+.problem-table-wrap { margin: 20px 0; overflow-x: auto; }
+.problem-table { width: 100%; border-collapse: collapse; color: #344156; background: #fff; font-size: 12px; }
+.problem-table caption { padding-bottom: 8px; color: #66758a; text-align: left; font-size: 10px; font-weight: 700; }
+.problem-table th, .problem-table td { min-width: 88px; padding: 9px 11px; border: 1px solid var(--line-strong); text-align: left; vertical-align: top; }
+.problem-table th { color: var(--ink); background: #f3f6fa; font-weight: 750; }
+.problem-table .markdown, .problem-table .markdown p { margin: 0; font-size: inherit; line-height: 1.45; }
 .problem-number { margin-bottom: 18px; padding-bottom: 11px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); color: var(--ink); font-family: var(--serif); font-size: 25px; }
 .problem-number > span { color: #8b97a8; font-family: Inter, sans-serif; font-size: 9px; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
 .problem-number .confidence { margin-left: auto; padding: 3px 6px; border-radius: 99px; font-family: Inter,sans-serif; font-size: 8px; text-transform: uppercase; }.confidence.high { color: var(--green); background: var(--green-soft); }.confidence.medium { color: var(--amber); background: var(--amber-soft); }.confidence.low { color: var(--red); background: var(--red-soft); }

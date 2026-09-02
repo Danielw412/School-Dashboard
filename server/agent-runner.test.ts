@@ -103,31 +103,41 @@ describe("agent run preferences", () => {
     expect(instructions).toContain("Render pages only when genuinely needed");
     expect(instructions).toContain("Do not crop or attach text-only problems");
     expect(instructions).toContain("Stop as soon as every requested problem is verified");
+    expect(instructions).toContain("separate answerBanks entry");
+    expect(instructions).toContain("structured table field");
+    expect(instructions).toContain("always set each region's kind");
   });
 
-  it("removes page crops from text-only problems while retaining required figures", () => {
+  it("rejects missing required visuals and removes page crops from text-only problems", () => {
     expect(problemRequiresVisual("Calculate $A \\cdot B$ from the listed components.")).toBe(false);
     expect(problemRequiresVisual("Sketch a diagram, then calculate the resultant.")).toBe(false);
     expect(problemRequiresVisual("Find the image distance for the lens.")).toBe(false);
     expect(problemRequiresVisual("Use Figure P3.15 to determine the resultant.")).toBe(true);
     expect(problemRequiresVisual("Determine the components of the force shown below.")).toBe(true);
+    expect(problemRequiresVisual("The photoelectron spectra below show two peaks.")).toBe(true);
+    expect(problemRequiresVisual("The mass spectrometer produced the data below.")).toBe(true);
 
     const output = enforceProblemVisualPolicy({
       assignmentTitle: "Vectors",
       summary: "Two problems",
+      answerBanks: [],
       problems: [
         {
           number: "12",
           markdown: "Calculate $A \\cdot B$ from the listed components.",
+          answerBankId: null,
+          table: null,
           provenance: [{ sourceName: "Packet", sourceUrl: null, page: 2, evidence: "Problem 12" }],
-          visual: { path: "renders/page-2.png", page: 2, caption: "Source page" },
+          visual: { path: "renders/page-2.png", page: 2, caption: "Source page", kind: "image" },
           confidence: "high",
         },
         {
           number: "15",
           markdown: "Use Figure P3.15 to determine the resultant.",
+          answerBankId: null,
+          table: null,
           provenance: [{ sourceName: "Packet", sourceUrl: null, page: 3, evidence: "Problem 15" }],
-          visual: { path: "renders/figure-15.png", page: 3, caption: "Figure P3.15" },
+          visual: { path: "renders/figure-15.png", page: 3, caption: "Figure P3.15", kind: "figure" },
           confidence: "high",
         },
       ],
@@ -137,6 +147,23 @@ describe("agent run preferences", () => {
 
     expect(output.problems[0]?.visual).toBeNull();
     expect(output.problems[1]?.visual?.path).toBe("renders/figure-15.png");
+
+    expect(() => enforceProblemVisualPolicy({
+      assignmentTitle: "Atomic theory",
+      summary: "One problem",
+      answerBanks: [],
+      problems: [{
+        number: "2",
+        markdown: "The photoelectron spectra below show two peaks.",
+        answerBankId: null,
+        table: null,
+        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 26, evidence: "Problem 2" }],
+        visual: null,
+        confidence: "high",
+      }],
+      unresolved: [],
+      sourcesInspected: [{ name: "Packet", type: "PDF", url: null, pages: [26] }],
+    })).toThrow(/require a source visual/);
   });
 
   it("keeps answer generation local to parsed questions and visuals", () => {

@@ -12,12 +12,13 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { schoolApi } from "../api";
 import { RunProgressPanel } from "../components/AgentProgress";
 import { Markdown } from "../components/Markdown";
+import { ProblemVisual } from "../components/ProblemVisual";
 import { EmptyState, ErrorNotice, RunStatus } from "../components/Status";
 import { classTone, formatDue, latestRun } from "../format";
 import { usePolling } from "../hooks/usePolling";
@@ -258,6 +259,7 @@ function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () =
 
 function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; answerRun?: AgentRun; onRun: () => void; starting: boolean }) {
   const output = run?.output as ProblemExtraction | null;
+  const answerBanks = output?.answerBanks ?? [];
   const answers = answerRun?.status === "completed"
     ? (answerRun.output as AnswerKey | null)?.answers ?? []
     : [];
@@ -277,10 +279,17 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
             .filter((item) => item.number === problem.number).length - 1;
           const answer = answers.filter((item) => item.problemNumber === problem.number)[occurrence]
             ?? (answers[index]?.problemNumber === problem.number ? answers[index] : undefined);
-          return <article className="problem-panel" key={`${problem.number}-${index}`}>
+          const banks = answerBanks.filter((bank) => {
+            const firstLinkedIndex = output.problems.findIndex((item) => item.answerBankId === bank.id);
+            return firstLinkedIndex === index;
+          });
+          return <Fragment key={`${problem.number}-${index}`}>
+            {banks.map((bank) => <AnswerBankCard key={bank.id} bank={bank} />)}
+            <article className="problem-panel">
               <div className="problem-number"><span>Problem</span>{problem.number}<small className={`confidence ${problem.confidence}`}>{problem.confidence}</small></div>
-              <Markdown>{problem.markdown}</Markdown>
-              {problem.visual && run?.workspaceId && <figure><img src={`/workspace-files/${encodeURIComponent(run.workspaceId)}/${problem.visual.path}`} alt={problem.visual.caption} /><figcaption>{problem.visual.caption} · page {problem.visual.page}</figcaption></figure>}
+              <Markdown className="problem-markdown">{problem.markdown}</Markdown>
+              {problem.table && <ProblemTable table={problem.table} />}
+              {problem.visual && <ProblemVisual visual={problem.visual} workspaceId={run?.workspaceId ?? null} />}
               {answer && <details className="inline-answer">
                 <summary>Show answer <ChevronDown size={15} /></summary>
                 <div className="inline-answer-body">
@@ -289,12 +298,31 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
                 </div>
               </details>}
               <SourceDisclosure items={problem.provenance} />
-            </article>;
+            </article>
+          </Fragment>;
         })}
         {output.unresolved.length > 0 && <div className="unresolved-block"><h3>Could not verify</h3>{output.unresolved.map((item) => <div key={item.reference}><strong>{item.reference}</strong><p>{item.reason}</p><span>Searched: {item.searched.join(", ")}</span></div>)}</div>}
       </div>}
     </div>
   );
+}
+
+function AnswerBankCard({ bank }: { bank: NonNullable<ProblemExtraction["answerBanks"]>[number] }) {
+  return <aside className="answer-bank" aria-label={`${bank.title} for problems ${bank.problemNumbers.join(", ")}`}>
+    <header><span>Answer bank</span><strong>{bank.title}</strong><small>Problems {bank.problemNumbers.join("–")}</small></header>
+    <Markdown className="problem-markdown">{bank.markdown}</Markdown>
+    <SourceDisclosure items={bank.provenance} />
+  </aside>;
+}
+
+function ProblemTable({ table }: { table: NonNullable<NonNullable<ProblemExtraction["problems"]>[number]["table"]> }) {
+  return <div className="problem-table-wrap">
+    <table className="problem-table">
+      {table.caption && <caption>{table.caption}</caption>}
+      <thead><tr>{table.columns.map((column, index) => <th key={`${column}-${index}`} scope="col"><Markdown>{column}</Markdown></th>)}</tr></thead>
+      <tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><Markdown>{cell}</Markdown></td>)}</tr>)}</tbody>
+    </table>
+  </div>;
 }
 
 function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRun; extractionRun?: AgentRun; onRun: () => void; starting: boolean }) {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,63 @@ describe("safeChild", () => {
 
   it("blocks path traversal", () => {
     expect(() => safeChild("C:\\tmp\\assignment", "..\\secret.env")).toThrow(/escaped/);
+  });
+});
+
+describe("saved workspace visuals", () => {
+  it("keeps only referenced figures after expiry and copies them into answer workspaces after a restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-visuals-test-"));
+    const activity = { record: vi.fn() } as unknown as ActivityStore;
+    try {
+      const temporary = join(root, "temporary");
+      const saved = join(root, "saved");
+      const manager = new WorkspaceManager(activity, temporary, saved);
+      const workspace = await manager.create("extraction");
+      const image = await sharp({ create: { width: 10, height: 10, channels: 3, background: "white" } }).png().toBuffer();
+      await writeFile(join(workspace.rendersPath, "figure.png"), image);
+      await writeFile(join(workspace.resourcesPath, "source.pdf"), "temporary source");
+      await writeFile(join(workspace.rendersPath, "page.png"), image);
+      expect(await manager.resolveWorkspaceAsset(workspace.id, "renders/figure.png"))
+        .toBe(join(workspace.rendersPath, "figure.png"));
+
+      await manager.preserveWorkspaceAssets(workspace.id, ["renders/figure.png"]);
+      const old = new Date(Date.now() - 48 * 3_600_000);
+      await utimes(workspace.path, old, old);
+      expect(await manager.pruneWorkspaces(24)).toBe(1);
+      await expect(stat(workspace.path)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const restarted = new WorkspaceManager(activity, temporary, saved);
+      const path = await restarted.resolveWorkspaceAsset(workspace.id, "renders/figure.png");
+      expect(await readFile(path)).toEqual(image);
+      expect(await restarted.preserveWorkspaceAssets(workspace.id, ["renders/figure.png"])).toEqual([]);
+      await expect(restarted.resolveWorkspaceAsset(workspace.id, "renders/page.png")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(saved, workspace.id, "resources/source.pdf"))).rejects.toMatchObject({ code: "ENOENT" });
+
+      const answer = await restarted.create("answer");
+      const copied = await restarted.copyWorkspaceAsset(workspace.id, "renders/figure.png", answer, "problem-82.png");
+      expect(await readFile(join(answer.path, copied))).toEqual(image);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing new figures and traversal, but can migrate partially expired runs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-visuals-test-"));
+    try {
+      const manager = new WorkspaceManager({ record: vi.fn() } as unknown as ActivityStore, join(root, "temporary"), join(root, "saved"));
+      const workspace = await manager.create("legacy");
+      await writeFile(join(workspace.rendersPath, "available.png"), "figure");
+      await expect(manager.preserveWorkspaceAssets(workspace.id, ["renders/missing.png"]))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await manager.preserveWorkspaceAssets(workspace.id, ["renders/missing.png", "renders/available.png"], true))
+        .toEqual(["renders/missing.png"]);
+      expect(await readFile(join(root, "saved", workspace.id, "renders/available.png"), "utf8")).toBe("figure");
+      await expect(manager.resolveWorkspaceAsset(workspace.id, "../other/secret.env")).rejects.toThrow(/escaped/);
+      await expect(manager.preserveWorkspaceAssets(workspace.id, ["../secret.env"], true)).rejects.toThrow(/escaped/);
+      await expect(manager.resolveWorkspaceAsset("../outside", "figure.png")).rejects.toThrow(/escaped/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -389,6 +446,8 @@ describe("PDF inspection helpers", () => {
 
     expect(isVisualCropQuery("12. Calculate the dot product.")).toBe(false);
     expect(isVisualCropQuery("Figure P3.19")).toBe(true);
+    expect(isVisualCropQuery("photoelectron spectra below")).toBe(true);
+    expect(isVisualCropQuery("Nitrogen (N) Oxygen (O)", "spectrum")).toBe(true);
     expect(result).toMatchObject({ status: "skipped_text_only", path: null, rect: null });
   });
 

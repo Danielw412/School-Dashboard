@@ -470,6 +470,7 @@ export class CanvasToolSessions {
         const regions = z.array(z.object({
           page: z.number().int().positive(),
           query: z.string().min(1),
+          kind: z.enum(["figure", "diagram", "graph", "chart", "table", "spectrum", "map", "image"]),
           padding: z.number().int().min(0).max(100).optional(),
         })).min(1).max(20).parse(input.regions);
         const crops = await this.workspaces.semanticCropPdfRegions(path, regions, session.workspace);
@@ -719,13 +720,14 @@ export class CanvasToolSessions {
     );
     register(
       "semantic_crop_pdf",
-      "Create final, tight crops only for non-text visuals required by a problem. Use the exact figure/diagram label when available; captioned figures are automatically bounded above their label. Text-only queries are skipped without rendering or OCR, and one missed region does not abort the batch.",
+      "Create final, tight crops only for non-text visuals required by a problem. Set kind for every region. Use an exact figure label when available; otherwise query the short phrase immediately above or inside the visual (including an axis label). Captioned figures are automatically bounded above their label. Text-only queries without a visual kind are skipped, and one missed region does not abort the batch.",
       "pdf-semantic-crop",
       z.object({
         path: z.string().min(1),
         regions: z.array(z.object({
           page: z.number().int().positive(),
           query: z.string().min(1).describe("Exact figure/diagram label or another explicit required-visual reference; never submit ordinary problem text."),
+          kind: z.enum(["figure", "diagram", "graph", "chart", "table", "spectrum", "map", "image"]),
           padding: z.number().int().min(0).max(100).optional(),
         })).min(1).max(20),
       }),

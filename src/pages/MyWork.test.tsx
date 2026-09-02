@@ -107,6 +107,28 @@ describe("MyWork", () => {
     ));
   });
 
+  it("keeps workflow and workspace actions for tracked tasks without a direct Canvas URL", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.tasks).mockResolvedValueOnce([{
+      ...task,
+      logical_id: "english:agenda:crime-and-punishment",
+      display_title: "Bring copy of Crime and Punishment",
+      source: { key: "agenda:1", type: "agenda", anchor: "agenda:1", text: "Bring copy of Crime and Punishment" },
+      canvas: { course_id: "2", assignment_id: null, assignment_url: null },
+      manually_managed: false,
+    }]);
+
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+    await user.click(await screen.findByText("Bring copy of Crime and Punishment"));
+
+    expect(await screen.findByRole("button", { name: /Full workflow/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit task/i })).toBeInTheDocument();
+    expect(screen.queryByText("Manual task")).not.toBeInTheDocument();
+    await waitFor(() => expect(schoolApi.context).toHaveBeenCalledWith("english:agenda:crime-and-punishment"));
+  });
+
   it("offers one ungrouped view sorted from the soonest due date to no due date", async () => {
     const user = userEvent.setup();
     const { schoolApi } = await import("../api");

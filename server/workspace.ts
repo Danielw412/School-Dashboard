@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import * as cheerio from "cheerio";
@@ -18,7 +18,7 @@ import englishOcrData from "@tesseract.js-data/eng";
 
 import type { ActivityStore } from "./activity.js";
 import type { CanvasClient, CanvasFile } from "./canvas-client.js";
-import { CACHE_DIR, TEMP_WORKSPACE_ROOT } from "./env.js";
+import { CACHE_DIR, TEMP_WORKSPACE_ROOT, WORKSPACE_ASSET_DIR } from "./env.js";
 import type { AppSettings } from "./settings.js";
 
 const execFileAsync = promisify(execFile);
@@ -140,17 +140,23 @@ export type PdfSemanticCrop = {
   error: string | null;
 };
 
+export type PdfVisualKind = "figure" | "diagram" | "graph" | "chart" | "table" | "spectrum" | "map" | "image";
+
 export class WorkspaceManager {
   private hits = 0;
   private misses = 0;
   private readonly operationCache = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly activity: ActivityStore) {}
+  constructor(
+    private readonly activity: ActivityStore,
+    private readonly workspaceRoot = TEMP_WORKSPACE_ROOT,
+    private readonly assetRoot = WORKSPACE_ASSET_DIR,
+  ) {}
 
   async create(logicalId: string): Promise<AssignmentWorkspace> {
-    await mkdir(TEMP_WORKSPACE_ROOT, { recursive: true });
+    await mkdir(this.workspaceRoot, { recursive: true });
     const id = `${safeName(logicalId).slice(0, 48)}-${randomUUID().slice(0, 8)}`;
-    const path = join(TEMP_WORKSPACE_ROOT, id);
+    const path = join(this.workspaceRoot, id);
     const resourcesPath = join(path, "resources");
     const rendersPath = join(path, "renders");
     await Promise.all([
@@ -172,14 +178,48 @@ export class WorkspaceManager {
     destinationWorkspace: AssignmentWorkspace,
     destinationName: string,
   ): Promise<string> {
-    const sourceRoot = safeChild(TEMP_WORKSPACE_ROOT, sourceWorkspaceId);
-    const source = safeChild(sourceRoot, sourceRelativePath);
+    const source = await this.resolveWorkspaceAsset(sourceWorkspaceId, sourceRelativePath);
     const destination = safeChild(
       destinationWorkspace.resourcesPath,
       safeName(destinationName),
     );
     await copyFile(source, destination);
     return relative(destinationWorkspace.path, destination).replaceAll("\\", "/");
+  }
+
+  async resolveWorkspaceAsset(workspaceId: string, relativePath: string): Promise<string> {
+    const saved = safeChild(safeChild(this.assetRoot, workspaceId), relativePath);
+    try {
+      if ((await stat(saved)).isFile()) return saved;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const temporary = safeChild(safeChild(this.workspaceRoot, workspaceId), relativePath);
+    if (!(await stat(temporary)).isFile()) throw new Error("Workspace asset is not a file.");
+    return temporary;
+  }
+
+  // Only final, referenced visuals belong here. PDFs, prompts, and intermediate
+  // renders remain temporary and still expire under the workspace retention policy.
+  async preserveWorkspaceAssets(
+    workspaceId: string,
+    paths: string[],
+    allowMissing = false,
+  ): Promise<string[]> {
+    const missing: string[] = [];
+    for (const path of new Set(paths)) {
+      try {
+        const source = await this.resolveWorkspaceAsset(workspaceId, path);
+        const destination = safeChild(safeChild(this.assetRoot, workspaceId), path);
+        if (source === destination) continue;
+        await mkdir(dirname(destination), { recursive: true });
+        await copyFile(source, destination);
+      } catch (error) {
+        if (!allowMissing || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        missing.push(path);
+      }
+    }
+    return missing;
   }
 
   async cacheCanvasFile(
@@ -538,13 +578,13 @@ export class WorkspaceManager {
 
   async semanticCropPdfRegions(
     pdfPath: string,
-    regions: Array<{ page: number; query: string; padding?: number }>,
+    regions: Array<{ page: number; query: string; kind?: PdfVisualKind; padding?: number }>,
     workspace: AssignmentWorkspace,
   ): Promise<PdfSemanticCrop[]> {
     if (regions.length === 0) throw new Error("Choose at least one semantic PDF region.");
     if (regions.length > 20) throw new Error("One semantic crop batch may contain at most 20 regions.");
     const pages = [...new Set(regions
-      .filter((region) => isVisualCropQuery(region.query))
+      .filter((region) => isVisualCropQuery(region.query, region.kind))
       .map((region) => region.page))];
     if (pages.length === 0) {
       return regions.map((region) => skippedTextCrop(region));
@@ -556,7 +596,7 @@ export class WorkspaceManager {
     const index = await this.indexPdf(pdfPath);
     const results: PdfSemanticCrop[] = [];
     for (const region of regions) {
-      if (!isVisualCropQuery(region.query)) {
+      if (!isVisualCropQuery(region.query, region.kind)) {
         results.push(skippedTextCrop(region));
         continue;
       }
@@ -577,7 +617,7 @@ export class WorkspaceManager {
         ? "figure-layout"
         : "text-layout";
       const pageStrategy = index.pages[region.page - 1]?.strategy;
-      if (!rect && (pageStrategy !== "text" || isVisualCropQuery(region.query))) {
+      if (!rect && (pageStrategy !== "text" || isVisualCropQuery(region.query, region.kind))) {
         const [ocr] = await this.ocrPdfPages(pdfPath, [region.page], workspace);
         const anchor = semanticAnchorFromRegions(
           ocr.regions, region.query, width, height, ocr.imageWidth, ocr.imageHeight,
@@ -697,9 +737,9 @@ export class WorkspaceManager {
   async pruneWorkspaces(retentionHours: number): Promise<number> {
     let removed = 0;
     try {
-      for (const entry of await readdir(TEMP_WORKSPACE_ROOT, { withFileTypes: true })) {
+      for (const entry of await readdir(this.workspaceRoot, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        const path = join(TEMP_WORKSPACE_ROOT, entry.name);
+        const path = join(this.workspaceRoot, entry.name);
         const info = await stat(path);
         if (Date.now() - info.mtimeMs > retentionHours * 3_600_000) {
           await rm(path, { recursive: true, force: true });
@@ -1272,8 +1312,8 @@ function semanticRectFromRegions(
   return clampPixelRect({ left, top, width: right - left, height: finalBottom - top }, imageWidth, imageHeight);
 }
 
-export function isVisualCropQuery(query: string): boolean {
-  return /\b(?:figure|fig\.?|diagram|graph|chart|table|map|illustration|photo|circuit|free[- ]body|shown|depicted|pictured)\b/iu.test(query);
+export function isVisualCropQuery(query: string, kind?: PdfVisualKind): boolean {
+  return Boolean(kind) || /\b(?:figure|fig\.?|diagram|graph|chart|plot|spectrum|spectra|table|map|illustration|photo|circuit|free[- ]body|shown|depicted|pictured)\b/iu.test(query);
 }
 
 function skippedTextCrop(region: { page: number; query: string }): PdfSemanticCrop {

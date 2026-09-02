@@ -140,7 +140,7 @@ describe("PDF tool payloads", () => {
     });
     await sessions.execute(session.token, "pdf-semantic-crop", {
       path: "resources/serway.pdf",
-      regions: [{ page: 1, query: "Figure P3.15" }],
+      regions: [{ page: 1, query: "Figure P3.15", kind: "figure" }],
     });
     const result = await sessions.execute(session.token, "pdf-render", {
       path: "resources/serway.pdf",
