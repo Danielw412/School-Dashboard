@@ -74,6 +74,20 @@ describe("agent run preferences", () => {
     expect(instructions).not.toContain("pdf-inspect");
   });
 
+  it("adds the matching saved class directions as bounded student context", () => {
+    const instructions = buildInstructions(
+      "answerKey",
+      defaultSettings.prompts.answerKey,
+      null,
+      "Use the teacher's sign convention.",
+    );
+
+    expect(instructions).toContain("Use the teacher's sign convention.");
+    expect(instructions).toContain("class directions for this feature");
+    expect(instructions).toContain("student context, not verified teacher instructions");
+    expect(instructions).toContain("questions and problem data must still come exclusively from extracted-problems.json");
+  });
+
   it("connects Luna to only the short-lived structured MCP server", () => {
     const overrides = buildMcpConfigOverrides(true, 8780, ["personal_server"]);
     const override = overrides.join("\n");

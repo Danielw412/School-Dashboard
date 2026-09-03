@@ -53,6 +53,17 @@ export type TaskCourse = {
   settings: { name: string; prefix: string };
 };
 
+export type CourseDirections = {
+  courseId: string;
+  directions: {
+    directions: string;
+    problemExtraction: string;
+    answerKey: string;
+    studyGuide: string;
+  };
+  updatedAt: string | null;
+};
+
 export type ManualTaskInput = {
   course_id: string;
   title: string;
@@ -107,6 +118,12 @@ export type AgentRun = {
   reasoningEffort: ReasoningEffort;
   effectiveReasoningEffort: string;
   prompt: string;
+  courseDirections?: {
+    courseId: string;
+    feature: AgentRun["feature"];
+    directions: string;
+    updatedAt: string | null;
+  };
   startedAt: string;
   completedAt: string | null;
   threadId: string | null;

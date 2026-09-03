@@ -9,6 +9,7 @@ import {
   Database,
   HardDrive,
   LoaderCircle,
+  NotebookPen,
   PlugZap,
   RefreshCw,
   Save,
@@ -20,6 +21,7 @@ import {
 import { useState } from "react";
 
 import { schoolApi } from "../api";
+import { ClassDirections } from "../components/ClassDirections";
 import { ErrorNotice } from "../components/Status";
 import { relativeTime } from "../format";
 import { usePolling } from "../hooks/usePolling";
@@ -29,7 +31,7 @@ const models: ModelName[] = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"];
 const reasoning: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function SettingsDiagnosticsPage() {
-  const [tab, setTab] = useState<"settings" | "diagnostics">("settings");
+  const [tab, setTab] = useState<"settings" | "classDirections" | "diagnostics">("settings");
   const settingsState = usePolling(schoolApi.settings);
   const diagnosticsState = usePolling(schoolApi.diagnostics, tab === "diagnostics" ? 5_000 : 0);
   const [draft, setDraft] = useState<AppSettings | null>(null);
@@ -72,11 +74,13 @@ export function SettingsDiagnosticsPage() {
       </div>
       <div className="settings-tabs">
         <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Settings2 size={16} />Configuration</button>
+        <button className={tab === "classDirections" ? "active" : ""} onClick={() => setTab("classDirections")}><NotebookPen size={16} />Class directions</button>
         <button className={tab === "diagnostics" ? "active" : ""} onClick={() => setTab("diagnostics")}><Activity size={16} />Connections & diagnostics</button>
       </div>
       {error ? <ErrorNotice error={error} /> : null}
       {message ? <div className="notice success"><Check size={18} /><div><strong>Saved</strong><p>{message}</p></div></div> : null}
       {tab === "settings" && currentSettings ? <SettingsForm settings={currentSettings} update={update} onDefaults={async () => { const next = await schoolApi.restoreDefaults(); setDraft(next); setMessage("Defaults restored."); }} /> : null}
+      {tab === "classDirections" ? <ClassDirections /> : null}
       {tab === "diagnostics" ? <ConnectionTestPanel /> : null}
       {tab === "diagnostics" ? (diagnosticsState.error ? <ErrorNotice error={diagnosticsState.error} /> : diagnosticsState.data ? <DiagnosticsPanel diagnostics={diagnosticsState.data} refresh={() => void diagnosticsState.refresh()} /> : <div className="text-skeleton"><span /><span /><span /></div>) : null}
     </section>

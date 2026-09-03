@@ -11,6 +11,7 @@ import type {
   ReasoningEffort,
   TrackedTask,
   TaskCourse,
+  CourseDirections,
   ManualTaskInput,
 } from "./types";
 
@@ -37,6 +38,12 @@ export const schoolApi = {
   tasks: () => api<TrackedTask[]>("/api/tasks?completed=all"),
   task: (logicalId: string) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`),
   taskCourses: () => api<TaskCourse[]>("/api/task-courses"),
+  courseDirections: () => api<CourseDirections[]>("/api/course-directions"),
+  saveCourseDirections: (courseId: string, directions: CourseDirections["directions"]) =>
+    api<CourseDirections>(`/api/course-directions/${encodeURIComponent(courseId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ directions }),
+    }),
   createTask: (input: ManualTaskInput) => api<TrackedTask>("/api/tasks", { method: "POST", body: JSON.stringify(input) }),
   updateTask: (logicalId: string, input: ManualTaskInput) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`, { method: "PUT", body: JSON.stringify(input) }),
   context: (logicalId: string) => api<AssignmentContext>(`/api/tasks/${encodeURIComponent(logicalId)}/context`),

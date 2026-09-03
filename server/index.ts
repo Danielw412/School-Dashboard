@@ -10,6 +10,7 @@ import { AgentRunner, AgentRunStore, parseProblemExtractionOutput } from "./agen
 import { CanvasClient } from "./canvas-client.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
+import { CourseDirectionsStore, courseDirectionsRouter } from "./course-directions.js";
 import { APP_ROOT, env } from "./env.js";
 import { SettingsStore } from "./settings.js";
 import { manualTaskInputSchema, TaskSyncClient } from "./task-sync.js";
@@ -28,6 +29,7 @@ app.use(express.json({ limit: "2mb" }));
 
 const activity = new ActivityStore();
 const settingsStore = new SettingsStore();
+const courseDirections = new CourseDirectionsStore();
 const settings = await settingsStore.get();
 const taskSync = new TaskSyncClient(settings.connections.taskSyncApiBase, activity);
 const canvas = new CanvasClient(settings.connections.canvasBaseUrl || env.canvasBaseUrl, activity);
@@ -43,8 +45,11 @@ const agentRunner = new AgentRunner(
   toolSessions,
   activity,
   runs,
+  courseDirections,
 );
 const workflows = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
+
+app.use("/api/course-directions", courseDirectionsRouter(courseDirections));
 
 app.get("/api/health", async (_request, response) => {
   const [taskSyncHealth, canvasHealth] = await Promise.all([

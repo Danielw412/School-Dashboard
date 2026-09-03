@@ -10,6 +10,8 @@ Main flow:
 
 Agent features are `directions`, `problemExtraction`, `answerKey`, and `studyGuide`. Answer keys are special: they may only consume a completed problem-extraction run for the same assignment.
 
+Class directions are feature-scoped. When a relevant agent feature is added, add its own class-direction field through persistence, API/types, UI, and prompt selection instead of reusing another feature's directions.
+
 ## Where to look
 
 - `src/App.tsx` — frontend routes.
