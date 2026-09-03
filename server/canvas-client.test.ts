@@ -33,6 +33,196 @@ describe("CanvasClient assignment context", () => {
     expect(context.submissionRequirements).toMatchObject({ supported: true, allowedExtensions: ["pdf"] });
   });
 
+  it("fuzzy-matches a title with a descriptive suffix and parenthetical abbreviation", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) {
+        return json([assignmentValue(104, "Unit 1 Assignment 4 AP Classroom (U1 A4 APC)")]);
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(
+      unresolvedTask("Unit 1 Assignment 4", "Unit 1 Review : Unit 1 Assignment 4"),
+    );
+
+    expect(context.assignment?.name).toBe("Unit 1 Assignment 4 AP Classroom (U1 A4 APC)");
+    expect(context.resolution.method).toBe("title_search");
+    expect(context.resolution.confidence).toBeGreaterThan(0.8);
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.endsWith("/modules"))).toBe(false);
+  });
+
+  it("preserves assignment numbers when ranking otherwise similar titles", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) {
+        return json([
+          assignmentValue(103, "Unit 1 Assignment 3 (U1 A3)"),
+          assignmentValue(104, "Unit 1 Assignment 4 AP Classroom (U1 A4 APC)"),
+        ]);
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Unit 1 Assignment 4"));
+
+    expect(context.assignment?.id).toBe(104);
+    expect(context.resolution.method).toBe("title_search");
+  });
+
+  it("prefers an exact normalized title over a fuzzy title", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) {
+        return json([
+          assignmentValue(104, "Unit 1 Assignment 4 AP Classroom"),
+          assignmentValue(204, "Unit 1 Assignment 4"),
+        ]);
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("UNIT 1 - ASSIGNMENT 4"));
+
+    expect(context.assignment?.id).toBe(204);
+    expect(context.resolution).toEqual({ method: "title_search", confidence: 1 });
+  });
+
+  it("does not resolve a wrong-number-only candidate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) {
+        return json([assignmentValue(103, "Unit 1 Assignment 3")]);
+      }
+      if (url.pathname.endsWith("/modules") || url.pathname.endsWith("/pages")) return json([]);
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Unit 1 Assignment 4"));
+
+    expect(context.assignment).toBeNull();
+    expect(context.moduleItem).toBeNull();
+    expect(context.resolution).toEqual({ method: "not_found", confidence: 0 });
+  });
+
+  it("abstains when the best fuzzy title is ambiguous", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) {
+        return json([
+          assignmentValue(201, "Unit 1 Review A"),
+          assignmentValue(202, "Unit 1 Review B"),
+        ]);
+      }
+      if (url.pathname.endsWith("/modules") || url.pathname.endsWith("/pages")) return json([]);
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Unit 1 Review"));
+
+    expect(context.assignment).toBeNull();
+    expect(context.resolution.method).toBe("not_found");
+  });
+
+  it("falls back to module items and hydrates an underlying Canvas assignment", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) return json([]);
+      if (url.pathname.endsWith("/modules")) {
+        return json([{
+          id: 7,
+          name: "Unit 1",
+          items_count: 1,
+          items: [{
+            id: 704,
+            module_id: 7,
+            title: "Unit 1 Assignment 4 AP Classroom (U1 A4 APC)",
+            type: "Assignment",
+            content_id: 104,
+          }],
+        }]);
+      }
+      if (url.pathname.endsWith("/assignments/104")) {
+        return json(assignmentValue(104, "Unit 1 Assignment 4 AP Classroom (U1 A4 APC)"));
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Unit 1 Assignment 4"));
+
+    expect(context.assignment?.id).toBe(104);
+    expect(context.moduleItem).toMatchObject({ id: 704, type: "Assignment", content_id: 104 });
+    expect(context.resolution.method).toBe("module_item");
+    expect(context.resolution.confidence).toBeGreaterThan(0.8);
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.includes("/modules/7/items"))).toBe(false);
+  });
+
+  it("resolves non-assignment module resources for downstream inspection", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) return json([]);
+      if (url.pathname.endsWith("/modules")) {
+        return json([{
+          id: 8,
+          name: "Unit 2",
+          items_count: 1,
+          items: [{
+            id: 803,
+            module_id: 8,
+            title: "Unit 2 Assignment 3 - Practice Resource (U2 A3)",
+            type: "Page",
+            page_url: "unit-2-assignment-3",
+            html_url: "https://canvas.test/courses/9/modules/items/803",
+          }],
+        }]);
+      }
+      if (url.pathname.endsWith("/pages/unit-2-assignment-3")) {
+        return json({
+          page_id: 33,
+          url: "unit-2-assignment-3",
+          title: "Unit 2 Assignment 3",
+          html_url: "https://canvas.test/courses/9/pages/unit-2-assignment-3",
+          body: "<p>Complete questions <strong>1-8</strong>.</p>",
+        });
+      }
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    }));
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Unit 2 Assignment 3"));
+
+    expect(context.assignment).toBeNull();
+    expect(context.moduleItem).toMatchObject({ id: 803, type: "Page" });
+    expect(context.resolution.method).toBe("module_item");
+    expect(context.sourceContext).toMatchObject({ kind: "page", matchedBy: "module_title" });
+    expect(context.directionsMarkdown).toContain("**1-8**");
+  });
+
+  it("keeps successful exact title resolution on the assignment endpoint", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.pathname.endsWith("/assignments")) return json([assignmentValue(42, "Worksheet 7")]);
+      throw new Error(`Unexpected Canvas request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new CanvasClient("https://canvas.test", activity);
+
+    const context = await client.assignmentContext(unresolvedTask("Worksheet 7"));
+
+    expect(context.assignment?.id).toBe(42);
+    expect(context.moduleItem).toBeNull();
+    expect(context.resolution).toEqual({ method: "title_search", confidence: 1 });
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).pathname.endsWith("/modules"))).toBe(false);
+  });
+
   it("marks external tools without claiming their content is readable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       id: 42,
@@ -263,6 +453,33 @@ function jsonError(status: number, message: string) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function requestUrl(input: string | URL | Request): URL {
+  return new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+}
+
+function assignmentValue(id: number, name: string) {
+  return {
+    id,
+    course_id: 9,
+    name,
+    description: "",
+    html_url: `https://canvas.test/courses/9/assignments/${id}`,
+    submission_types: [],
+    allowed_extensions: [],
+    locked_for_user: false,
+  };
+}
+
+function unresolvedTask(title: string, sourceText = title): TrackedTask {
+  const task = makeTask();
+  task.canvas.assignment_id = null;
+  task.canvas.assignment_url = null;
+  task.title = title;
+  task.display_title = title;
+  task.source.text = sourceText;
+  return task;
 }
 
 function makeTask(): TrackedTask {

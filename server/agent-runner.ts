@@ -12,7 +12,7 @@ import {
 import { z } from "zod";
 
 import { type ActivityStore, sanitizeForLog } from "./activity.js";
-import type { CanvasClient } from "./canvas-client.js";
+import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import {
   CourseDirectionsStore,
   type CourseDirectionFeature,
@@ -522,18 +522,20 @@ export class AgentRunner {
         const preflight: Record<string, unknown> = {
           structuredToolsReady: true,
           selectedAssignment: context.assignment?.id ?? null,
+          selectedModuleItem: context.moduleItem?.id ?? null,
           recoveredSourceContext: context.sourceContext,
           moduleNeighborhood: null,
           directionsEvidenceSufficient:
             run.feature === "directions" && directionsEvidenceSufficient(task, context),
         };
         const courseId = task.canvas.course_id ?? task.course.canvas_course_id;
-        if (courseId && context.assignment?.id) {
+        const sequenceAsset = moduleSequenceTarget(context);
+        if (courseId && sequenceAsset) {
           try {
             preflight.moduleNeighborhood = await this.canvas.getModuleItemSequence(
               courseId,
-              "Assignment",
-              String(context.assignment.id),
+              sequenceAsset.type,
+              String(sequenceAsset.id),
             );
           } catch (error) {
             preflight.moduleNeighborhoodError =
@@ -807,6 +809,14 @@ export async function configuredMcpServerNames(
   } catch {
     return [];
   }
+}
+
+export function moduleSequenceTarget(
+  context: AssignmentContext,
+): { type: "ModuleItem" | "Assignment"; id: number } | null {
+  if (context.moduleItem) return { type: "ModuleItem", id: context.moduleItem.id };
+  if (context.assignment) return { type: "Assignment", id: context.assignment.id };
+  return null;
 }
 
 export function problemRequiresVisual(markdown: string): boolean {

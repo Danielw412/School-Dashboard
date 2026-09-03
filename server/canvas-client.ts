@@ -70,6 +70,7 @@ const canvasModuleSchema = z
     id: z.number(),
     name: z.string(),
     position: z.number().optional(),
+    items_count: z.number().optional(),
     unlock_at: z.string().nullable().optional(),
     items: z.array(canvasModuleItemSchema).optional(),
   })
@@ -115,7 +116,7 @@ export type CanvasSourceContext = {
   kind: "assignment" | "page" | "file" | "discussion" | "quiz" | "module_item" | "canvas_link";
   title: string;
   url: string | null;
-  matchedBy: "direct_url" | "source_anchor" | "source_text" | "task_title" | "page_search";
+  matchedBy: "direct_url" | "source_anchor" | "source_text" | "task_title" | "page_search" | "module_title";
   contextMarkdown: string;
   cells: string[];
   links: CanvasLink[];
@@ -130,6 +131,7 @@ export type CanvasLink = {
 
 export type AssignmentContext = {
   assignment: CanvasAssignment | null;
+  moduleItem: CanvasModuleItem | null;
   directionsHtml: string;
   directionsMarkdown: string;
   links: CanvasLink[];
@@ -148,9 +150,15 @@ export type AssignmentContext = {
   };
   sourceContext: CanvasSourceContext | null;
   resolution: {
-    method: "canvas_id" | "direct_url" | "title_search" | "not_found";
+    method: "canvas_id" | "direct_url" | "title_search" | "module_item" | "not_found";
     confidence: number;
   };
+};
+
+type AssignmentResolution = AssignmentContext["resolution"] & {
+  assignment: CanvasAssignment | null;
+  moduleItem: CanvasModuleItem | null;
+  moduleSourceContext: CanvasSourceContext | null;
 };
 
 export class CanvasClient {
@@ -268,12 +276,19 @@ export class CanvasClient {
     const modules = await this.listModules(courseId);
     let item = modules.flatMap((module) => module.items ?? []).find((candidate) => String(candidate.id) === itemId);
     if (!item) {
-      const results = await Promise.allSettled(modules.slice(0, 40).map((module) => this.listModuleItems(courseId, String(module.id))));
+      const results = await Promise.allSettled(modules.map((module) => this.listModuleItems(courseId, String(module.id))));
       item = results.flatMap((result) => result.status === "fulfilled" ? result.value : [])
         .find((candidate) => String(candidate.id) === itemId);
     }
     if (!item) throw new Error(`Canvas module item ${itemId} was not found in this course.`);
-    let resource: unknown = null;
+    return { item, resource: await this.resolveModuleItemResource(courseId, item) };
+  }
+
+  private async resolveModuleItemResource(
+    courseId: string,
+    item: CanvasModuleItem,
+  ): Promise<Record<string, unknown> | null> {
+    let resource: Record<string, unknown> | null = null;
     if (item.type === "Page" && item.page_url) resource = await this.getPage(courseId, item.page_url);
     else if (item.type === "Assignment" && item.content_id) {
       const assignment = await this.getAssignment(courseId, String(item.content_id));
@@ -283,7 +298,29 @@ export class CanvasClient {
     else if (item.type === "File" && item.content_id) resource = await this.getFile(String(item.content_id));
     else if (item.type === "Discussion" && item.content_id) resource = await this.getDiscussion(courseId, String(item.content_id));
     else if (item.type === "Quiz" && item.content_id) resource = await this.getQuiz(courseId, String(item.content_id));
-    return { item, resource };
+    else if ((item.type === "ExternalUrl" || item.type === "ExternalTool") && item.external_url) {
+      resource = {
+        kind: "external",
+        url: item.external_url,
+        readable: false,
+        message: "This module item points outside Canvas and was not read.",
+      };
+    }
+    return resource;
+  }
+
+  private async listModuleItemsForResolution(courseId: string): Promise<CanvasModuleItem[]> {
+    const modules = await this.listModules(courseId);
+    const results = await Promise.allSettled(modules.map(async (module) => {
+      const included = module.items ?? [];
+      const includesAllItems = module.items !== undefined &&
+        (module.items_count === undefined || included.length >= module.items_count);
+      return includesAllItems ? included : this.listModuleItems(courseId, String(module.id));
+    }));
+    return dedupeBy(
+      results.flatMap((result) => result.status === "fulfilled" ? result.value : []),
+      (item) => String(item.id),
+    );
   }
 
   async getPage(courseId: string, slug: string): Promise<CanvasReadablePage> {
@@ -454,12 +491,16 @@ export class CanvasClient {
       this.resolveAssignment(task, courseId),
       recoverSourceImmediately ? this.recoverTaskSourceContext(task, courseId) : Promise.resolve(null),
     ]);
-    const { assignment, method, confidence } = assignmentResolution;
-    const sourceContext = initialSourceContext ?? (
-      assignment ? null : await this.recoverTaskSourceContext(task, courseId)
+    const { assignment, moduleItem, moduleSourceContext, method, confidence } = assignmentResolution;
+    const sourceContext = moduleSourceContext ?? initialSourceContext ?? (
+      assignment || moduleItem ? null : await this.recoverTaskSourceContext(task, courseId)
     );
     if (!assignment) {
-      return emptyAssignmentContext(sourceContext);
+      return emptyAssignmentContext(sourceContext, {
+        moduleItem,
+        resolution: { method, confidence },
+        useSourceContent: method === "module_item",
+      });
     }
     const directions = normalizeCanvasHtml(assignment.description ?? "", this.baseUrl);
     const sanitizedAssignment = { ...assignment, description: directions.html };
@@ -468,6 +509,7 @@ export class CanvasClient {
     const supportedTypes = new Set(["online_text_entry", "online_url", "online_upload"]);
     return {
       assignment: sanitizedAssignment,
+      moduleItem,
       directionsHtml: directions.html,
       directionsMarkdown: directions.markdown,
       links: directions.links,
@@ -561,10 +603,12 @@ export class CanvasClient {
   private async resolveAssignment(
     task: TrackedTask,
     courseId: string,
-  ): Promise<Pick<AssignmentContext["resolution"], "method" | "confidence"> & { assignment: CanvasAssignment | null }> {
+  ): Promise<AssignmentResolution> {
     if (task.canvas.assignment_id) {
       return {
         assignment: await this.getAssignment(courseId, task.canvas.assignment_id),
+        moduleItem: null,
+        moduleSourceContext: null,
         method: "canvas_id",
         confidence: 1,
       };
@@ -577,6 +621,8 @@ export class CanvasClient {
         if (match?.[1] === courseId) {
           return {
             assignment: await this.getAssignment(courseId, match[2]!),
+            moduleItem: null,
+            moduleSourceContext: null,
             method: "direct_url",
             confidence: 1,
           };
@@ -593,12 +639,48 @@ export class CanvasClient {
       (assignment) => String(assignment.id),
     );
     const ranked = rankByMultipleQueries(candidates, (item) => item.name, queries);
-    const best = ranked[0];
-    const runnerUp = ranked[1];
-    if (best && best.score >= 0.55 && (!runnerUp || best.score - runnerUp.score >= 0.08)) {
-      return { assignment: best.item, method: "title_search", confidence: best.score };
+    const assignmentMatch = selectConfidentTitleMatch(ranked);
+    if (assignmentMatch) {
+      return {
+        assignment: assignmentMatch.item,
+        moduleItem: null,
+        moduleSourceContext: null,
+        method: "title_search",
+        confidence: assignmentMatch.score,
+      };
     }
-    return { assignment: null, method: "not_found", confidence: 0 };
+
+    try {
+      const moduleItems = (await this.listModuleItemsForResolution(courseId))
+        .filter((item) => item.type !== "SubHeader");
+      const moduleMatch = selectConfidentTitleMatch(
+        rankByMultipleQueries(moduleItems, (item) => item.title, queries),
+      );
+      if (moduleMatch) {
+        const resource = await this.resolveModuleItemResource(courseId, moduleMatch.item).catch(() => null);
+        const assignment = moduleMatch.item.type === "Assignment"
+          ? canvasAssignmentSchema.safeParse(resource).data ?? null
+          : null;
+        return {
+          assignment,
+          moduleItem: moduleMatch.item,
+          moduleSourceContext: assignment
+            ? null
+            : sourceContextFromModuleItem(moduleMatch.item, resource, task, this.baseUrl),
+          method: "module_item",
+          confidence: moduleMatch.score,
+        };
+      }
+    } catch {
+      // Module discovery is a best-effort fallback after ordinary assignment resolution fails.
+    }
+    return {
+      assignment: null,
+      moduleItem: null,
+      moduleSourceContext: null,
+      method: "not_found",
+      confidence: 0,
+    };
   }
 
   async uploadSubmissionFile(
@@ -962,6 +1044,46 @@ function sourceContextFromFollowedResource(
   return null;
 }
 
+function sourceContextFromModuleItem(
+  item: CanvasModuleItem,
+  resource: Record<string, unknown> | null,
+  task: TrackedTask,
+  baseUrl: string,
+): CanvasSourceContext {
+  const directUrl = [
+    item.html_url,
+    item.external_url,
+    resource?.html_url,
+    resource?.url,
+    item.url,
+  ].find((value): value is string => typeof value === "string") ??
+    `${baseUrl}/courses/${task.canvas.course_id ?? task.course.canvas_course_id}/modules/items/${item.id}`;
+  const kindByType: Record<string, CanvasSourceContext["kind"]> = {
+    Assignment: "assignment",
+    Page: "page",
+    File: "file",
+    Discussion: "discussion",
+    Quiz: "quiz",
+  };
+  const kind = kindByType[item.type] ?? "module_item";
+  const followed = resource
+    ? sourceContextFromFollowedResource({ kind, value: resource }, task, directUrl, baseUrl)
+    : null;
+  return {
+    kind,
+    title: item.title,
+    url: directUrl,
+    matchedBy: "module_title",
+    contextMarkdown: followed?.contextMarkdown ?? "",
+    cells: followed?.cells ?? [],
+    links: followed?.links ?? [],
+    resource: {
+      moduleItem: compactCanvasResource(item),
+      ...(followed ? { content: followed.resource } : {}),
+    },
+  };
+}
+
 function taskSourceMayContainDirections(task: TrackedTask): boolean {
   return /agenda|page|table|syllabus/i.test(task.source.type) ||
     Boolean(task.source.url?.match(/\/pages\//i)) ||
@@ -1062,12 +1184,20 @@ function nearbyInstructionText(value: string): boolean {
   return /\b(?:due|submit|submission|upload|turn in|bring|required|materials?|instructions?|revision|revise|link)\b/i.test(value);
 }
 
-function emptyAssignmentContext(sourceContext: CanvasSourceContext | null = null): AssignmentContext {
+function emptyAssignmentContext(
+  sourceContext: CanvasSourceContext | null = null,
+  options: {
+    moduleItem?: CanvasModuleItem | null;
+    resolution?: AssignmentContext["resolution"];
+    useSourceContent?: boolean;
+  } = {},
+): AssignmentContext {
   return {
     assignment: null,
+    moduleItem: options.moduleItem ?? null,
     directionsHtml: "",
-    directionsMarkdown: "",
-    links: [],
+    directionsMarkdown: options.useSourceContent ? sourceContext?.contextMarkdown ?? "" : "",
+    links: options.useSourceContent ? sourceContext?.links ?? [] : [],
     submissionRequirements: {
       supported: false,
       submissionTypes: [],
@@ -1077,9 +1207,12 @@ function emptyAssignmentContext(sourceContext: CanvasSourceContext | null = null
       locked: false,
       lockExplanation: null,
     },
-    externalAssignment: { isExternal: false, url: null },
+    externalAssignment: {
+      isExternal: Boolean(options.moduleItem?.external_url),
+      url: options.moduleItem?.external_url ?? null,
+    },
     sourceContext,
-    resolution: { method: "not_found", confidence: 0 },
+    resolution: options.resolution ?? { method: "not_found", confidence: 0 },
   };
 }
 
@@ -1103,10 +1236,12 @@ function normalizedTokens(value: string): Set<string> {
     value
       .toLocaleLowerCase()
       .replace(/\[[^\]]+\]/g, " ")
+      .replace(/([a-z])(\d)/g, "$1 $2")
+      .replace(/(\d)([a-z])/g, "$1 $2")
       .replace(/[^a-z0-9]+/g, " ")
       .trim()
       .split(/\s+/)
-      .filter((item) => item.length > 1),
+      .filter((item) => item.length > 1 || /^\d+$/.test(item)),
   );
 }
 
@@ -1129,13 +1264,145 @@ function rankByTitle<T>(items: T[], title: (item: T) => string, query: Set<strin
 }
 
 function rankByMultipleQueries<T>(items: T[], title: (item: T) => string, queries: string[]) {
-  const tokenQueries = queries.map(normalizedTokens).filter((query) => query.size > 0);
+  const usableQueries = queries.filter((query) => normalizeTitle(query).length > 0);
   return items
     .map((item) => ({
       item,
-      score: Math.max(0, ...tokenQueries.map((query) => tokenSimilarity(query, normalizedTokens(title(item))))),
+      score: Math.max(0, ...usableQueries.map((query) => fuzzyTitleScore(query, title(item)))),
     }))
     .sort((left, right) => right.score - left.score || title(left.item).localeCompare(title(right.item)));
+}
+
+const TITLE_MATCH_MIN_CONFIDENCE = 0.72;
+const TITLE_MATCH_MIN_MARGIN = 0.08;
+
+function selectConfidentTitleMatch<T>(ranked: Array<{ item: T; score: number }>) {
+  const best = ranked[0];
+  const runnerUp = ranked[1];
+  if (!best || best.score < TITLE_MATCH_MIN_CONFIDENCE) return null;
+  if (runnerUp && best.score - runnerUp.score < TITLE_MATCH_MIN_MARGIN) return null;
+  return best;
+}
+
+function fuzzyTitleScore(queryValue: string, candidateValue: string): number {
+  const query = normalizeTitle(queryValue);
+  const candidate = normalizeTitle(candidateValue);
+  if (!query || !candidate || !numericTitleEvidenceMatches(queryValue, candidateValue)) return 0;
+  if (query === candidate) return 1;
+
+  const queryTokens = query.split(" ");
+  const candidateTokens = candidate.split(" ");
+  const querySet = new Set(queryTokens);
+  const candidateSet = new Set(candidateTokens);
+  const intersection = [...querySet].filter((token) => candidateSet.has(token)).length;
+  const queryCoverage = intersection / querySet.size;
+  const tokenOverlap = tokenSimilarity(querySet, candidateSet);
+  const orderedSimilarity = longestCommonSubsequenceLength(queryTokens, candidateTokens) / queryTokens.length;
+  const prefixLength = commonPrefixLength(queryTokens, candidateTokens) / queryTokens.length;
+  const phraseContainment = candidate.includes(query) || query.includes(candidate) ? 1 : 0;
+  const stringSimilarity = normalizedEditSimilarity(query, candidate);
+
+  return (
+    queryCoverage * 0.30 +
+    tokenOverlap * 0.16 +
+    orderedSimilarity * 0.20 +
+    Math.max(prefixLength, phraseContainment) * 0.14 +
+    stringSimilarity * 0.20
+  );
+}
+
+function normalizeTitle(value: string): string {
+  return value
+    .toLocaleLowerCase()
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/([a-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z])/g, "$1 $2")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 1 || /^\d+$/.test(token))
+    .join(" ");
+}
+
+function numericTitleEvidenceMatches(query: string, candidate: string): boolean {
+  const queryNumbers = numericTokens(query);
+  const candidateNumbers = numericTokens(candidate);
+  if ([...queryNumbers].some((number) => !candidateNumbers.has(number))) return false;
+
+  const queryAnchors = numericAnchors(query);
+  const candidateAnchors = numericAnchors(candidate);
+  return [...queryAnchors.entries()].every(([anchor, number]) => {
+    const candidateNumber = candidateAnchors.get(anchor);
+    return candidateNumber === undefined || candidateNumber === number;
+  });
+}
+
+function numericTokens(value: string): Set<string> {
+  return new Set([...value.matchAll(/\d+(?:\.\d+)?/g)].map((match) => canonicalNumber(match[0])));
+}
+
+function numericAnchors(value: string): Map<string, string> {
+  const tokens = value
+    .toLocaleLowerCase()
+    .replace(/([a-z])(\d)/g, "$1 $2")
+    .replace(/(\d)([a-z])/g, "$1 $2")
+    .replace(/[^a-z0-9.]+/g, " ")
+    .trim()
+    .split(/\s+/);
+  const anchors = new Map<string, string>();
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (/^[a-z]{2,}$/.test(tokens[index - 1]!) && /^\d+(?:\.\d+)?$/.test(tokens[index]!)) {
+      anchors.set(tokens[index - 1]!, canonicalNumber(tokens[index]!));
+    }
+  }
+  return anchors;
+}
+
+function canonicalNumber(value: string): string {
+  const [integer, decimal] = value.split(".");
+  const normalizedInteger = integer!.replace(/^0+(?=\d)/, "");
+  return decimal === undefined ? normalizedInteger : `${normalizedInteger}.${decimal.replace(/0+$/, "")}`;
+}
+
+function longestCommonSubsequenceLength(left: string[], right: string[]): number {
+  const previous = new Array<number>(right.length + 1).fill(0);
+  for (const leftToken of left) {
+    let diagonal = 0;
+    for (let index = 1; index <= right.length; index += 1) {
+      const above = previous[index]!;
+      previous[index] = leftToken === right[index - 1]
+        ? diagonal + 1
+        : Math.max(previous[index]!, previous[index - 1]!);
+      diagonal = above;
+    }
+  }
+  return previous[right.length]!;
+}
+
+function commonPrefixLength(left: string[], right: string[]): number {
+  let length = 0;
+  while (length < left.length && length < right.length && left[length] === right[length]) length += 1;
+  return length;
+}
+
+function normalizedEditSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  const previous = Array.from({ length: right.length + 1 }, (_value, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    let diagonal = previous[0]!;
+    previous[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const above = previous[rightIndex]!;
+      previous[rightIndex] = Math.min(
+        previous[rightIndex]! + 1,
+        previous[rightIndex - 1]! + 1,
+        diagonal + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+      diagonal = above;
+    }
+  }
+  return 1 - previous[right.length]! / Math.max(left.length, right.length);
 }
 
 function tokenSimilarity(left: Set<string>, right: Set<string>): number {

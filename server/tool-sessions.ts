@@ -205,6 +205,7 @@ export class CanvasToolSessions {
         return {
           task: session.task,
           assignment: session.context.assignment,
+          moduleItem: session.context.moduleItem,
           directionsMarkdown: session.context.directionsMarkdown,
           links: session.context.links,
           submissionRequirements: session.context.submissionRequirements,
@@ -227,6 +228,7 @@ export class CanvasToolSessions {
         return {
           taskIdentifiers: taskRecoveryIdentifiers(session.task),
           assignment: session.context.assignment,
+          moduleItem: session.context.moduleItem,
           resolution: session.context.resolution,
           sourceContext: sourceContext ?? session.context.sourceContext,
           directLinks: directTaskLinks(session.task, session.context),
@@ -917,6 +919,9 @@ function directTaskLinks(task: TrackedTask, context: AssignmentContext): string[
     task.source.assignment_url,
     task.source.url,
     context.assignment?.html_url,
+    context.moduleItem?.html_url,
+    context.moduleItem?.external_url,
+    context.sourceContext?.url,
     ...context.links.map((link) => link.url),
     ...(context.sourceContext?.links.map((link) => link.url) ?? []),
   ].filter((value): value is string => Boolean(value)))];

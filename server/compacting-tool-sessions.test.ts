@@ -49,6 +49,7 @@ describe("agent tool payload compaction", () => {
       },
       assignmentContext: {
         assignment: null,
+        moduleItem: { id: 704, module_id: 7, title: "Unit 1 Assignment 4", type: "Page" },
         directionsHtml: "<p>duplicate HTML</p>",
         directionsMarkdown: "Use a strong claim.",
         links: [],
@@ -69,6 +70,7 @@ describe("agent tool payload compaction", () => {
       task: { logical_id: "task-1", display_title: "Revise paragraph" },
       assignmentContext: {
         directionsMarkdown: "Use a strong claim.",
+        moduleItem: { id: 704, title: "Unit 1 Assignment 4" },
         sourceContext: {
           contextMarkdown: "Friday assignment context",
           resource: { page_id: 42 },

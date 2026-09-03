@@ -91,6 +91,17 @@ export type AssignmentContext = {
     locked_for_user: boolean;
     lock_explanation?: string | null;
   };
+  moduleItem?: null | {
+    id: number;
+    module_id: number;
+    title: string;
+    type: string;
+    content_id?: number;
+    page_url?: string;
+    external_url?: string;
+    html_url?: string;
+    url?: string;
+  };
   directionsHtml: string;
   directionsMarkdown: string;
   links: Array<{ text: string; url: string; sameCanvasOrigin: boolean }>;

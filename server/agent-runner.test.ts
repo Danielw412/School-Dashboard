@@ -11,11 +11,13 @@ import {
   buildMcpConfigOverrides,
   compactEventForLog,
   enforceProblemVisualPolicy,
+  moduleSequenceTarget,
   problemRequiresVisual,
   resolveAgentPreferences,
   sanitizeStoredAgentEvents,
   stripLegacyAnswerMetadata,
 } from "./agent-runner.js";
+import type { AssignmentContext } from "./canvas-client.js";
 import { defaultSettings } from "./settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -100,6 +102,19 @@ describe("agent run preferences", () => {
     expect(overrides).toContain("mcp_servers.node_repl.enabled=false");
     expect(buildMcpConfigOverrides(false, 8780)).not.toContain("mcp_servers={}");
     expect(buildMcpConfigOverrides(false, 8780).every((value) => value.endsWith(".enabled=false"))).toBe(true);
+  });
+
+  it("uses a resolved module item to preload its module neighborhood", () => {
+    const base = {
+      assignment: { id: 104 },
+      moduleItem: null,
+    } as unknown as AssignmentContext;
+
+    expect(moduleSequenceTarget(base)).toEqual({ type: "Assignment", id: 104 });
+    expect(moduleSequenceTarget({
+      ...base,
+      moduleItem: { id: 704, module_id: 7, title: "Unit 1 Assignment 4", type: "Assignment" },
+    })).toEqual({ type: "ModuleItem", id: 704 });
   });
 
   it("directs problem extraction through bounded text-first lookup and visual-only crops", () => {

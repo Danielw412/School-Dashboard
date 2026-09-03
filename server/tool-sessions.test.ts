@@ -383,6 +383,7 @@ describe("Directions tool profile", () => {
       canvas: { course_id: "9" },
     }, {
       assignment: null,
+      moduleItem: null,
       directionsHtml: "",
       directionsMarkdown: "",
       links: [],
@@ -517,6 +518,7 @@ function makeTask(): TrackedTask {
 function makeContext(): AssignmentContext {
   return {
     assignment: null,
+    moduleItem: null,
     directionsHtml: "",
     directionsMarkdown: "",
     links: [],

@@ -94,12 +94,31 @@ function compactAssignmentContext(value: unknown): unknown {
   if (!context) return value;
   return compactDefined({
     assignment: compactAssignment(context.assignment),
+    moduleItem: compactModuleItem(context.moduleItem),
     directionsMarkdown: truncateString(context.directionsMarkdown, MAX_CONTEXT_MARKDOWN_CHARS),
     links: compactLinks(context.links),
     submissionRequirements: context.submissionRequirements,
     externalAssignment: context.externalAssignment,
     sourceContext: compactSourceContext(context.sourceContext),
     resolution: context.resolution,
+  });
+}
+
+function compactModuleItem(value: unknown): unknown {
+  if (value === null) return null;
+  const item = asRecord(value);
+  if (!item) return value;
+  return compactDefined({
+    id: item.id,
+    module_id: item.module_id,
+    position: item.position,
+    title: item.title,
+    type: item.type,
+    content_id: item.content_id,
+    page_url: item.page_url,
+    external_url: item.external_url,
+    html_url: item.html_url,
+    url: item.url,
   });
 }
 
