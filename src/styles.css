@@ -484,6 +484,7 @@ body { min-height: 100dvh; background: var(--canvas); }
 .progress-timeline { max-height: min(38vh, 360px); margin: 13px 0 0 43px; padding: 0 7px 2px 0; display: grid; gap: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; list-style: none; }
 .progress-panel.compact .progress-timeline { max-height: min(30vh, 240px); }
 .progress-timeline li { display: grid; grid-template-columns: 15px minmax(0, 1fr) auto; align-items: center; gap: 7px; color: #68758a; font-size: 9px; animation: log-enter .2s ease both; }
+.progress-entry-icon { width: 15px; height: 15px; display: grid; place-items: center; overflow: hidden; }
 .progress-timeline li svg { color: #8d98a8; }.progress-timeline li.started svg { color: var(--blue); }.progress-timeline li.failed svg { color: var(--red); }
 .progress-timeline time { color: #9aa4b2; font-size: 8px; }
 

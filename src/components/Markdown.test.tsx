@@ -1,4 +1,5 @@
 import { render } from "@testing-library/react";
+import katex from "katex";
 import { describe, expect, it } from "vitest";
 
 import { Markdown } from "./Markdown";
@@ -19,6 +20,21 @@ describe("Markdown math", () => {
   it("braces vector and unit-vector accents so arrows stay attached", () => {
     expect(normalizeMathDelimiters("\\(\\vec R=3\\hat\\imath+4\\hat\\jmath\\)"))
       .toBe("$\\vec{R}=3\\hat{\\imath}+4\\hat{\\jmath}$");
+  });
+
+  it("uses the same KaTeX structure as the package that supplies the stylesheet", () => {
+    const { container } = render(<Markdown>{"\\(\\vec{r}\\)"}</Markdown>);
+    const expected = document.createElement("div");
+    expected.innerHTML = katex.renderToString("\\vec{r}");
+
+    const renderedClasses = [...container.querySelectorAll(".katex-html span")]
+      .map((element) => element.className)
+      .filter(Boolean);
+    const stylesheetClasses = [...expected.querySelectorAll(".katex-html span")]
+      .map((element) => element.className)
+      .filter(Boolean);
+
+    expect(renderedClasses).toEqual(stylesheetClasses);
   });
 
   it("converts accidental solution HTML wrappers into Markdown", () => {

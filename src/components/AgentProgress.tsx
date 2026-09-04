@@ -48,7 +48,9 @@ export function ProgressTimeline({
             const Icon = entry.status === "failed" ? AlertCircle : entry.status === "started" ? LoaderCircle : entry.tool ? Wrench : Check;
             return (
               <li className={entry.status} key={entry.id}>
-                <Icon className={entry.status === "started" ? "spin" : ""} size={14} />
+                <span className="progress-entry-icon">
+                  <Icon className={entry.status === "started" ? "spin" : ""} size={14} />
+                </span>
                 <span>{entry.message}</span>
                 <time>{formatTime(entry.timestamp)}</time>
               </li>
