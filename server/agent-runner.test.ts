@@ -91,17 +91,17 @@ describe("agent run preferences", () => {
   });
 
   it("connects Luna to only the short-lived structured MCP server", () => {
-    const overrides = buildMcpConfigOverrides(true, 8780, ["personal_server"]);
+    const overrides = buildMcpConfigOverrides(true, 8892, ["personal_server"]);
     const override = overrides.join("\n");
 
     expect(override).toContain("school_dashboard");
-    expect(override).toContain("http://127.0.0.1:8780/api/internal/canvas-mcp");
+    expect(override).toContain("http://127.0.0.1:8892/api/internal/canvas-mcp");
     expect(override).toContain('bearer_token_env_var="SCHOOL_DASHBOARD_TOOL_TOKEN"');
     expect(override).not.toContain("canvas-tool.mjs");
     expect(overrides).toContain("mcp_servers.personal_server.enabled=false");
     expect(overrides).toContain("mcp_servers.node_repl.enabled=false");
-    expect(buildMcpConfigOverrides(false, 8780)).not.toContain("mcp_servers={}");
-    expect(buildMcpConfigOverrides(false, 8780).every((value) => value.endsWith(".enabled=false"))).toBe(true);
+    expect(buildMcpConfigOverrides(false, 8892)).not.toContain("mcp_servers={}");
+    expect(buildMcpConfigOverrides(false, 8892).every((value) => value.endsWith(".enabled=false"))).toBe(true);
   });
 
   it("uses a resolved module item to preload its module neighborhood", () => {

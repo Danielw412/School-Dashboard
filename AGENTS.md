@@ -52,7 +52,7 @@ Copy-Item .env.example .env
 npm run dev
 ```
 
-Development UI: `http://127.0.0.1:5174`. Production server defaults to `http://127.0.0.1:8780` after `npm run build && npm start`.
+Development UI: `http://127.0.0.1:5174`. Production server defaults to `http://127.0.0.1:8892` after `npm run build && npm start`.
 
 Before finishing a code change, run the relevant tests and normally all three checks:
 

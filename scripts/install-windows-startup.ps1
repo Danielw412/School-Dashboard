@@ -4,8 +4,8 @@ param()
 $ErrorActionPreference = "Stop"
 
 $taskName = "Homework Dashboard Web"
-$websiteUrl = "http://127.0.0.1:8780/"
-$port = 8780
+$websiteUrl = "http://127.0.0.1:8892/"
+$port = 8892
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 $wscriptPath = Join-Path $env:SystemRoot "System32\wscript.exe"

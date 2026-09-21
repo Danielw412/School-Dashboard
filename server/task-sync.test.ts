@@ -34,7 +34,7 @@ describe("TaskSyncClient browser resources", () => {
       });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const client = new TaskSyncClient("http://127.0.0.1:8790/api/v1", activity);
+    const client = new TaskSyncClient("http://127.0.0.1:8890/api/v1", activity);
 
     await client.readBrowserResource(linkedUrl);
     await client.readBrowserResource(linkedUrl);
@@ -87,7 +87,7 @@ describe("TaskSyncClient browser resources", () => {
       });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const client = new TaskSyncClient("http://127.0.0.1:8790/api/v1", activity);
+    const client = new TaskSyncClient("http://127.0.0.1:8890/api/v1", activity);
 
     const resource = await client.readBrowserResource(linkedUrl);
 
@@ -104,7 +104,7 @@ describe("TaskSyncClient browser resources", () => {
       }
       return json({ error: { code: "sign_in_required", message: "Sign in with the course account." } }, 409);
     }));
-    const client = new TaskSyncClient("http://127.0.0.1:8790/api/v1", activity);
+    const client = new TaskSyncClient("http://127.0.0.1:8890/api/v1", activity);
 
     await expect(client.readBrowserResource("https://example.com/course-resource")).rejects.toMatchObject({
       name: "TaskSyncRequestError",

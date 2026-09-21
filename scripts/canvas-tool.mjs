@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 // a short-lived, assignment-scoped capability; the Canvas bearer token never enters the workspace.
 const token = process.env.SCHOOL_DASHBOARD_TOOL_TOKEN;
 const endpoint = process.env.SCHOOL_DASHBOARD_TOOL_URL ??
-  "http://127.0.0.1:8780/api/internal/canvas-tools";
+  "http://127.0.0.1:8892/api/internal/canvas-tools";
 const action = process.argv[2];
 
 if (!token) throw new Error("SCHOOL_DASHBOARD_TOOL_TOKEN is unavailable outside a scoped agent run.");

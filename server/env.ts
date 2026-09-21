@@ -16,10 +16,10 @@ export const ACTIVITY_PATH = join(APP_DATA_DIR, "activity.json");
 export const RUNS_PATH = join(APP_DATA_DIR, "runs.json");
 
 export const env = {
-  port: Number.parseInt(process.env.SCHOOL_DASHBOARD_PORT ?? "8780", 10),
+  port: Number.parseInt(process.env.SCHOOL_DASHBOARD_PORT ?? "8892", 10),
   taskSyncApiBase:
     process.env.TASK_SYNC_API_BASE?.replace(/\/$/, "") ??
-    "http://127.0.0.1:8790/api/v1",
+    "http://127.0.0.1:8890/api/v1",
   canvasBaseUrl: process.env.CANVAS_BASE_URL?.replace(/\/$/, "") ?? "",
   canvasToken: process.env.CANVAS_API_TOKEN ?? "",
   cacheTtlMinutes: Number.parseInt(

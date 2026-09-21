@@ -7,8 +7,8 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5174,
     proxy: {
-      "/api": "http://127.0.0.1:8780",
-      "/workspace-files": "http://127.0.0.1:8780"
+      "/api": "http://127.0.0.1:8892",
+      "/workspace-files": "http://127.0.0.1:8892"
     }
   },
   test: {

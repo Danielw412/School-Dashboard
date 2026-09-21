@@ -40,7 +40,7 @@ Keep these values only in `.env`:
 ```dotenv
 CANVAS_API_TOKEN=...
 CANVAS_BASE_URL=https://school.instructure.com
-TASK_SYNC_API_BASE=http://127.0.0.1:8790/api/v1
+TASK_SYNC_API_BASE=http://127.0.0.1:8890/api/v1
 ```
 
 Start or restart Canvas Task Sync before the dashboard:
@@ -51,7 +51,7 @@ Set-Location ..\Canvas-Task-Sync
 ```
 
 Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the production bundle from
-`http://127.0.0.1:8780`.
+`http://127.0.0.1:8892`.
 
 To start the production dashboard automatically when you sign in to Windows, build it once and run
 the installer from this project directory:
