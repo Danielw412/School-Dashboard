@@ -27,7 +27,7 @@ export async function runConnectionTest(dependencies: {
   canvasHealth: () => Promise<Health>;
   canvasCredentialConfigured: boolean;
   canvasBaseUrl: string;
-  taskSyncApiBase: string;
+  taskSyncRoute: string;
   codexModel: string;
   mcpHealth: () => { connected: boolean; name: string; transport: string; toolCount: number };
   workspaceStats: () => Promise<{ files: number; bytes: number; hits: number; misses: number }>;
@@ -41,7 +41,7 @@ export async function runConnectionTest(dependencies: {
     timed("task-sync", "Canvas Task Sync", async () => {
       const health = await dependencies.taskSyncHealth();
       return health.connected
-        ? { status: "passed" as const, detail: `Connected to ${dependencies.taskSyncApiBase} (API v${health.apiVersion ?? "unknown"}).` }
+        ? { status: "passed" as const, detail: `Connected to ${dependencies.taskSyncRoute} (API v${health.apiVersion ?? "unknown"}).` }
         : { status: "failed" as const, detail: health.error || "Canvas Task Sync is unavailable." };
     }),
     timed("canvas", "Canvas API", async () => {

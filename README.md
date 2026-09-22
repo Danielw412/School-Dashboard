@@ -50,6 +50,31 @@ Set-Location ..\Canvas-Task-Sync
 .venv\Scripts\canvas-task-sync.exe web --no-open
 ```
 
+### Canvas Task Sync on a server
+
+When Task Sync's authoritative backend runs on a server (its split deployment, bound to
+`127.0.0.1:8790` there), point the dashboard at it by SSH target instead of URL:
+
+```dotenv
+TASK_SYNC_SSH_TARGET=daniel@100.87.157.44
+TASK_SYNC_REMOTE_PORT=8790
+```
+
+The dashboard server then keeps its own `ssh -L 127.0.0.1:8790:127.0.0.1:8790` tunnel open,
+reconnecting with backoff when the laptop sleeps or changes networks, and ignores
+`TASK_SYNC_API_BASE` and the saved connection URL. It does not need Task Sync's laptop dashboards
+to be running. The local port matches the backend's port on purpose: Task Sync accepts only its own
+loopback `Host`, and Node's `fetch` cannot rewrite that header, so port `8790` must be free on this
+machine. Remove `TASK_SYNC_SSH_TARGET` to go back to a local Task Sync.
+
+The tunnel runs non-interactively (`BatchMode`), so key-based SSH login must already work. Run
+`ssh daniel@100.87.157.44` once by hand to accept the host key. Tunnel state and SSH errors appear
+under **Settings -> Connections & diagnostics**.
+
+Linked-resource reads through the Chrome extension still travel through Task Sync: the extension
+must stay paired with Task Sync's laptop dashboards (`scripts\start-remote-dashboards.ps1` or its
+startup task), and those need to point at the same server.
+
 Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the production bundle from
 `http://127.0.0.1:8892`.
 

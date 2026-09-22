@@ -20,6 +20,10 @@ export const env = {
   taskSyncApiBase:
     process.env.TASK_SYNC_API_BASE?.replace(/\/$/, "") ??
     "http://127.0.0.1:8890/api/v1",
+  // When set (for example daniel@100.87.157.44), Task Sync runs on that server and is reached
+  // through a supervised SSH tunnel; TASK_SYNC_API_BASE and the saved connection URL are ignored.
+  taskSyncSshTarget: process.env.TASK_SYNC_SSH_TARGET?.trim() ?? "",
+  taskSyncRemotePort: Number.parseInt(process.env.TASK_SYNC_REMOTE_PORT ?? "8790", 10),
   canvasBaseUrl: process.env.CANVAS_BASE_URL?.replace(/\/$/, "") ?? "",
   canvasToken: process.env.CANVAS_API_TOKEN ?? "",
   cacheTtlMinutes: Number.parseInt(

@@ -13,6 +13,7 @@ import { runConnectionTest } from "./connection-test.js";
 import { CourseDirectionsStore, courseDirectionsRouter } from "./course-directions.js";
 import { APP_ROOT, env } from "./env.js";
 import { SettingsStore } from "./settings.js";
+import { SshTunnel } from "./ssh-tunnel.js";
 import { manualTaskInputSchema, TaskSyncClient } from "./task-sync.js";
 import { ToolAuthorizationError } from "./tool-sessions.js";
 import { AgentWorkflowRunner } from "./workflow-runner.js";
@@ -31,7 +32,19 @@ const activity = new ActivityStore();
 const settingsStore = new SettingsStore();
 const courseDirections = new CourseDirectionsStore();
 const settings = await settingsStore.get();
-const taskSync = new TaskSyncClient(settings.connections.taskSyncApiBase, activity);
+// A remote Task Sync backend replaces the configured URL with its own SSH tunnel.
+const taskSyncTunnel = env.taskSyncSshTarget
+  ? new SshTunnel(env.taskSyncSshTarget, env.taskSyncRemotePort)
+  : null;
+taskSyncTunnel?.start();
+process.once("exit", () => taskSyncTunnel?.stop());
+const taskSyncApiBase = taskSyncTunnel?.apiBase ?? settings.connections.taskSyncApiBase;
+const taskSyncRoute = taskSyncTunnel ? `${taskSyncTunnel.target} over SSH` : taskSyncApiBase;
+const taskSync = new TaskSyncClient(
+  taskSyncApiBase,
+  activity,
+  taskSyncTunnel ? () => taskSyncTunnel.unreachableMessage() : undefined,
+);
 const canvas = new CanvasClient(settings.connections.canvasBaseUrl || env.canvasBaseUrl, activity);
 const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
@@ -209,7 +222,8 @@ app.get("/api/diagnostics", async (_request, response) => {
       taskSync: taskSyncHealth,
       canvas: canvasHealth,
       canvasCredentialConfigured: Boolean(env.canvasToken),
-      taskSyncApiBase: currentSettings.connections.taskSyncApiBase,
+      taskSyncApiBase,
+      taskSyncTunnel: taskSyncTunnel?.status() ?? null,
       canvasBaseUrl: currentSettings.connections.canvasBaseUrl,
     },
     predictor: {
@@ -231,7 +245,7 @@ app.post("/api/connection-test", async (_request, response) => {
     canvasHealth: () => canvas.health(),
     canvasCredentialConfigured: Boolean(env.canvasToken && (currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl)),
     canvasBaseUrl: currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl,
-    taskSyncApiBase: currentSettings.connections.taskSyncApiBase,
+    taskSyncRoute,
     codexModel: currentSettings.defaultModel,
     mcpHealth: () => toolSessions.health(),
     workspaceStats: () => workspaces.stats(),

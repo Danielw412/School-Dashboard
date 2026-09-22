@@ -11,6 +11,8 @@ const navItems = [
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
+const logoSrc = "/school-dashboard-logo.png";
+
 export function AppShell({ children }: PropsWithChildren) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const activeWork = usePolling(schoolApi.activeWork, 2_500);
@@ -19,6 +21,7 @@ export function AppShell({ children }: PropsWithChildren) {
     <div className="app-shell">
       <aside className={`sidebar ${mobileOpen ? "is-open" : ""}`}>
         <div className="brand">
+          <span className="brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
           <strong>School Dashboard</strong>
         </div>
         {mobileOpen ? <button className="mobile-close icon-button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}>
@@ -37,7 +40,10 @@ export function AppShell({ children }: PropsWithChildren) {
       <main className="main-stage">
         <header className="mobile-header">
           <button className="icon-button" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={21} /></button>
-          <span>School Dashboard</span>
+          <div className="mobile-brand">
+            <span className="mobile-brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
+            <span>School Dashboard</span>
+          </div>
           {hasActiveWork ? <LoaderCircle className="spin" size={17} /> : <span />}
         </header>
         {children}

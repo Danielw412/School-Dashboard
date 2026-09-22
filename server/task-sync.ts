@@ -119,6 +119,8 @@ export class TaskSyncClient {
   constructor(
     private readonly baseUrl: string,
     private readonly activity: ActivityStore,
+    private readonly unreachableMessage = () =>
+      `Could not reach Canvas Task Sync at ${baseUrl}. Check that it is running.`,
   ) {}
 
   async listTasks(completed: boolean | undefined = false): Promise<TrackedTask[]> {
@@ -235,7 +237,11 @@ export class TaskSyncClient {
     const url = `${this.baseUrl}${path}`;
     const started = performance.now();
     try {
-      const response = await fetch(url, init);
+      const response = await fetch(url, init).catch((error: unknown) => {
+        // fetch rejects with a TypeError only when no HTTP response arrived at all.
+        if (!(error instanceof TypeError)) throw error;
+        throw new TaskSyncRequestError(this.unreachableMessage(), "task_sync_unreachable", 502);
+      });
       if (!response.ok) {
         const body = (await response.text()).slice(0, 2_000);
         if (response.status === 404 && path.startsWith("/tasks")) {

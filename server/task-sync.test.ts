@@ -115,6 +115,32 @@ describe("TaskSyncClient browser resources", () => {
   });
 });
 
+describe("TaskSyncClient connectivity", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("explains an unreachable backend instead of surfacing a bare fetch failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }));
+    const local = new TaskSyncClient("http://127.0.0.1:8890/api/v1", activity);
+    const remote = new TaskSyncClient(
+      "http://127.0.0.1:8790/api/v1",
+      activity,
+      () => "Could not reach Canvas Task Sync through the SSH tunnel to daniel@server.",
+    );
+
+    await expect(local.listTasks()).rejects.toMatchObject({
+      code: "task_sync_unreachable",
+      status: 502,
+      message: "Could not reach Canvas Task Sync at http://127.0.0.1:8890/api/v1. Check that it is running.",
+    } satisfies Partial<TaskSyncRequestError>);
+    await expect(remote.health()).resolves.toEqual({
+      connected: false,
+      error: "Could not reach Canvas Task Sync through the SSH tunnel to daniel@server.",
+    });
+  });
+});
+
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
     status,

@@ -232,6 +232,13 @@ export type AppSettings = {
   cache: { ttlMinutes: number; maxMegabytes: number; workspaceRetentionHours: number };
 };
 
+export type TaskSyncTunnelStatus = {
+  target: string;
+  port: number;
+  state: "connecting" | "open" | "reconnecting" | "stopped";
+  error?: string;
+};
+
 export type Diagnostics = {
   generatedAt: string;
   currentModel: string;
@@ -243,6 +250,7 @@ export type Diagnostics = {
     canvas: { connected: boolean; name?: string; error?: string };
     canvasCredentialConfigured: boolean;
     taskSyncApiBase: string;
+    taskSyncTunnel: TaskSyncTunnelStatus | null;
     canvasBaseUrl: string;
   };
   predictor: { configured: boolean; message: string };

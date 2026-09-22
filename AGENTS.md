@@ -20,6 +20,7 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `src/components/` — shared shell/status/Markdown UI. `src/styles.css` contains most styling.
 - `server/index.ts` — application composition and HTTP routes. Start here for request flow.
 - `server/task-sync.ts` — typed client for Canvas Task Sync's canonical `/api/v1/tasks` and browser-resource APIs. Do not duplicate Task Sync's discovery/reconciliation/completion logic or Chrome capture broker here; `completed=false` intentionally includes only tasks whose live Google status is `needsAction`.
+- `server/ssh-tunnel.ts` — supervised SSH tunnel used when `TASK_SYNC_SSH_TARGET` points at a Task Sync backend on a server. The local port must equal the backend port because Task Sync only accepts its own loopback `Host`.
 - `server/canvas-client.ts` — Canvas API access, assignment resolution, course search, source-context recovery, HTML normalization, downloads/submissions.
 - `server/agent-runner.ts` — Luna/Codex run lifecycle, feature schemas/prompts, model settings, workspace setup, structured-output validation.
 - `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to Luna. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.

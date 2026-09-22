@@ -25,7 +25,7 @@ import { ClassDirections } from "../components/ClassDirections";
 import { ErrorNotice } from "../components/Status";
 import { relativeTime } from "../format";
 import { usePolling } from "../hooks/usePolling";
-import type { AppSettings, ConnectionTestResult, Diagnostics, ModelName, ReasoningEffort } from "../types";
+import type { AppSettings, ConnectionTestResult, Diagnostics, ModelName, ReasoningEffort, TaskSyncTunnelStatus } from "../types";
 
 const models: ModelName[] = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"];
 const reasoning: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -79,7 +79,7 @@ export function SettingsDiagnosticsPage() {
       </div>
       {error ? <ErrorNotice error={error} /> : null}
       {message ? <div className="notice success"><Check size={18} /><div><strong>Saved</strong><p>{message}</p></div></div> : null}
-      {tab === "settings" && currentSettings ? <SettingsForm settings={currentSettings} update={update} onDefaults={async () => { const next = await schoolApi.restoreDefaults(); setDraft(next); setMessage("Defaults restored."); }} /> : null}
+      {tab === "settings" && currentSettings ? <SettingsForm settings={currentSettings} taskSyncTunnel={diagnosticsState.data?.connections.taskSyncTunnel ?? null} update={update} onDefaults={async () => { const next = await schoolApi.restoreDefaults(); setDraft(next); setMessage("Defaults restored."); }} /> : null}
       {tab === "classDirections" ? <ClassDirections /> : null}
       {tab === "diagnostics" ? <ConnectionTestPanel /> : null}
       {tab === "diagnostics" ? (diagnosticsState.error ? <ErrorNotice error={diagnosticsState.error} /> : diagnosticsState.data ? <DiagnosticsPanel diagnostics={diagnosticsState.data} refresh={() => void diagnosticsState.refresh()} /> : <div className="text-skeleton"><span /><span /><span /></div>) : null}
@@ -87,7 +87,7 @@ export function SettingsDiagnosticsPage() {
   );
 }
 
-function SettingsForm({ settings, update, onDefaults }: { settings: AppSettings; update: (updater: (value: AppSettings) => void) => void; onDefaults: () => Promise<void> }) {
+function SettingsForm({ settings, taskSyncTunnel, update, onDefaults }: { settings: AppSettings; taskSyncTunnel: TaskSyncTunnelStatus | null; update: (updater: (value: AppSettings) => void) => void; onDefaults: () => Promise<void> }) {
   return (
     <div className="settings-layout">
       <SettingsSection icon={Cpu} title="Models & reasoning">
@@ -96,7 +96,8 @@ function SettingsForm({ settings, update, onDefaults }: { settings: AppSettings;
       </SettingsSection>
 
       <SettingsSection icon={Database} title="Connections">
-        <label>Canvas Task Sync API<input value={settings.connections.taskSyncApiBase} onChange={(event) => update((next) => { next.connections.taskSyncApiBase = event.target.value; })} /></label>
+        <label>Canvas Task Sync API<input value={settings.connections.taskSyncApiBase} disabled={Boolean(taskSyncTunnel)} onChange={(event) => update((next) => { next.connections.taskSyncApiBase = event.target.value; })} /></label>
+        {taskSyncTunnel ? <p className="setting-note">Task Sync runs on {taskSyncTunnel.target} and is reached over SSH, so this URL is not used. Change TASK_SYNC_SSH_TARGET in .env to switch back.</p> : null}
         <label>Canvas base URL<input value={settings.connections.canvasBaseUrl} onChange={(event) => update((next) => { next.connections.canvasBaseUrl = event.target.value; })} /></label>
       </SettingsSection>
 
@@ -156,7 +157,7 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
       <div className="diagnostic-cards">
         <DiagnosticCard label="Current model" value={diagnostics.currentModel} detail={`${diagnostics.reasoningEffort} reasoning`} ok />
         <DiagnosticCard label="Canvas" value={diagnostics.connections.canvas.connected ? diagnostics.connections.canvas.name || "Connected" : "Unavailable"} detail={diagnostics.connections.canvas.error || "Credential accepted"} ok={diagnostics.connections.canvas.connected} />
-        <DiagnosticCard label="Task Sync" value={diagnostics.connections.taskSync.connected ? "Connected" : "Unavailable"} detail={diagnostics.connections.taskSync.error || diagnostics.connections.taskSyncApiBase} ok={diagnostics.connections.taskSync.connected} />
+        <DiagnosticCard label="Task Sync" value={diagnostics.connections.taskSync.connected ? "Connected" : "Unavailable"} detail={diagnostics.connections.taskSync.error || (diagnostics.connections.taskSyncTunnel ? `${diagnostics.connections.taskSyncTunnel.target} over SSH` : diagnostics.connections.taskSyncApiBase)} ok={diagnostics.connections.taskSync.connected} />
         <DiagnosticCard label="Predictor" value={diagnostics.predictor.configured ? "Configured" : "Optional"} detail={diagnostics.predictor.message} ok={diagnostics.predictor.configured} />
       </div>
       <section className="diagnostic-section"><header><div><h2>Resource cache</h2><p>{diagnostics.cache.files} files, {formatBytes(diagnostics.cache.bytes)}, {diagnostics.cache.hits} hits, {diagnostics.cache.misses} misses</p></div><button className="secondary-button danger-text" disabled={clearing} onClick={async () => { setClearing(true); await schoolApi.clearCache(); setClearing(false); refresh(); }}><Trash2 size={15} />Clear cache</button></header></section>
