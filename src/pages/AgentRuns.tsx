@@ -1,3 +1,4 @@
+import { modelLabel } from "../models";
 import { ChevronRight, Clock3, Cpu, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -25,7 +26,7 @@ export function AgentRunsPage() {
             <button className="run-row" key={run.id} onClick={() => setSelectedId(run.id)}>
               <span className="run-icon"><Cpu size={18} /></span>
               <span className="run-main"><strong>{featureName(run.feature)}</strong><span>{run.taskTitle}</span><small>{run.courseName}</small></span>
-              <span className="run-model">{run.model.replace("gpt-5.6-", "")}<small>{run.reasoningEffort}</small></span>
+              <span className="run-model">{modelLabel(run.model)}<small>{run.reasoningEffort}</small></span>
               <RunStatus status={run.status} />
               <span className="run-time"><Clock3 size={14} />{relativeTime(run.startedAt)}</span>
               <ChevronRight size={17} />

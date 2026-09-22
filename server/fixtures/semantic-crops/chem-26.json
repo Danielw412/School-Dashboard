@@ -1,0 +1,223 @@
+{
+  "width": 1445,
+  "height": 1870,
+  "lines": [
+    {
+      "text": "AP Chemistry",
+      "left": 1205.3,
+      "top": 39.21333333333334,
+      "width": 154.9011666666666,
+      "height": 36.635000000000005
+    },
+    {
+      "text": "Unit 2 Packet Homework Problems",
+      "left": 402.05,
+      "top": 79.50333333333333,
+      "width": 640.7682499999999,
+      "height": 58.14000000000001
+    },
+    {
+      "text": "Multiple Choice",
+      "left": 85,
+      "top": 128.19926666666666,
+      "width": 225.77470500000004,
+      "height": 45.34920000000001
+    },
+    {
+      "text": "1. N 2 molecules absorb UV light but not visible light. I 2 molecules absorb both visible and UV",
+      "left": 127.4983,
+      "top": 165.64743333333334,
+      "width": 1226.1326499999998,
+      "height": 42.874283333333324
+    },
+    {
+      "text": "light. Which of the following statements explains the observations?",
+      "left": 170.01020000000003,
+      "top": 202.77543333333332,
+      "width": 865.8680549999999,
+      "height": 42.862949999999984
+    },
+    {
+      "text": "a. More energy is required to make N 2 molecules vibrate than is required to make I 2",
+      "left": 212.5085,
+      "top": 240.16410000000002,
+      "width": 1080.1428833333332,
+      "height": 42.86748333333335
+    },
+    {
+      "text": "molecules vibrate.",
+      "left": 255.00481666666667,
+      "top": 277.2921,
+      "width": 230.55825000000002,
+      "height": 42.862949999999984
+    },
+    {
+      "text": "b. More energy is required to remove an electron from an I 2 molecule than is required to",
+      "left": 212.50651666666664,
+      "top": 314.39743333333337,
+      "width": 1141.8088816666668,
+      "height": 42.885616666666664
+    },
+    {
+      "text": "remove an electron from a N 2 molecule.",
+      "left": 254.99178333333336,
+      "top": 351.51410000000004,
+      "width": 514.4596383333334,
+      "height": 42.874283333333295
+    },
+    {
+      "text": "c. Visible light does not produce transitions between electronic energy levels in the N 2",
+      "left": 212.50821666666664,
+      "top": 388.9073,
+      "width": 1112.7265000000002,
+      "height": 42.862949999999984
+    },
+    {
+      "text": "molecule but does produce transitions in the I 2 molecule.",
+      "left": 255.0017,
+      "top": 426.03076666666664,
+      "width": 729.7914416666667,
+      "height": 42.87428333333336
+    },
+    {
+      "text": "d. The molecular mass of I 2 is greater than the molecular mass of N 2 .",
+      "left": 212.48101666666668,
+      "top": 463.1474333333333,
+      "width": 892.6955000000002,
+      "height": 42.874283333333295
+    },
+    {
+      "text": "2. The photoelectron spectra below show the energy required to remove a 1s electron from a",
+      "left": 127.51671666666668,
+      "top": 574.7966333333334,
+      "width": 1200.20238,
+      "height": 42.862949999999984
+    },
+    {
+      "text": "nitrogen atom and from an oxygen atom. Which of the following statements best accounts",
+      "left": 170.01501666666667,
+      "top": 611.9246333333333,
+      "width": 1168.2060000000004,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "for the peak in the nitrogen spectrum being to the right of the peak in the oxygen spectrum?",
+      "left": 170.01501666666667,
+      "top": 649.0526333333333,
+      "width": 1180.2825449999998,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "a. Nitrogen atoms have a half-filled p subshell.",
+      "left": 212.54646666666665,
+      "top": 879.4119833333333,
+      "width": 608.52129,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "b. There are more electron-electron repulsions in oxygen atoms than in nitrogen atoms.",
+      "left": 212.54646666666665,
+      "top": 916.5399833333333,
+      "width": 1129.0691100000001,
+      "height": 42.86294999999991
+    },
+    {
+      "text": "c. Electrons in the p subshell of oxygen atoms provide more shielding than electrons in",
+      "left": 212.54646666666665,
+      "top": 953.6679833333333,
+      "width": 1129.728795,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "the p subshell of nitrogen atoms.",
+      "left": 255.04476666666667,
+      "top": 991.0611833333332,
+      "width": 421.58844000000005,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "d. Nitrogen atoms have a smaller nuclear charge than oxygen atoms.",
+      "left": 212.54646666666665,
+      "top": 1028.1891833333334,
+      "width": 883.643085,
+      "height": 42.86294999999991
+    },
+    {
+      "text": "Use these answers for questions 3 - 6.",
+      "left": 85.01841666666668,
+      "top": 1139.5068833333335,
+      "width": 521.7147,
+      "height": 45.34919999999991
+    },
+    {
+      "text": "(B) 1s 2 2s 2 2p 6 3s 2 3p 6",
+      "left": 594.9852666666667,
+      "top": 1176.8641,
+      "width": 242.6327833333333,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "(A) 1s 2 2s 2 2p 5 3s 2 3p 5",
+      "left": 170.01501666666667,
+      "top": 1176.8641,
+      "width": 244.58636666666666,
+      "height": 42.96523333333337
+    },
+    {
+      "text": "(E) 1s 2 2s 2 2p 6 3s 2 3p 6 4s 2 3d 3",
+      "left": 594.9812999999999,
+      "top": 1213.9807666666666,
+      "width": 322.25341666666674,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "(D) 1s 2 2s 2 2p 6 3s 2 3p 6 3d 5",
+      "left": 170.01643333333334,
+      "top": 1213.9807666666666,
+      "width": 289.0682833333333,
+      "height": 42.87428333333322
+    },
+    {
+      "text": "(C) 1s 2 2s 2 2p 6 2d 10 3s 2 3p 6",
+      "left": 994.0179083333334,
+      "top": 1176.8641,
+      "width": 294.3834750000001,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "3. An impossible electronic configuration",
+      "left": 127.49886666666667,
+      "top": 1288.5019666666667,
+      "width": 540.2952750000001,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "4. The ground-state configuration for the atoms of a transition element",
+      "left": 127.49886666666667,
+      "top": 1325.6299666666664,
+      "width": 920.9434649999998,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "5. The ground-state configuration of a negative ion of a halogen",
+      "left": 127.49886666666667,
+      "top": 1362.7579666666668,
+      "width": 830.1489300000001,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "6. The ground-state configuration of a common ion of an alkaline earth element",
+      "left": 127.49886666666667,
+      "top": 1399.8859666666667,
+      "width": 1034.88333,
+      "height": 42.86295000000005
+    },
+    {
+      "text": "26",
+      "left": 708.3333333333334,
+      "top": 1801.7166666666667,
+      "width": 28.333333333333332,
+      "height": 38.16499999999997
+    }
+  ]
+}

@@ -11,12 +11,10 @@ import {
   buildOcrReadingOrderText,
   classifyPdfTextLayer,
   detectProblemMatches,
-  parsePdfBboxLayout,
   parsePdfPageCount,
   safeChild,
   selectContactSheetPages,
-  semanticFigureRectFromImage,
-  semanticRectFromLines,
+  semanticVisualRectFromImage,
   isVisualCropQuery,
   WorkspaceManager,
 } from "./workspace.js";
@@ -389,53 +387,6 @@ describe("PDF inspection helpers", () => {
     ]);
   });
 
-  it("uses text layout to make a bounded semantic problem crop", () => {
-    const layout = parsePdfBboxLayout(`
-      <doc><page width="612" height="792"><flow><block>
-        <line><word xMin="40" yMin="100" xMax="58" yMax="114">12.</word><word xMin="64" yMin="100" xMax="220" yMax="114">Find the missing angle.</word></line>
-        <line><word xMin="64" yMin="124" xMax="300" yMax="140">Use the diagram below.</word></line>
-        <line><word xMin="40" yMin="330" xMax="58" yMax="344">13.</word><word xMin="64" yMin="330" xMax="180" yMax="344">Next problem.</word></line>
-      </block></flow></page></doc>
-    `);
-    const rect = semanticRectFromLines(layout.lines, "12", layout.width, layout.height, 1224, 1584);
-
-    expect(rect).not.toBeNull();
-    expect(rect?.top).toBeLessThan(220);
-    expect(rect?.height).toBeLessThan(600);
-    expect(rect?.width).toBeLessThan(1224);
-  });
-
-  it("matches a long semantic request by its explicit problem number", () => {
-    const layout = parsePdfBboxLayout(`
-      <doc><page width="612" height="792"><flow><block>
-        <line><word xMin="40" yMin="100" xMax="58" yMax="114">12.</word><word xMin="64" yMin="100" xMax="250" yMax="114">Find the missing angle.</word></line>
-        <line><word xMin="64" yMin="124" xMax="300" yMax="140">Use the diagram below.</word></line>
-        <line><word xMin="40" yMin="330" xMax="58" yMax="344">13.</word><word xMin="64" yMin="330" xMax="180" yMax="344">Next problem.</word></line>
-      </block></flow></page></doc>
-    `);
-
-    const rect = semanticRectFromLines(
-      layout.lines,
-      "problem 12, including the complete text, both parts, and the required diagram",
-      layout.width,
-      layout.height,
-      1224,
-      1584,
-    );
-
-    expect(rect).not.toBeNull();
-    expect(rect?.top).toBeLessThan(220);
-    expect(rect?.height).toBeLessThan(600);
-    expect(semanticRectFromLines(
-      layout.lines,
-      "a deliberately absent figure label",
-      layout.width,
-      layout.height,
-      1224,
-      1584,
-    )).toBeNull();
-  });
-
   it("skips semantic crops for ordinary problem text", async () => {
     const manager = new WorkspaceManager({ record: vi.fn(async () => undefined) } as unknown as ActivityStore);
     const [result] = await manager.semanticCropPdfRegions(
@@ -467,9 +418,10 @@ describe("PDF inspection helpers", () => {
     </svg>`);
     await sharp(svg).png().toFile(path);
     try {
-      const rect = await semanticFigureRectFromImage(
+      const rect = await semanticVisualRectFromImage(
         path,
-        { left: 420, top: 505, width: 100, height: 18 },
+        [{ text: "Figure 1", left: 420, top: 505, width: 100, height: 18 }],
+        "Figure 1",
         12,
       );
 

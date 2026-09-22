@@ -1,3 +1,4 @@
+import { modelLabel, modelNames } from "../models";
 import {
   Activity,
   AlertTriangle,
@@ -27,7 +28,7 @@ import { relativeTime } from "../format";
 import { usePolling } from "../hooks/usePolling";
 import type { AppSettings, ConnectionTestResult, Diagnostics, ModelName, ReasoningEffort, TaskSyncTunnelStatus } from "../types";
 
-const models: ModelName[] = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"];
+const models = [...modelNames];
 const reasoning: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function SettingsDiagnosticsPage() {
@@ -161,7 +162,7 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
         <DiagnosticCard label="Predictor" value={diagnostics.predictor.configured ? "Configured" : "Optional"} detail={diagnostics.predictor.message} ok={diagnostics.predictor.configured} />
       </div>
       <section className="diagnostic-section"><header><div><h2>Resource cache</h2><p>{diagnostics.cache.files} files, {formatBytes(diagnostics.cache.bytes)}, {diagnostics.cache.hits} hits, {diagnostics.cache.misses} misses</p></div><button className="secondary-button danger-text" disabled={clearing} onClick={async () => { setClearing(true); await schoolApi.clearCache(); setClearing(false); refresh(); }}><Trash2 size={15} />Clear cache</button></header></section>
-      <section className="diagnostic-section"><header><div><h2>Recent runs</h2></div></header><div className="diagnostic-table"><div className="table-head"><span>Workflow</span><span>Model</span><span>Status</span><span>Usage</span><span>When</span></div>{diagnostics.recentRuns.map((run) => <details key={run.id}><summary><span><strong>{humanFeature(run.feature)}</strong><small>{run.taskTitle}</small></span><span>{run.model.replace("gpt-5.6-", "")}</span><span className={`mini-status ${run.status}`}>{run.status}</span><span>{run.usage ? `${(run.usage.input_tokens + run.usage.output_tokens).toLocaleString()} tok` : "Unavailable"}</span><span>{relativeTime(run.startedAt)}<ChevronDown size={14} /></span></summary><div className="diagnostic-detail"><div><strong>Prompt</strong><pre>{run.prompt}</pre></div><div><strong>Structured output</strong><pre>{run.rawStructuredOutput || run.error || "No output yet."}</pre></div><div><strong>Agent and tool events</strong><pre>{JSON.stringify(run.events, null, 2)}</pre></div></div></details>)}</div></section>
+      <section className="diagnostic-section"><header><div><h2>Recent runs</h2></div></header><div className="diagnostic-table"><div className="table-head"><span>Workflow</span><span>Model</span><span>Status</span><span>Usage</span><span>When</span></div>{diagnostics.recentRuns.map((run) => <details key={run.id}><summary><span><strong>{humanFeature(run.feature)}</strong><small>{run.taskTitle}</small></span><span>{modelLabel(run.model)}</span><span className={`mini-status ${run.status}`}>{run.status}</span><span>{run.usage ? `${(run.usage.input_tokens + run.usage.output_tokens).toLocaleString()} tok` : "Unavailable"}</span><span>{relativeTime(run.startedAt)}<ChevronDown size={14} /></span></summary><div className="diagnostic-detail"><div><strong>Prompt</strong><pre>{run.prompt}</pre></div><div><strong>Structured output</strong><pre>{run.rawStructuredOutput || run.error || "No output yet."}</pre></div><div><strong>Agent and tool events</strong><pre>{JSON.stringify(run.events, null, 2)}</pre></div></div></details>)}</div></section>
       <section className="diagnostic-section"><header><div><h2>Canvas and tool activity</h2></div></header><div className="activity-list">{diagnostics.activity.map((event) => <div key={event.id}><span className={`activity-dot ${event.status}`} /><span><strong>{event.action}</strong><small>{event.category}</small></span><p>{event.summary}</p><time>{relativeTime(event.timestamp)}</time></div>)}</div></section>
     </div>
   );
@@ -172,7 +173,7 @@ function SettingsSection({ icon: Icon, title, children }: { icon: LucideIcon; ti
 }
 
 function SelectField({ label, value, values, onChange }: { label: string; value: string; values: string[]; onChange: (value: string) => void }) {
-  return <label>{label}<select value={value} onChange={(event) => onChange(event.target.value)}>{values.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>;
+  return <label>{label}<select value={value} onChange={(event) => onChange(event.target.value)}>{values.map((item) => <option key={item} value={item}>{modelLabel(item)}</option>)}</select></label>;
 }
 
 function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {

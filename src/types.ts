@@ -1,3 +1,5 @@
+import type { ModelName } from "./models";
+
 export type TrackedTask = {
   logical_id: string;
   course: {
@@ -125,7 +127,7 @@ export type AgentRun = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
-  model: ModelName;
+  model: string;
   reasoningEffort: ReasoningEffort;
   effectiveReasoningEffort: string;
   prompt: string;
@@ -208,7 +210,7 @@ export type ConnectionTestResult = {
   }>;
 };
 
-export type ModelName = "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol";
+export type { ModelName } from "./models";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AppSettings = {

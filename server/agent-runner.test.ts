@@ -30,7 +30,7 @@ describe("agent run preferences", () => {
   it("defaults problem extraction to Luna with xhigh reasoning", () => {
     const resolved = resolveAgentPreferences(defaultSettings, "problemExtraction");
 
-    expect(resolved.model).toBe("gpt-5.6-luna");
+    expect(resolved.model).toBe("gpt-6-luna");
     expect(resolved.reasoningEffort).toBe("xhigh");
     expect(resolved.prompt).toBe(defaultSettings.prompts.problemExtraction);
   });
@@ -50,11 +50,11 @@ describe("agent run preferences", () => {
 
   it("maps directions to assignment-navigation settings and honors an override", () => {
     const settings = structuredClone(defaultSettings);
-    settings.featureModels.assignmentNavigation = "gpt-5.6-terra";
+    settings.featureModels.assignmentNavigation = "gpt-6-sol";
 
     const resolved = resolveAgentPreferences(settings, "directions", undefined, "medium");
 
-    expect(resolved.model).toBe("gpt-5.6-terra");
+    expect(resolved.model).toBe("gpt-6-sol");
     expect(resolved.reasoningEffort).toBe("medium");
     expect(resolved.prompt).toBe(settings.prompts.assignmentNavigation);
   });
@@ -228,6 +228,18 @@ describe("agent run preferences", () => {
 });
 
 describe("AgentRunStore", () => {
+  it("preserves retired model IDs when reading and updating historical runs", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const store = new AgentRunStore(join(directory, "runs.json"));
+    for (const model of ["gpt-5.6-luna", "gpt-5.6-terra"]) {
+      const run = { ...agentRun(), id: model, model, status: "completed" as const };
+      await store.create(run);
+      await store.update(run.id, { taskTitle: "Historical assignment" });
+      await expect(store.get(run.id)).resolves.toMatchObject({ model, status: "completed", taskTitle: "Historical assignment" });
+    }
+  });
+
   it("recovers after a failed file replacement instead of poisoning later status updates", async () => {
     const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
     temporaryDirectories.push(directory);
@@ -277,7 +289,7 @@ function agentRun(): AgentRun {
     logicalId: "physics:assignment:42",
     taskTitle: "Problem Set 4",
     courseName: "AP Physics C",
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     reasoningEffort: "medium",
     effectiveReasoningEffort: "medium",
     prompt: "Inspect the assignment.",

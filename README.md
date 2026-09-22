@@ -15,8 +15,9 @@ Canvas coursework, and runs structured Codex workflows.
   batched Poppler rendering, and optional image crops for diagrams or figures.
 - Answer keys that accept only a completed problem-extraction result as their problem source.
 - Focused study guides with teacher-stated scope separated from agent-inferred topics.
-- GPT-5.6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
-  extraction, plus Terra/Sol and configurable reasoning controls.
+- GPT-6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
+  extraction, plus GPT-6 Sol, GPT-5.6 Sol, and configurable reasoning controls. Saved GPT-5.6
+  Luna/Terra preferences migrate to GPT-6 Luna; historical runs retain their original model IDs.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.

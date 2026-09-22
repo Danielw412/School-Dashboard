@@ -1,0 +1,951 @@
+{
+  "width": 1445,
+  "height": 1870,
+  "lines": [
+    {
+      "text": "Section 4.3 Newton's Second Law of Motion",
+      "left": 80,
+      "top": 118,
+      "width": 404,
+      "height": 36
+    },
+    {
+      "text": "|",
+      "left": 675,
+      "top": 126,
+      "width": 3,
+      "height": 23
+    },
+    {
+      "text": "’",
+      "left": 1260,
+      "top": 112,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": ":L.. s$m A person with a blackbelt in karate has a fist that has a : 11. Two forces, F, and F,, act on the 5.00-kg block shown in the",
+      "left": 78,
+      "top": 147,
+      "width": 1195,
+      "height": 39
+    },
+    {
+      "text": "™ {gas of 0.70 kg. Starting from rest, this fist anains a velocity of | drawing. The magnitudes of the forces are Fy = 450N and F, =",
+      "left": 16,
+      "top": 174,
+      "width": 1258,
+      "height": 45
+    },
+    {
+      "text": "80m/sin0.15 5. What is the magnitude of the average net force 25.0 N. What is the horizontal acceleration (magnitude and direc-",
+      "left": 80,
+      "top": 200,
+      "width": 1195,
+      "height": 46
+    },
+    {
+      "text": "“applied to the fist to achieve this level of performance?",
+      "left": 77,
+      "top": 233,
+      "width": 478,
+      "height": 36
+    },
+    {
+      "text": "| tion) of the block?",
+      "left": 676,
+      "top": 229,
+      "width": 181,
+      "height": 34
+    },
+    {
+      "text": "|",
+      "left": 1429,
+      "top": 229,
+      "width": 1,
+      "height": 25
+    },
+    {
+      "text": "2, A bicycle has a mass of 13.1 kg, and its rider has a mass of ;",
+      "left": 82,
+      "top": 264,
+      "width": 598,
+      "height": 39
+    },
+    {
+      "text": "!",
+      "left": 1429,
+      "top": 262,
+      "width": 1,
+      "height": 28
+    },
+    {
+      "text": "81.7 kg. The rider is pumping hard, so that a horizontal uct force ,",
+      "left": 87,
+      "top": 297,
+      "width": 593,
+      "height": 27
+    },
+    {
+      "text": "¥",
+      "left": 908,
+      "top": 312,
+      "width": 12,
+      "height": 14
+    },
+    {
+      "text": ":",
+      "left": 1429,
+      "top": 301,
+      "width": 1,
+      "height": 4
+    },
+    {
+      "text": "0£9.78 N accelerates them. What is the acceleration?",
+      "left": 86,
+      "top": 317,
+      "width": 456,
+      "height": 33
+    },
+    {
+      "text": "|",
+      "left": 677,
+      "top": 325,
+      "width": 3,
+      "height": 19
+    },
+    {
+      "text": "i",
+      "left": 921,
+      "top": 318,
+      "width": 7,
+      "height": 12
+    },
+    {
+      "text": ".",
+      "left": 1043,
+      "top": 336,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "3. An airplane has a mass of 31 000 kg and takes off under the",
+      "left": 87,
+      "top": 353,
+      "width": 572,
+      "height": 32
+    },
+    {
+      "text": "65.0",
+      "left": 876,
+      "top": 365,
+      "width": 42,
+      "height": 14
+    },
+    {
+      "text": "influence of a constant net force of 37 000 N. What is the net force |",
+      "left": 88,
+      "top": 380,
+      "width": 591,
+      "height": 30
+    },
+    {
+      "text": ".",
+      "left": 811,
+      "top": 398,
+      "width": 3,
+      "height": 3
+    },
+    {
+      "text": "———==",
+      "left": 878,
+      "top": 385,
+      "width": 84,
+      "height": 17
+    },
+    {
+      "text": "E",
+      "left": 1039,
+      "top": 398,
+      "width": 11,
+      "height": 13
+    },
+    {
+      "text": "that acts on the plane's 78-kg pilot, assuming that he bas the same",
+      "left": 88,
+      "top": 411,
+      "width": 572,
+      "height": 23
+    },
+    {
+      "text": "TD am",
+      "left": 932,
+      "top": 404,
+      "width": 126,
+      "height": 24
+    },
+    {
+      "text": "acceleration as the plane?",
+      "left": 85,
+      "top": 433,
+      "width": 220,
+      "height": 30
+    },
+    {
+      "text": ":",
+      "left": 677,
+      "top": 441,
+      "width": 2,
+      "height": 6
+    },
+    {
+      "text": "=",
+      "left": 932,
+      "top": 434,
+      "width": 22,
+      "height": 19
+    },
+    {
+      "text": "R",
+      "left": 677,
+      "top": 458,
+      "width": 3,
+      "height": 12
+    },
+    {
+      "text": "I —",
+      "left": 839,
+      "top": 446,
+      "width": 259,
+      "height": 33
+    },
+    {
+      "text": "4. Scientists are experimenting with a kind of gun that may",
+      "left": 88,
+      "top": 470,
+      "width": 573,
+      "height": 22
+    },
+    {
+      "text": "A",
+      "left": 783,
+      "top": 476,
+      "width": 5,
+      "height": 13
+    },
+    {
+      "text": "eventually be used to fire payloads directly into orbit. In one test, :",
+      "left": 89,
+      "top": 491,
+      "width": 591,
+      "height": 30
+    },
+    {
+      "text": ",",
+      "left": 983,
+      "top": 510,
+      "width": 4,
+      "height": 4
+    },
+    {
+      "text": ".",
+      "left": 1224,
+      "top": 508,
+      "width": 4,
+      "height": 4
+    },
+    {
+      "text": "his gun accelerates a 5.0-kg projectile from rest to a speed of AZ: Two forces act on an object (mass = 4.00 kg), as in the",
+      "left": 90,
+      "top": 504,
+      "width": 1188,
+      "height": 43
+    },
+    {
+      "text": "40 % 10° mis, The net force accelerating the projectile is 49 X drawing. Find the magnitude and direction (relative to the x axis)",
+      "left": 78,
+      "top": 532,
+      "width": 1200,
+      "height": 48
+    },
+    {
+      "text": "10° N. How much time is required for the projectile to come up to of the acceleration of the object.",
+      "left": 88,
+      "top": 561,
+      "width": 895,
+      "height": 44
+    },
+    {
+      "text": "spond?",
+      "left": 88,
+      "top": 592,
+      "width": 60,
+      "height": 49
+    },
+    {
+      "text": ":",
+      "left": 497,
+      "top": 608,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "“",
+      "left": 963,
+      "top": 611,
+      "width": 18,
+      "height": 12
+    },
+    {
+      "text": "‘5, ssm When a 0.058-kg tennis ball is served, it accelerates",
+      "left": 87,
+      "top": 628,
+      "width": 579,
+      "height": 38
+    },
+    {
+      "text": "\\",
+      "left": 970,
+      "top": 627,
+      "width": 4,
+      "height": 25
+    },
+    {
+      "text": "from rest to 2 speed of 45 m/s. The impact with the racket gives |",
+      "left": 88,
+      "top": 653,
+      "width": 596,
+      "height": 39
+    },
+    {
+      "text": "H",
+      "left": 970,
+      "top": 656,
+      "width": 5,
+      "height": 25
+    },
+    {
+      "text": "the ball a constant acceleration over a distance of 0.44 m, What is |",
+      "left": 89,
+      "top": 688,
+      "width": 595,
+      "height": 27
+    },
+    {
+      "text": "the magnitude of the net force acting on the ball?",
+      "left": 89,
+      "top": 710,
+      "width": 425,
+      "height": 34
+    },
+    {
+      "text": "i",
+      "left": 682,
+      "top": 711,
+      "width": 3,
+      "height": 27
+    },
+    {
+      "text": "6. During a circus performance, a 72-kg human cannonball is",
+      "left": 94,
+      "top": 748,
+      "width": 572,
+      "height": 26
+    },
+    {
+      "text": "soon R",
+      "left": 980,
+      "top": 736,
+      "width": 85,
+      "height": 29
+    },
+    {
+      "text": "shot out of an 18-m-long cannon. If the humari cannonball spends",
+      "left": 94,
+      "top": 771,
+      "width": 572,
+      "height": 32
+    },
+    {
+      "text": "=",
+      "left": 933,
+      "top": 789,
+      "width": 8,
+      "height": 3
+    },
+    {
+      "text": "’",
+      "left": 43,
+      "top": 804,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "0.95 s in the cannon, determine the average net force exerted on",
+      "left": 95,
+      "top": 798,
+      "width": 572,
+      "height": 32
+    },
+    {
+      "text": "===",
+      "left": 931,
+      "top": 809,
+      "width": 84,
+      "height": 13
+    },
+    {
+      "text": "ax",
+      "left": 1071,
+      "top": 809,
+      "width": 34,
+      "height": 11
+    },
+    {
+      "text": "him in the barrel of the cannon.",
+      "left": 91,
+      "top": 828,
+      "width": 273,
+      "height": 32
+    },
+    {
+      "text": "=",
+      "left": 941,
+      "top": 844,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "47. A catapult on an aircraft carrier is capable of accelerating a |",
+      "left": 86,
+      "top": 859,
+      "width": 597,
+      "height": 33
+    },
+    {
+      "text": "-",
+      "left": 1165,
+      "top": 865,
+      "width": 6,
+      "height": 3
+    },
+    {
+      "text": "=, plane from Oto 56.0 m/s in a distance of 80.0 m. Find the average 13. ssm Two forces act on an object (mass = 3.00 kg), as in",
+      "left": 16,
+      "top": 883,
+      "width": 1271,
+      "height": 42
+    },
+    {
+      "text": ":",
+      "left": 35,
+      "top": 930,
+      "width": 6,
+      "height": 12
+    },
+    {
+      "text": " metforce that the catapult exerts on a 13 300-kg jet.",
+      "left": 90,
+      "top": 913,
+      "width": 451,
+      "height": 38
+    },
+    {
+      "text": "\"the drawing. Find the magnitude and direction (relative 10 the x",
+      "left": 679,
+      "top": 910,
+      "width": 611,
+      "height": 38
+    },
+    {
+      "text": "*8.. An arrow, staring from rest, leaves the bow with a speed of © axis) of the acceleration of the object.",
+      "left": 87,
+      "top": 944,
+      "width": 954,
+      "height": 34
+    },
+    {
+      "text": "25.0 m/s. If the average force cxertcd on the arrow by the bow",
+      "left": 89,
+      "top": 974,
+      "width": 584,
+      "height": 36
+    },
+    {
+      "text": "\"",
+      "left": 971,
+      "top": 987,
+      "width": 18,
+      "height": 14
+    },
+    {
+      "text": "“were doubled, all else remaining the same, with what speed would",
+      "left": 89,
+      "top": 999,
+      "width": 583,
+      "height": 35
+    },
+    {
+      "text": "!",
+      "left": 978,
+      "top": 1004,
+      "width": 5,
+      "height": 26
+    },
+    {
+      "text": "ibe arrow leave the bow?",
+      "left": 90,
+      "top": 1016,
+      "width": 220,
+      "height": 46
+    },
+    {
+      "text": "CTT eee",
+      "left": 680,
+      "top": 1035,
+      "width": 268,
+      "height": 4
+    },
+    {
+      "text": ".",
+      "left": 1311,
+      "top": 1040,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "cay ssm www Two forces F, and Fy are applied to an object.",
+      "left": 87,
+      "top": 1060,
+      "width": 585,
+      "height": 41
+    },
+    {
+      "text": "145.00",
+      "left": 980,
+      "top": 1056,
+      "width": 50,
+      "height": 36
+    },
+    {
+      "text": "Tlie larger force is F,. When both forces point due east, the ob-",
+      "left": 92,
+      "top": 1087,
+      "width": 581,
+      "height": 33
+    },
+    {
+      "text": "|",
+      "left": 981,
+      "top": 1092,
+      "width": 4,
+      "height": 25
+    },
+    {
+      "text": "£ject’s acceleration has 2 magnitude of 0.50 m/s?. However, when",
+      "left": 92,
+      "top": 1116,
+      "width": 582,
+      "height": 30
+    },
+    {
+      "text": "Ri",
+      "left": 968,
+      "top": 1121,
+      "width": 17,
+      "height": 22
+    },
+    {
+      "text": "G0.0N",
+      "left": 1054,
+      "top": 1125,
+      "width": 53,
+      "height": 15
+    },
+    {
+      "text": "iF} points due east and F points due west, the acceleration bas a",
+      "left": 89,
+      "top": 1137,
+      "width": 586,
+      "height": 40
+    },
+    {
+      "text": "4",
+      "left": 943,
+      "top": 1135,
+      "width": 96,
+      "height": 32
+    },
+    {
+      "text": "‘magnitude of 0.40 m/s”. Find the ratio F,fF, of the magnitudes",
+      "left": 94,
+      "top": 1171,
+      "width": 581,
+      "height": 27
+    },
+    {
+      "text": "Ero",
+      "left": 943,
+      "top": 1168,
+      "width": 97,
+      "height": 23
+    },
+    {
+      "text": "¥of the forces.",
+      "left": 95,
+      "top": 1191,
+      "width": 118,
+      "height": 35
+    },
+    {
+      "text": "a",
+      "left": 944,
+      "top": 1188,
+      "width": 179,
+      "height": 26
+    },
+    {
+      "text": "H",
+      "left": 96,
+      "top": 1224,
+      "width": 6,
+      "height": 13
+    },
+    {
+      "text": "=",
+      "left": 944,
+      "top": 1214,
+      "width": 97,
+      "height": 8
+    },
+    {
+      "text": "*Seetion 4.4 The Vector Nature of Newton's Second Law of Me- 14, Two skaters, an 82-kg man and a 48-kg woman, are standing",
+      "left": 97,
+      "top": 1266,
+      "width": 1199,
+      "height": 44
+    },
+    {
+      "text": "\"Hon, Section 4.5 Newton's Third Law of Motion",
+      "left": 99,
+      "top": 1294,
+      "width": 442,
+      "height": 40
+    },
+    {
+      "text": "on ice. Neglect any friction between the skate blades and the ice.",
+      "left": 718,
+      "top": 1298,
+      "width": 578,
+      "height": 25
+    },
+    {
+      "text": "‘10. A force vector has 2 magnitude of 720 N and a direction of The woman pushes on the man with a force of 45 N due east. De-",
+      "left": 99,
+      "top": 1322,
+      "width": 1202,
+      "height": 37
+    },
+    {
+      "text": "+38° north of east. Determine the magnitude and direction of the termine the accelerations (magnitude and direction) of the man",
+      "left": 100,
+      "top": 1353,
+      "width": 1198,
+      "height": 28
+    },
+    {
+      "text": "‘components of the force that point along the north-south line and and the woman.",
+      "left": 105,
+      "top": 1383,
+      "width": 756,
+      "height": 32
+    },
+    {
+      "text": "slong the east-west line.",
+      "left": 98,
+      "top": 1408,
+      "width": 216,
+      "height": 36
+    },
+    {
+      "text": "15. A duck has a mass of 2.5 kg. As the duck paddles, a force of",
+      "left": 722,
+      "top": 1404,
+      "width": 580,
+      "height": 36
+    },
+    {
+      "text": "0.10 N acts on it in a direction due east. In addition, the current of",
+      "left": 722,
+      "top": 1436,
+      "width": 580,
+      "height": 32
+    },
+    {
+      "text": "the water exerts a force of 0.20 N in a direction of 52° south of",
+      "left": 713,
+      "top": 1503,
+      "width": 582,
+      "height": 18
+    },
+    {
+      "text": "east. When these forces begin to act, the velocity of the duck is",
+      "left": 713,
+      "top": 1530,
+      "width": 580,
+      "height": 22
+    },
+    {
+      "text": ".",
+      "left": 544,
+      "top": 1581,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "0.11 m/s in a direction due east. Find the magnitude and direction",
+      "left": 713,
+      "top": 1557,
+      "width": 581,
+      "height": 21
+    },
+    {
+      "text": "(relative to due east) of the displacement that the duck undergoes",
+      "left": 715,
+      "top": 1584,
+      "width": 579,
+      "height": 23
+    },
+    {
+      "text": "in 3.0 s while the forces are acting.",
+      "left": 715,
+      "top": 1613,
+      "width": 302,
+      "height": 21
+    },
+    {
+      "text": "or 370",
+      "left": 17,
+      "top": 1656,
+      "width": 99,
+      "height": 36
+    },
+    {
+      "text": "30M",
+      "left": 246,
+      "top": 1663,
+      "width": 110,
+      "height": 31
+    },
+    {
+      "text": "hy o",
+      "left": 453,
+      "top": 1672,
+      "width": 80,
+      "height": 37
+    },
+    {
+      "text": "3) 30M 27, 28 Amat + ¥ Ans",
+      "left": 901,
+      "top": 1663,
+      "width": 430,
+      "height": 31
+    },
+    {
+      "text": "No. io3nf= py",
+      "left": 17,
+      "top": 1696,
+      "width": 258,
+      "height": 45
+    },
+    {
+      "text": "\"",
+      "left": 355,
+      "top": 1709,
+      "width": 18,
+      "height": 23
+    },
+    {
+      "text": ":",
+      "left": 505,
+      "top": 1700,
+      "width": 4,
+      "height": 3
+    },
+    {
+      "text": "7) 555m wa",
+      "left": 910,
+      "top": 1714,
+      "width": 166,
+      "height": 9
+    },
+    {
+      "text": "4) 2e0",
+      "left": 251,
+      "top": 1714,
+      "width": 101,
+      "height": 24
+    },
+    {
+      "text": "16) 570M, wet o i",
+      "left": 457,
+      "top": 1712,
+      "width": 206,
+      "height": 45
+    },
+    {
+      "text": "14) 8ST mus F",
+      "left": 899,
+      "top": 1705,
+      "width": 209,
+      "height": 35
+    },
+    {
+      "text": "1) 4",
+      "left": 17,
+      "top": 1746,
+      "width": 99,
+      "height": 33
+    },
+    {
+      "text": "LYWITIC",
+      "left": 253,
+      "top": 1749,
+      "width": 170,
+      "height": 30
+    },
+    {
+      "text": "4",
+      "left": 574,
+      "top": 1746,
+      "width": 8,
+      "height": 8
+    },
+    {
+      "text": "PRVTVERPE",
+      "left": 939,
+      "top": 1745,
+      "width": 176,
+      "height": 19
+    },
+    {
+      "text": "2",
+      "left": 153,
+      "top": 1787,
+      "width": 32,
+      "height": 12
+    },
+    {
+      "text": "ht",
+      "left": 309,
+      "top": 1764,
+      "width": 18,
+      "height": 39
+    },
+    {
+      "text": "120 Ak gh",
+      "left": 497,
+      "top": 1760,
+      "width": 168,
+      "height": 46
+    },
+    {
+      "text": "Spor.",
+      "left": 924,
+      "top": 1778,
+      "width": 104,
+      "height": 21
+    },
+    {
+      "text": "215574",
+      "left": 1090,
+      "top": 1776,
+      "width": 115,
+      "height": 17
+    },
+    {
+      "text": ")",
+      "left": 30,
+      "top": 1793,
+      "width": 9,
+      "height": 30
+    },
+    {
+      "text": "5) 3574 my",
+      "left": 250,
+      "top": 1783,
+      "width": 146,
+      "height": 42
+    },
+    {
+      "text": "157 @.2Fen, ZITIFL",
+      "left": 910,
+      "top": 1781,
+      "width": 287,
+      "height": 24
+    },
+    {
+      "text": "0 Hakeo s",
+      "left": 18,
+      "top": 1799,
+      "width": 177,
+      "height": 30
+    },
+    {
+      "text": "32",
+      "left": 285,
+      "top": 1805,
+      "width": 42,
+      "height": 11
+    },
+    {
+      "text": "S 12y",
+      "left": 395,
+      "top": 1800,
+      "width": 94,
+      "height": 39
+    },
+    {
+      "text": "o",
+      "left": 707,
+      "top": 1811,
+      "width": 12,
+      "height": 12
+    },
+    {
+      "text": ".",
+      "left": 799,
+      "top": 1818,
+      "width": 4,
+      "height": 2
+    },
+    {
+      "text": ":",
+      "left": 882,
+      "top": 1810,
+      "width": 4,
+      "height": 3
+    },
+    {
+      "text": "’",
+      "left": 1057,
+      "top": 1799,
+      "width": 9,
+      "height": 10
+    },
+    {
+      "text": "¢",
+      "left": 1160,
+      "top": 1800,
+      "width": 7,
+      "height": 9
+    },
+    {
+      "text": "1§Mfs~ y 53-3° hoot ¥- AAs s",
+      "left": 507,
+      "top": 1807,
+      "width": 381,
+      "height": 44
+    }
+  ]
+}

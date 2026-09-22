@@ -1,0 +1,195 @@
+{
+  "width": 1445,
+  "height": 1870,
+  "lines": [
+    {
+      "text": "Name",
+      "left": 194,
+      "top": 179,
+      "width": 64,
+      "height": 21
+    },
+    {
+      "text": "= = ~~",
+      "left": 365,
+      "top": 175,
+      "width": 332,
+      "height": 39
+    },
+    {
+      "text": "vper.__ Dae",
+      "left": 768,
+      "top": 184,
+      "width": 163,
+      "height": 24
+    },
+    {
+      "text": "Motion on an Inclined Plane",
+      "left": 193,
+      "top": 244,
+      "width": 320,
+      "height": 21
+    },
+    {
+      "text": "y",
+      "left": 1090,
+      "top": 412,
+      "width": 12,
+      "height": 15
+    },
+    {
+      "text": "xy",
+      "left": 1010,
+      "top": 476,
+      "width": 42,
+      "height": 23
+    },
+    {
+      "text": "(Ly",
+      "left": 967,
+      "top": 476,
+      "width": 136,
+      "height": 116
+    },
+    {
+      "text": "The block shown in Fig. 4-48 lies on a smooth",
+      "left": 193,
+      "top": 638,
+      "width": 451,
+      "height": 21
+    },
+    {
+      "text": "EG",
+      "left": 1166,
+      "top": 643,
+      "width": 42,
+      "height": 20
+    },
+    {
+      "text": "plane tilted at an angle 8 = 22.0° to the horizontal.",
+      "left": 151,
+      "top": 664,
+      "width": 493,
+      "height": 22
+    },
+    {
+      "text": "NE,",
+      "left": 1175,
+      "top": 660,
+      "width": 60,
+      "height": 20
+    },
+    {
+      "text": "(a) Determine the acceleration of the block as it",
+      "left": 152,
+      "top": 690,
+      "width": 492,
+      "height": 21
+    },
+    {
+      "text": "oa",
+      "left": 1212,
+      "top": 686,
+      "width": 31,
+      "height": 14
+    },
+    {
+      "text": "slides down the plane. (b) If the block starts from",
+      "left": 151,
+      "top": 715,
+      "width": 493,
+      "height": 22
+    },
+    {
+      "text": "rest 9.10m up the plane from its base, what will be",
+      "left": 151,
+      "top": 741,
+      "width": 493,
+      "height": 22
+    },
+    {
+      "text": "the blocks speed when it reaches the bottom of the",
+      "left": 152,
+      "top": 767,
+      "width": 492,
+      "height": 21
+    },
+    {
+      "text": "FIGURE 4-48 Block on indined plane.",
+      "left": 845,
+      "top": 765,
+      "width": 425,
+      "height": 20
+    },
+    {
+      "text": "incline? I,",
+      "left": 151,
+      "top": 789,
+      "width": 91,
+      "height": 30
+    },
+    {
+      "text": "friction.",
+      "left": 301,
+      "top": 792,
+      "width": 73,
+      "height": 17
+    },
+    {
+      "text": ".",
+      "left": 448,
+      "top": 804,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "© none",
+      "left": 204,
+      "top": 798,
+      "width": 90,
+      "height": 16
+    },
+    {
+      "text": "ES (3.67/57, 8.1717)",
+      "left": 345,
+      "top": 798,
+      "width": 324,
+      "height": 35
+    },
+    {
+      "text": "A block is given an initial speed of 3.0m/s up",
+      "left": 192,
+      "top": 1148,
+      "width": 452,
+      "height": 25
+    },
+    {
+      "text": "the 22.0° plane shown in Fig. 4-48. (a) How far up",
+      "left": 151,
+      "top": 1176,
+      "width": 493,
+      "height": 24
+    },
+    {
+      "text": "the plane will it go? (#) How much time elapses be",
+      "left": 147,
+      "top": 1198,
+      "width": 502,
+      "height": 33
+    },
+    {
+      "text": "fore it returns to its starting point? Ignore friction.",
+      "left": 151,
+      "top": 1229,
+      "width": 479,
+      "height": 22
+    },
+    {
+      "text": "lwp, 1,6 sec)",
+      "left": 218,
+      "top": 1263,
+      "width": 251,
+      "height": 29
+    }
+  ]
+}

@@ -466,7 +466,9 @@ export class WorkspaceManager {
             const imageMetadata = await sharp(current.path).metadata();
             const promise = worker.recognize(
               current.path,
-              { rotateAuto: true },
+              // Bounding boxes must use the same coordinates as the saved render.
+              // Auto-rotation reports boxes in a deskewed image, not this source.
+              { rotateAuto: false },
               { text: true, blocks: true },
             ).then(({ data }) => {
               const blocks = data.blocks ?? [];
@@ -593,7 +595,6 @@ export class WorkspaceManager {
     const renderByPage = new Map(renders.map((render) => [render.page, render.path]));
     const layoutEntries = await Promise.all(pages.map(async (page) => [page, await this.extractPdfLayout(pdfPath, page)] as const));
     const layouts = new Map(layoutEntries);
-    const index = await this.indexPdf(pdfPath);
     const results: PdfSemanticCrop[] = [];
     for (const region of regions) {
       if (!isVisualCropQuery(region.query, region.kind)) {
@@ -605,35 +606,18 @@ export class WorkspaceManager {
       const width = metadata.width ?? 1;
       const height = metadata.height ?? 1;
       const layout = layouts.get(region.page)!;
-      const figureLabelQuery = /\b(?:figure|fig\.?)\s*[A-Z]?\d/iu.test(region.query);
-      let rect = figureLabelQuery
-        ? await semanticFigureRectFromImage(
-            renderPath,
-            semanticAnchorFromLines(layout.lines, region.query, layout.width, layout.height, width, height),
-            region.padding,
-          )
-        : semanticRectFromLines(layout.lines, region.query, layout.width, layout.height, width, height, region.padding);
-      let basis: "text-layout" | "ocr-layout" | "figure-layout" = figureLabelQuery
-        ? "figure-layout"
-        : "text-layout";
-      const pageStrategy = index.pages[region.page - 1]?.strategy;
-      if (!rect && (pageStrategy !== "text" || isVisualCropQuery(region.query, region.kind))) {
+      const visualPage = await this.cached(`visual-layout:${renderPath}`, () => analyzeVisualPage(renderPath));
+      let lines = layout.lines.map((line) => ({
+        text: line.text,
+        ...scaleAndClampRect({ left: line.xMin, top: line.yMin, width: line.xMax - line.xMin, height: line.yMax - line.yMin },
+          layout.width, layout.height, width, height, 0),
+      }));
+      let rect = semanticVisualRect(visualPage, lines, region.query, region.padding);
+      if (!rect) {
         const [ocr] = await this.ocrPdfPages(pdfPath, [region.page], workspace);
-        const anchor = semanticAnchorFromRegions(
-          ocr.regions, region.query, width, height, ocr.imageWidth, ocr.imageHeight,
-        );
-        rect = figureLabelQuery
-          ? await semanticFigureRectFromImage(renderPath, anchor, region.padding)
-          : semanticRectFromRegions(
-              ocr.regions,
-              region.query,
-              width,
-              height,
-              region.padding,
-              ocr.imageWidth,
-              ocr.imageHeight,
-            );
-        basis = figureLabelQuery ? "figure-layout" : "ocr-layout";
+        lines = ocr.regions.map((line) => ({ text: line.text, ...scaleAndClampRect(line,
+          ocr.imageWidth ?? width, ocr.imageHeight ?? height, width, height, 0) }));
+        rect = semanticVisualRect(visualPage, lines, region.query, region.padding);
       }
       if (!rect) {
         results.push({
@@ -652,7 +636,7 @@ export class WorkspaceManager {
         query: region.query,
         status: "completed",
         rect,
-        basis,
+        basis: "figure-layout",
         path: await this.cropImage(relative(workspace.path, renderPath), rect, workspace),
         error: null,
       });
@@ -1243,75 +1227,6 @@ export function parsePdfBboxLayout(xml: string): { width: number; height: number
   };
 }
 
-export function semanticRectFromLines(
-  lines: PdfLayoutLine[],
-  query: string,
-  pageWidth: number,
-  pageHeight: number,
-  imageWidth: number,
-  imageHeight: number,
-  requestedPadding = 18,
-): { left: number; top: number; width: number; height: number } | null {
-  const startIndex = bestSemanticMatchIndex(lines.map((line) => line.text), query);
-  if (startIndex < 0) return null;
-  const start = lines[startIndex]!;
-  const leftColumn = start.xMin < pageWidth / 2;
-  let endY = pageHeight;
-  for (const line of lines.slice(startIndex + 1)) {
-    const sameColumn = (line.xMin < pageWidth / 2) === leftColumn;
-    if (sameColumn && isProblemStartLine(line.text)) {
-      endY = line.yMin;
-      break;
-    }
-  }
-  const relevant = lines.filter((line) =>
-    line.yMin >= start.yMin && line.yMin < endY &&
-    (pageWidth < 500 || (line.xMin < pageWidth / 2) === leftColumn),
-  );
-  const xMin = pageWidth < 500 ? 0 : Math.max(0, Math.min(...relevant.map((line) => line.xMin)) - 18);
-  const xMax = pageWidth < 500 ? pageWidth : Math.min(pageWidth, Math.max(...relevant.map((line) => line.xMax)) + 54);
-  const yMin = Math.max(0, start.yMin - 18);
-  const yMax = Math.min(pageHeight, Math.max(endY - 6, ...relevant.map((line) => line.yMax + 30)));
-  return scaleAndClampRect({ left: xMin, top: yMin, width: xMax - xMin, height: yMax - yMin }, pageWidth, pageHeight, imageWidth, imageHeight, requestedPadding);
-}
-
-function semanticRectFromRegions(
-  regions: PdfOcrPage["regions"],
-  query: string,
-  imageWidth: number,
-  imageHeight: number,
-  padding = 18,
-  sourceWidth = imageWidth,
-  sourceHeight = imageHeight,
-): { left: number; top: number; width: number; height: number } | null {
-  const scaleX = imageWidth / sourceWidth;
-  const scaleY = imageHeight / sourceHeight;
-  const scaledRegions = regions.map((region) => ({
-    ...region,
-    left: region.left * scaleX,
-    top: region.top * scaleY,
-    width: region.width * scaleX,
-    height: region.height * scaleY,
-  }));
-  const startIndex = bestSemanticMatchIndex(scaledRegions.map((region) => region.text), query);
-  if (startIndex < 0) return null;
-  const start = scaledRegions[startIndex]!;
-  const useColumn = start.width < imageWidth * 0.7;
-  const leftColumn = start.left + start.width / 2 < imageWidth / 2;
-  const inStartColumn = (region: PdfOcrPage["regions"][number]) =>
-    !useColumn || (region.left + region.width / 2 < imageWidth / 2) === leftColumn;
-  const next = scaledRegions.slice(startIndex + 1).find((region) =>
-    inStartColumn(region) && isProblemStartLine(region.text));
-  const bottom = next?.top ?? Math.min(imageHeight, start.top + Math.max(start.height * 4, 400));
-  const selected = scaledRegions.filter((region) =>
-    inStartColumn(region) && region.top >= start.top && region.top < bottom);
-  const left = Math.max(0, Math.min(...selected.map((region) => region.left)) - padding);
-  const right = Math.min(imageWidth, Math.max(...selected.map((region) => region.left + region.width)) + padding);
-  const top = Math.max(0, start.top - padding);
-  const finalBottom = Math.min(imageHeight, Math.max(bottom, ...selected.map((region) => region.top + region.height)) + padding);
-  return clampPixelRect({ left, top, width: right - left, height: finalBottom - top }, imageWidth, imageHeight);
-}
-
 export function isVisualCropQuery(query: string, kind?: PdfVisualKind): boolean {
   return Boolean(kind) || /\b(?:figure|fig\.?|diagram|graph|chart|plot|spectrum|spectra|table|map|illustration|photo|circuit|free[- ]body|shown|depicted|pictured)\b/iu.test(query);
 }
@@ -1328,136 +1243,194 @@ function skippedTextCrop(region: { page: number; query: string }): PdfSemanticCr
   };
 }
 
-function semanticAnchorFromLines(
-  lines: PdfLayoutLine[],
-  query: string,
-  pageWidth: number,
-  pageHeight: number,
-  imageWidth: number,
-  imageHeight: number,
-) {
-  const index = bestSemanticMatchIndex(lines.map((line) => line.text), query);
-  if (index < 0) return null;
-  const line = lines[index]!;
-  return scaleAndClampRect({
-    left: line.xMin,
-    top: line.yMin,
-    width: line.xMax - line.xMin,
-    height: line.yMax - line.yMin,
-  }, pageWidth, pageHeight, imageWidth, imageHeight, 0);
-}
+type PixelRect = { left: number; top: number; width: number; height: number };
+type VisualLine = PixelRect & { text: string };
+type InkComponent = PixelRect & { pixels: number };
+type VisualPage = { width: number; height: number; components: InkComponent[] };
 
-function semanticAnchorFromRegions(
-  regions: PdfOcrPage["regions"],
-  query: string,
-  imageWidth: number,
-  imageHeight: number,
-  sourceWidth = imageWidth,
-  sourceHeight = imageHeight,
-) {
-  const index = bestSemanticMatchIndex(regions.map((region) => region.text), query);
-  if (index < 0) return null;
-  const region = regions[index]!;
-  return clampPixelRect({
-    left: region.left * imageWidth / sourceWidth,
-    top: region.top * imageHeight / sourceHeight,
-    width: region.width * imageWidth / sourceWidth,
-    height: region.height * imageHeight / sourceHeight,
-  }, imageWidth, imageHeight);
-}
-
-export async function semanticFigureRectFromImage(
-  imagePath: string,
-  anchor: { left: number; top: number; width: number; height: number } | null,
-  padding = 18,
-): Promise<{ left: number; top: number; width: number; height: number } | null> {
-  if (!anchor) return null;
-  const { data, info } = await sharp(imagePath).greyscale().raw().toBuffer({ resolveWithObject: true });
+// Connected ink preserves the whole graphic, including thin ropes, axes and arrowheads.
+// Row projections and OCR boxes cannot provide those bounds: a graphic can cross a
+// page midpoint, extend above its label, or share rows with an unrelated illustration.
+async function analyzeVisualPage(imagePath: string): Promise<VisualPage> {
+  const { data: source, info } = await sharp(imagePath).flatten({ background: "white" })
+    .greyscale().raw().toBuffer({ resolveWithObject: true });
   const { width, height } = info;
-  const anchorCenter = anchor.left + anchor.width / 2;
-  const centered = anchorCenter >= width * 0.42 && anchorCenter <= width * 0.58;
-  const columnLeft = centered ? Math.floor(width * 0.025)
-    : anchorCenter < width / 2 ? Math.floor(width * 0.025) : Math.floor(width * 0.51);
-  const columnRight = centered ? Math.ceil(width * 0.975)
-    : anchorCenter < width / 2 ? Math.ceil(width * 0.49) : Math.ceil(width * 0.975);
-  const columnWidth = Math.max(1, columnRight - columnLeft);
-  const rowMinimum = Math.max(3, Math.round(columnWidth * 0.002));
-  const activeRows = new Array<boolean>(height).fill(false);
-  for (let y = 0; y < height; y += 1) {
-    let ink = 0;
-    const rowOffset = y * width;
-    for (let x = columnLeft; x < columnRight; x += 1) {
-      if (data[rowOffset + x]! < 225 && ++ink >= rowMinimum) {
-        activeRows[y] = true;
-        break;
+  // Bridge single-pixel scan gaps without merging nearby figures or text lines.
+  const data = new Uint8Array(width * height).fill(255);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (source[y * width + x]! >= 210) continue;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (x + dx >= 0 && x + dx < width && y + dy >= 0 && y + dy < height) data[(y + dy) * width + x + dx] = 0;
       }
     }
   }
-  const bands = inkBands(activeRows, Math.max(4, Math.round(height * 0.0035)));
-  const anchorTop = anchor.top;
-  const anchorBottom = anchor.top + anchor.height;
-  let anchorIndex = bands.findIndex((band) => band.end >= anchorTop - 3 && band.start <= anchorBottom + 3);
-  if (anchorIndex < 0) {
-    bands.push({ start: Math.max(0, anchorTop), end: Math.min(height - 1, anchorBottom) });
-    bands.sort((left, right) => left.start - right.start);
-    anchorIndex = bands.findIndex((band) => band.start === Math.max(0, anchorTop));
-  }
-  const anchorBand = bands[anchorIndex]!;
-  const minimumFigureHeight = Math.max(30, Math.round(height * 0.025));
-  const maximumLabelGap = Math.max(60, Math.round(height * 0.095));
-  let contentBand = anchorBand;
-  if (anchorBand.end - anchorBand.start + 1 < minimumFigureHeight) {
-    for (let index = anchorIndex - 1; index >= 0; index -= 1) {
-      const candidate = bands[index]!;
-      const gap = anchorBand.start - candidate.end - 1;
-      if (gap > maximumLabelGap) break;
-      if (candidate.end - candidate.start + 1 >= minimumFigureHeight) {
-        contentBand = { start: candidate.start, end: anchorBand.end };
-        break;
+  const visited = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  const components: InkComponent[] = [];
+  const minimumInk = Math.max(18, Math.round(width * height * 0.00001));
+  for (let pixel = 0; pixel < data.length; pixel++) {
+    if (visited[pixel] || data[pixel]! >= 210) continue;
+    let head = 0;
+    let tail = 1;
+    queue[0] = pixel;
+    visited[pixel] = 1;
+    let left = width, top = height, right = 0, bottom = 0;
+    while (head < tail) {
+      const current = queue[head++]!;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+      for (let ny = Math.max(0, y - 1); ny <= Math.min(height - 1, y + 1); ny++) {
+        for (let nx = Math.max(0, x - 1); nx <= Math.min(width - 1, x + 1); nx++) {
+          const next = ny * width + nx;
+          if (!visited[next] && data[next]! < 210) {
+            visited[next] = 1;
+            queue[tail++] = next;
+          }
+        }
       }
     }
+    if (tail >= minimumInk) components.push({ left, top, width: right - left + 1, height: bottom - top + 1, pixels: tail });
   }
-  if (contentBand === anchorBand && anchorBand.end - anchorBand.start + 1 < minimumFigureHeight) return null;
-
-  const contentHeight = contentBand.end - contentBand.start + 1;
-  const columnMinimum = Math.max(2, Math.round(contentHeight * 0.004));
-  let left = columnRight;
-  let right = columnLeft;
-  for (let x = columnLeft; x < columnRight; x += 1) {
-    let ink = 0;
-    for (let y = contentBand.start; y <= contentBand.end; y += 1) {
-      if (data[y * width + x]! < 225 && ++ink >= columnMinimum) break;
-    }
-    if (ink >= columnMinimum) {
-      left = Math.min(left, x);
-      right = Math.max(right, x);
-    }
-  }
-  if (right <= left) return null;
-  return clampPixelRect({
-    left: left - padding,
-    top: contentBand.start - padding,
-    width: right - left + 1 + padding * 2,
-    height: contentHeight + padding * 2,
-  }, width, height);
+  return { width, height, components };
 }
 
-function inkBands(active: boolean[], joinGap: number): Array<{ start: number; end: number }> {
-  const bands: Array<{ start: number; end: number }> = [];
-  let start = -1;
-  let lastActive = -1;
-  for (let index = 0; index < active.length; index += 1) {
-    if (active[index]) {
-      if (start < 0) start = index;
-      lastActive = index;
-    } else if (start >= 0 && index - lastActive > joinGap) {
-      bands.push({ start, end: lastActive });
-      start = -1;
-      lastActive = -1;
-    }
+function rectGap(a: PixelRect, b: PixelRect) {
+  return {
+    x: Math.max(0, a.left - b.left - b.width, b.left - a.left - a.width),
+    y: Math.max(0, a.top - b.top - b.height, b.top - a.top - a.height),
+  };
+}
+
+function unionRects(rects: PixelRect[]): PixelRect {
+  const left = Math.min(...rects.map(rect => rect.left));
+  const top = Math.min(...rects.map(rect => rect.top));
+  return { left, top,
+    width: Math.max(...rects.map(rect => rect.left + rect.width)) - left,
+    height: Math.max(...rects.map(rect => rect.top + rect.height)) - top };
+}
+
+function figureIdentifier(text: string): string | null {
+  return text.match(/\b(?:figure|fig\.?)\s*([a-z]?\d+(?:[.,−–-]\d+)*)\b/iu)?.[1]
+    ?.toLowerCase().replace(/[−–]/gu, "-").replace(/,/gu, ".") ?? null;
+}
+
+function isCaption(line: VisualLine): boolean {
+  return /^\s*(?:figure|fig\.?)\s*[a-z]?\d/iu.test(line.text);
+}
+
+function isProse(line: VisualLine): boolean {
+  return !isCaption(line) && (line.text.match(/[a-z]{2,}/giu)?.length ?? 0) >= 3;
+}
+
+function visualAnchor(lines: VisualLine[], query: string): VisualLine | null {
+  const figure = figureIdentifier(query);
+  if (figure) {
+    // A mention in a question is not the figure caption. Also reject P4.1 when
+    // P4.19 was requested, instead of letting substring/token scoring choose it.
+    const captions = lines.filter(line => isCaption(line) && figureIdentifier(line.text) === figure);
+    return captions.length === 1 ? captions[0]! : null;
   }
-  if (start >= 0) bands.push({ start, end: lastActive });
-  return bands;
+  const number = problemNumberFromQuery(query);
+  if (number) {
+    const matches = lines.filter(line => {
+      if (/^\s*\d+[.)]\s*[a-z]/iu.test(query) && !/[a-z]/iu.test(line.text)) return false;
+      const start = line.text.replace(/^[^\p{L}\p{N}]+/u, "")
+        .match(/^([\dIl]{1,4})(?:\s*[.)]\s*|\s+|(?=m))/u)?.[1];
+      return start?.replace(/[Il]/gu, "1") === number;
+    });
+    return matches.length === 1 ? matches[0]! : null;
+  }
+  // OCR often drops a decimal point or inserts spaces within a short unit label.
+  const compact = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/gu, "");
+  const exact = lines.filter(line => compact(line.text) === compact(query));
+  if (exact.length > 0) return exact.length === 1 ? exact[0]! : null;
+  const index = bestSemanticMatchIndex(lines.map(line => line.text), query);
+  return index < 0 ? null : lines[index]!;
+}
+
+function visualRectAtAnchor(page: VisualPage, lines: VisualLine[], anchor: VisualLine, padding: number): PixelRect | null {
+  const { width, height, components } = page;
+  const prose = lines.filter(isProse);
+  const inside = (inner: PixelRect, outer: PixelRect) => inner.left >= outer.left - 2 && inner.top >= outer.top - 2 &&
+    inner.left + inner.width <= outer.left + outer.width + 2 && inner.top + inner.height <= outer.top + outer.height + 2;
+  const graphics = components.filter(c => c.width >= width * 0.025 && c.height >= height * 0.022 &&
+    c.width * c.height < width * height * 0.6 &&
+    !prose.some(line => inside(c, line)));
+  const caption = isCaption(anchor);
+  const prompt = isProse(anchor) || Boolean(problemNumberFromQuery(anchor.text));
+  const scored = graphics.map(graphic => {
+    if (caption && graphic.top >= anchor.top - 3 && graphic.height < anchor.height * 2) return null;
+    const gap = rectGap(graphic, anchor);
+    // Captions normally follow their figure; prompts precede it. Labels inside
+    // a figure can extend in every direction. Never constrain a figure to half a page.
+    if (caption && graphic.top > anchor.top + anchor.height) return null;
+    if (prompt && graphic.top + graphic.height < anchor.top + anchor.height) return null;
+    if (gap.y > height * 0.16 || gap.x > width * 0.16) return null;
+    const cx = Math.abs(graphic.left + graphic.width / 2 - anchor.left - anchor.width / 2);
+    return { graphic, score: gap.y + gap.x * 1.5 + cx * 0.12 };
+  }).filter((entry): entry is { graphic: InkComponent; score: number } => entry !== null)
+    .sort((a, b) => a.score - b.score);
+  if (!scored.length) return null;
+  // An equidistant label between independent graphics is not a reliable selection.
+  if (scored[1] && Math.abs(scored[1].score - scored[0]!.score) < width * 0.005 &&
+      rectGap(scored[0]!.graphic, scored[1].graphic).x > width * 0.045) return null;
+  const seed = scored[0]!.graphic;
+  const selected: PixelRect[] = [seed];
+  for (const graphic of graphics) {
+    if (graphic === seed) continue;
+    const gap = rectGap(seed, graphic);
+    const overlap = Math.min(seed.top + seed.height, graphic.top + graphic.height) - Math.max(seed.top, graphic.top);
+    // Adjacent panels (e.g. the nitrogen and oxygen spectra) form one visual.
+    if (gap.x < width * 0.045 && overlap > Math.min(seed.height, graphic.height) * 0.7 &&
+        Math.min(seed.height, graphic.height) > Math.max(seed.height, graphic.height) * 0.55) selected.push(graphic);
+  }
+  const body = unionRects(selected);
+  // Recover disconnected tick labels, units, arrow labels, and caption text. Do not
+  // recursively grow through adjacent paragraphs or other large illustrations.
+  const nearby = Math.max(8, width * 0.035);
+  const labels = lines.filter(line => !isProse(line) && !problemNumberFromQuery(line.text) &&
+    line.width * line.height >= width * height * 0.000025 &&
+    (!caption || line.top + line.height <= anchor.top + anchor.height + 3) &&
+    rectGap(body, line).x <= nearby && rectGap(body, line).y <= nearby);
+  if (caption) labels.push(anchor);
+  if (prompt && !isProse(anchor)) {
+    labels.push(anchor, ...lines.filter(line => !isProse(line) && line.top >= anchor.top &&
+      line.top < anchor.top + anchor.height * 2.5 && rectGap(anchor, line).x === 0));
+  }
+  const accessories = components.filter(c => !graphics.includes(c) &&
+    (!caption || c.top + c.height <= anchor.top + anchor.height + 3) &&
+    !prose.some(line => inside(c, line)) &&
+    (inside(c, body) || labels.some(line => inside(c, line)) ||
+      (rectGap(body, c).x <= nearby && rectGap(body, c).y <= nearby)));
+  const bounds = unionRects([...selected, ...accessories, ...labels]);
+  // Clip padding to adjacent text without clipping the actual graphic.
+  let topPadding = padding, bottomPadding = caption ? Math.min(padding, anchor.height * 0.4) : padding;
+  let leftPadding = padding, rightPadding = padding;
+  for (const line of lines) {
+    if (!isProse(line) && !problemNumberFromQuery(line.text)) continue;
+    if (rectGap(bounds, line).x > 0) continue;
+    if (line.top >= bounds.top + bounds.height) bottomPadding = Math.min(bottomPadding, Math.max(0, line.top - bounds.top - bounds.height - 2));
+    if (line.top + line.height <= bounds.top) topPadding = Math.min(topPadding, Math.max(0, bounds.top - line.top - line.height - 2));
+  }
+  for (const graphic of graphics) {
+    if (selected.includes(graphic) || rectGap(bounds, graphic).y > 0) continue;
+    if (graphic.left + graphic.width <= bounds.left) leftPadding = Math.min(leftPadding, Math.max(0, bounds.left - graphic.left - graphic.width - 2));
+    if (graphic.left >= bounds.left + bounds.width) rightPadding = Math.min(rightPadding, Math.max(0, graphic.left - bounds.left - bounds.width - 2));
+  }
+  return clampPixelRect({ left: bounds.left - leftPadding, top: bounds.top - topPadding,
+    width: bounds.width + leftPadding + rightPadding, height: bounds.height + topPadding + bottomPadding }, width, height);
+}
+
+function semanticVisualRect(page: VisualPage, lines: VisualLine[], query: string, padding = 18): PixelRect | null {
+  const anchor = visualAnchor(lines, query);
+  return anchor ? visualRectAtAnchor(page, lines, anchor, padding) : null;
+}
+
+export async function semanticVisualRectFromImage(imagePath: string, lines: VisualLine[], query: string, padding = 18): Promise<PixelRect | null> {
+  return semanticVisualRect(await analyzeVisualPage(imagePath), lines, query, padding);
 }
 
 function scaleAndClampRect(

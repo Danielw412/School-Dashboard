@@ -1,3 +1,4 @@
+import { modelLabel, modelNames } from "../models";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -44,7 +45,7 @@ export function AssignmentWorkspace() {
   const [starting, setStarting] = useState<AgentRun["feature"] | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
-  const [studyModel, setStudyModel] = useState<ModelName>("gpt-5.6-luna");
+  const [studyModel, setStudyModel] = useState<ModelName>("gpt-6-luna");
   const [reasoning, setReasoning] = useState<ReasoningEffort>("high");
   const [predictor, setPredictor] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -344,7 +345,7 @@ function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predic
   return <div>
     <FeatureHeader title="Study guide" />
     <div className="generator-config">
-      <label>Model<select value={model} onChange={(event) => setModel(event.target.value as ModelName)}>{(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"] as ModelName[]).map((item) => <option value={item} key={item}>{item.split("-").at(-1)}</option>)}</select></label>
+      <label>Model<select value={model} onChange={(event) => setModel(event.target.value as ModelName)}>{modelNames.map((item) => <option value={item} key={item}>{modelLabel(item)}</option>)}</select></label>
       <label>Reasoning<select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningEffort)}>{["minimal", "low", "medium", "high", "xhigh", "max"].map((item) => <option key={item}>{item}</option>)}</select></label>
       <label className="check-field predictor-toggle"><input type="checkbox" checked={predictor} onChange={(event) => setPredictor(event.target.checked)} /><span><strong>Use Test Question Predictor</strong></span></label>
       <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
@@ -364,7 +365,7 @@ function RunBanner({ run }: { run: AgentRun }) {
   return <div className="run-card">
     <div className="run-banner">
       <RunStatus status={run.status} />
-      <span>{run.model.replace("gpt-5.6-", "GPT-5.6 ")}, {run.reasoningEffort} reasoning</span>
+      <span>{modelLabel(run.model)}, {run.reasoningEffort} reasoning</span>
       <small>{run.usage ? `${(run.usage.input_tokens + run.usage.output_tokens).toLocaleString()} tokens` : ""}</small>
     </div>
     <RunProgressPanel run={run} />

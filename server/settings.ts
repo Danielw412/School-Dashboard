@@ -5,8 +5,9 @@ import { dirname } from "node:path";
 import { z } from "zod";
 
 import { env, SETTINGS_PATH } from "./env.js";
+import { migrateSavedModel, modelNames } from "../src/models.js";
 
-export const modelSchema = z.enum(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]);
+export const modelSchema = z.enum(modelNames);
 export const reasoningEffortSchema = z.enum([
   "none",
   "minimal",
@@ -51,12 +52,12 @@ export type AppSettings = z.infer<typeof settingsSchema>;
 
 export const defaultSettings: AppSettings = {
   version: 1,
-  defaultModel: "gpt-5.6-luna",
+  defaultModel: "gpt-6-luna",
   featureModels: {
-    problemExtraction: "gpt-5.6-luna",
-    answerKey: "gpt-5.6-luna",
-    studyGuide: "gpt-5.6-luna",
-    assignmentNavigation: "gpt-5.6-luna",
+    problemExtraction: "gpt-6-luna",
+    answerKey: "gpt-6-luna",
+    studyGuide: "gpt-6-luna",
+    assignmentNavigation: "gpt-6-luna",
   },
   reasoningEffort: "high",
   prompts: {
@@ -78,10 +79,17 @@ export const defaultSettings: AppSettings = {
 };
 
 export class SettingsStore {
+  constructor(private readonly path = SETTINGS_PATH) {}
+
   async get(): Promise<AppSettings> {
     try {
-      const raw = JSON.parse(await readFile(SETTINGS_PATH, "utf8")) as unknown;
-      return settingsSchema.parse(raw);
+      const raw = JSON.parse(await readFile(this.path, "utf8"));
+      return settingsSchema.parse({
+        ...raw,
+        defaultModel: migrateSavedModel(raw.defaultModel),
+        featureModels: Object.fromEntries(Object.entries(raw.featureModels ?? {})
+          .map(([feature, model]) => [feature, migrateSavedModel(model)])),
+      });
     } catch {
       return structuredClone(defaultSettings);
     }
@@ -89,10 +97,10 @@ export class SettingsStore {
 
   async save(input: unknown): Promise<AppSettings> {
     const settings = settingsSchema.parse(input);
-    await mkdir(dirname(SETTINGS_PATH), { recursive: true });
-    const temporaryPath = `${SETTINGS_PATH}.${process.pid}.${randomUUID()}.tmp`;
+    await mkdir(dirname(this.path), { recursive: true });
+    const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-    await rename(temporaryPath, SETTINGS_PATH);
+    await rename(temporaryPath, this.path);
     return settings;
   }
 

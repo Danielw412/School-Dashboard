@@ -1,0 +1,216 @@
+{
+  "width": 1445,
+  "height": 1870,
+  "lines": [
+    {
+      "text": "Name",
+      "left": 166,
+      "top": 151,
+      "width": 71,
+      "height": 21
+    },
+    {
+      "text": ")",
+      "left": 537,
+      "top": 148,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "per. date",
+      "left": 847,
+      "top": 161,
+      "width": 170,
+      "height": 25
+    },
+    {
+      "text": "Equilibrium applications of Newton’s Laws",
+      "left": 166,
+      "top": 184,
+      "width": 509,
+      "height": 29
+    },
+    {
+      "text": "DiBucci",
+      "left": 930,
+      "top": 192,
+      "width": 98,
+      "height": 21
+    },
+    {
+      "text": "Equations:",
+      "left": 166,
+      "top": 249,
+      "width": 130,
+      "height": 26
+    },
+    {
+      "text": "> F=0",
+      "left": 171,
+      "top": 283,
+      "width": 99,
+      "height": 36
+    },
+    {
+      "text": ":",
+      "left": 1008,
+      "top": 320,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "Objective: Apply Newton’s Laws of Motion to analyze objects in equilibrium",
+      "left": 166,
+      "top": 363,
+      "width": 892,
+      "height": 38
+    },
+    {
+      "text": "1. The box hanging in the diagram below is in a state of static equilibrium, Calculate",
+      "left": 165,
+      "top": 429,
+      "width": 995,
+      "height": 33
+    },
+    {
+      "text": "the tension in each rope: TI and T2. angle 1 = 55 degrees An gle 2= 43 degrees, each",
+      "left": 165,
+      "top": 457,
+      "width": 982,
+      "height": 39
+    },
+    {
+      "text": "angle is measured from the horizontal and corresponds to T1 and T2 in each rope.",
+      "left": 164,
+      "top": 493,
+      "width": 957,
+      "height": 39
+    },
+    {
+      "text": "70m 3074",
+      "left": 749,
+      "top": 545,
+      "width": 125,
+      "height": 31
+    },
+    {
+      "text": "T2",
+      "left": 175,
+      "top": 586,
+      "width": 31,
+      "height": 22
+    },
+    {
+      "text": "T1",
+      "left": 424,
+      "top": 593,
+      "width": 26,
+      "height": 22
+    },
+    {
+      "text": "To = AqEw",
+      "left": 747,
+      "top": 586,
+      "width": 138,
+      "height": 32
+    },
+    {
+      "text": "42°",
+      "left": 230,
+      "top": 628,
+      "width": 40,
+      "height": 20
+    },
+    {
+      "text": "53°",
+      "left": 373,
+      "top": 625,
+      "width": 45,
+      "height": 21
+    },
+    {
+      "text": "M=43.8 kg",
+      "left": 249,
+      "top": 679,
+      "width": 129,
+      "height": 29
+    },
+    {
+      "text": "2. Repeat the same procedure for the box in this problem. Assume angle 1 = 30 degrees",
+      "left": 158,
+      "top": 1109,
+      "width": 1013,
+      "height": 38
+    },
+    {
+      "text": "and angle 2 = 60 degrees",
+      "left": 159,
+      "top": 1142,
+      "width": 290,
+      "height": 27
+    },
+    {
+      "text": "I~",
+      "left": 762,
+      "top": 1170,
+      "width": 25,
+      "height": 4
+    },
+    {
+      "text": "PT HOA",
+      "left": 770,
+      "top": 1178,
+      "width": 135,
+      "height": 21
+    },
+    {
+      "text": "TL EEETM",
+      "left": 757,
+      "top": 1214,
+      "width": 154,
+      "height": 27
+    },
+    {
+      "text": "T2",
+      "left": 170,
+      "top": 1235,
+      "width": 31,
+      "height": 22
+    },
+    {
+      "text": "Ps",
+      "left": 355,
+      "top": 1222,
+      "width": 90,
+      "height": 54
+    },
+    {
+      "text": "50°",
+      "left": 213,
+      "top": 1264,
+      "width": 37,
+      "height": 23
+    },
+    {
+      "text": "38%",
+      "left": 375,
+      "top": 1272,
+      "width": 51,
+      "height": 19
+    },
+    {
+      "text": "|",
+      "left": 201,
+      "top": 1337,
+      "width": 2,
+      "height": 2
+    },
+    {
+      "text": "M=100 kg",
+      "left": 251,
+      "top": 1323,
+      "width": 121,
+      "height": 28
+    }
+  ]
+}

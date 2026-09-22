@@ -174,7 +174,7 @@ export type AgentRun = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
-  model: z.infer<typeof modelSchema>;
+  model: string;
   reasoningEffort: z.infer<typeof reasoningEffortSchema>;
   effectiveReasoningEffort: string;
   prompt: string;
