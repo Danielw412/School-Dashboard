@@ -7,7 +7,11 @@ import { z } from "zod";
 import { env, SETTINGS_PATH } from "./env.js";
 import { migrateSavedModel, modelNames } from "../src/models.js";
 
+// Built-in models. A Luna Reserve ID reported by Codex is also accepted (see ModelCatalog).
 export const modelSchema = z.enum(modelNames);
+export const modelIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u);
+export type ModelSelectable = (model: string) => boolean;
+const builtInModel: ModelSelectable = (model) => (modelNames as readonly string[]).includes(model);
 export const reasoningEffortSchema = z.enum([
   "none",
   "minimal",
@@ -20,12 +24,12 @@ export const reasoningEffortSchema = z.enum([
 
 export const settingsSchema = z.object({
   version: z.literal(1),
-  defaultModel: modelSchema,
+  defaultModel: modelIdSchema,
   featureModels: z.object({
-    problemExtraction: modelSchema,
-    answerKey: modelSchema,
-    studyGuide: modelSchema,
-    assignmentNavigation: modelSchema,
+    problemExtraction: modelIdSchema,
+    answerKey: modelIdSchema,
+    studyGuide: modelIdSchema,
+    assignmentNavigation: modelIdSchema,
   }),
   reasoningEffort: reasoningEffortSchema,
   prompts: z.object({
@@ -79,24 +83,47 @@ export const defaultSettings: AppSettings = {
 };
 
 export class SettingsStore {
-  constructor(private readonly path = SETTINGS_PATH) {}
+  constructor(
+    private readonly path = SETTINGS_PATH,
+    private readonly isSelectableModel: ModelSelectable = builtInModel,
+  ) {}
 
   async get(): Promise<AppSettings> {
     try {
       const raw = JSON.parse(await readFile(this.path, "utf8"));
-      return settingsSchema.parse({
+      const settings = settingsSchema.parse({
         ...raw,
         defaultModel: migrateSavedModel(raw.defaultModel),
         featureModels: Object.fromEntries(Object.entries(raw.featureModels ?? {})
           .map(([feature, model]) => [feature, migrateSavedModel(model)])),
       });
+      // A saved model Codex no longer lists (such as a withdrawn Luna Reserve ID) falls back to
+      // its default instead of discarding every other saved preference.
+      if (!this.isSelectableModel(settings.defaultModel)) settings.defaultModel = defaultSettings.defaultModel;
+      for (const feature of Object.keys(settings.featureModels) as Array<keyof AppSettings["featureModels"]>) {
+        if (!this.isSelectableModel(settings.featureModels[feature])) {
+          settings.featureModels[feature] = defaultSettings.featureModels[feature];
+        }
+      }
+      return settings;
     } catch {
       return structuredClone(defaultSettings);
     }
   }
 
   async save(input: unknown): Promise<AppSettings> {
-    const settings = settingsSchema.parse(input);
+    const settings = settingsSchema.superRefine((value, context) => {
+      const models: Array<[string[], string]> = [
+        [["defaultModel"], value.defaultModel],
+        ...Object.entries(value.featureModels)
+          .map(([feature, model]): [string[], string] => [["featureModels", feature], model]),
+      ];
+      for (const [path, model] of models) {
+        if (!this.isSelectableModel(model)) {
+          context.addIssue({ code: "custom", path, message: `${model} is not a model Codex currently supports.` });
+        }
+      }
+    }).parse(input);
     await mkdir(dirname(this.path), { recursive: true });
     const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");

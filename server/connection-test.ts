@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 
+import type { AgentExecutionStatus } from "./agent-execution.js";
+
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
@@ -29,6 +31,7 @@ export async function runConnectionTest(dependencies: {
   canvasBaseUrl: string;
   taskSyncRoute: string;
   codexModel: string;
+  agents: AgentExecutionStatus;
   mcpHealth: () => { connected: boolean; name: string; transport: string; toolCount: number };
   workspaceStats: () => Promise<{ files: number; bytes: number; hits: number; misses: number }>;
   predictorConfigured: boolean;
@@ -53,10 +56,19 @@ export async function runConnectionTest(dependencies: {
     timed("canvas-credentials", "Canvas credentials", async () => dependencies.canvasCredentialConfigured
       ? { status: "passed" as const, detail: "The Canvas base URL and server-side API token are configured." }
       : { status: "failed" as const, detail: "CANVAS_API_TOKEN is missing from the local environment." }),
-    timed("codex-sdk", "Codex agent runtime", async () => ({
-      status: "passed",
-      detail: `@openai/codex-sdk is loaded. Default model: ${dependencies.codexModel}.`,
-    })),
+    timed("codex-sdk", dependencies.agents.mode === "worker" ? "Laptop agent worker" : "Codex agent runtime", async () => {
+      const { agents } = dependencies;
+      if (agents.mode === "local") {
+        return { status: "passed" as const, detail: `@openai/codex-sdk is loaded. Default model: ${dependencies.codexModel}.` };
+      }
+      const worker = agents.worker;
+      return agents.available && worker
+        ? {
+            status: "passed" as const,
+            detail: `${worker.name} is connected over the tailnet (Codex ${worker.codexVersion ?? "unknown"}, up to ${worker.maxConcurrentJobs} parallel runs). Default model: ${dependencies.codexModel}.`,
+          }
+        : { status: "failed" as const, detail: agents.message };
+    }),
     timed("assignment-mcp", "Assignment MCP", async () => {
       const health = dependencies.mcpHealth();
       return health.connected

@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 import * as cheerio from "cheerio";
@@ -19,7 +19,10 @@ import englishOcrData from "@tesseract.js-data/eng";
 import type { ActivityStore } from "./activity.js";
 import type { CanvasClient, CanvasFile } from "./canvas-client.js";
 import { CACHE_DIR, TEMP_WORKSPACE_ROOT, WORKSPACE_ASSET_DIR } from "./env.js";
+import { safeChild } from "./safe-path.js";
 import type { AppSettings } from "./settings.js";
+
+export { safeChild };
 
 const execFileAsync = promisify(execFile);
 const PDF_OCR_DPI = 170;
@@ -1552,15 +1555,6 @@ function classifyPdfPageTextLayer(extractedCharacters: number): PdfInspection["t
 
 function hashKey(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
-}
-
-export function safeChild(root: string, value: string): string {
-  const destination = resolve(root, value);
-  const normalizedRoot = `${resolve(root)}${sep}`;
-  if (destination !== resolve(root) && !destination.startsWith(normalizedRoot)) {
-    throw new Error("Workspace path escaped its assignment directory.");
-  }
-  return destination;
 }
 
 function safeName(value: string): string {

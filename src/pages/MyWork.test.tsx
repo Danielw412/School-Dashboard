@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AgentStatusContext } from "../agent-status";
 import { MyWork } from "./MyWork";
 
 const task = {
@@ -185,5 +186,22 @@ describe("MyWork", () => {
     await user.click(await screen.findByRole("button", { name: "Cancel Luna" }));
 
     await waitFor(() => expect(schoolApi.cancelWorkflow).toHaveBeenCalledWith("workflow-1"));
+  });
+
+  it("disables Luna workflows while the laptop agent worker is offline", async () => {
+    const user = userEvent.setup();
+    const message = "Agents are unavailable: the laptop agent worker (DESKTOP-TQMTS8O) is offline.";
+    render(
+      <AgentStatusContext.Provider value={{ mode: "worker", available: false, message, worker: null, activeJobs: 0, queuedJobs: 0 }}>
+        <MemoryRouter><MyWork /></MemoryRouter>
+      </AgentStatusContext.Provider>,
+    );
+    await user.click(await screen.findByText("Problem Set 4"));
+
+    const button = await screen.findByRole("button", { name: /Full workflow/u });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", message);
+    expect(screen.getByText("Agents are offline right now.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open Canvas/i })).toBeInTheDocument();
   });
 });

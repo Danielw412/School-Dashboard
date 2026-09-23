@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -5,18 +6,27 @@ import multer from "multer";
 import { z, ZodError } from "zod";
 
 import { ActivityStore } from "./activity.js";
+import {
+  type AgentExecutor,
+  AgentsUnavailableError,
+  LocalCodexExecutor,
+} from "./agent-execution.js";
 import { buildAgentProgress } from "./agent-progress.js";
 import { AgentRunner, AgentRunStore, parseProblemExtractionOutput } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
+import { codexCliVersion, listCodexModels } from "./codex-models.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
 import { CourseDirectionsStore, courseDirectionsRouter } from "./course-directions.js";
-import { APP_ROOT, env } from "./env.js";
+import { APP_ROOT, env, WORKER_STATE_PATH } from "./env.js";
+import { ModelCatalog } from "./model-catalog.js";
+import { networkAccessMiddleware } from "./network-access.js";
 import { SettingsStore } from "./settings.js";
 import { SshTunnel } from "./ssh-tunnel.js";
 import { manualTaskInputSchema, TaskSyncClient } from "./task-sync.js";
 import { ToolAuthorizationError } from "./tool-sessions.js";
 import { AgentWorkflowRunner } from "./workflow-runner.js";
+import { WorkerHub } from "./worker-hub.js";
 import { WorkspaceManager } from "./workspace.js";
 import { workspaceFilesRouter } from "./workspace-files.js";
 
@@ -26,10 +36,14 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024, files: 1 },
 });
 app.disable("x-powered-by");
+app.use(networkAccessMiddleware({ networks: env.allowedNetworks, allowedHosts: env.allowedHosts }));
 app.use(express.json({ limit: "2mb" }));
 
+const MCP_PATH = "/api/internal/canvas-mcp";
 const activity = new ActivityStore();
-const settingsStore = new SettingsStore();
+const models = new ModelCatalog();
+await models.load();
+const settingsStore = new SettingsStore(undefined, models.isSelectable);
 const courseDirections = new CourseDirectionsStore();
 const settings = await settingsStore.get();
 // A remote Task Sync backend replaces the configured URL with its own SSH tunnel.
@@ -50,6 +64,23 @@ const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
 await runs.failInterrupted();
 const toolSessions = new CompactingCanvasToolSessions(canvas, workspaces, activity, taskSync);
+// Worker mode: Codex runs on the laptop agent worker, which dials in over the tailnet.
+// Local mode: Codex runs in this process, as it did before the server split.
+const workerHub = env.agentExecution === "worker"
+  ? new WorkerHub({
+      token: env.workerToken,
+      allowedNetworks: env.allowedNetworks,
+      activity,
+      mcpPath: MCP_PATH,
+      statePath: WORKER_STATE_PATH,
+      onModels: (report) => models.record(report),
+    })
+  : null;
+await workerHub?.loadState();
+const localMcpHost = ["0.0.0.0", "::", ""].includes(env.host) ? "127.0.0.1" : env.host;
+const localMcpUrl = `http://${localMcpHost.includes(":") ? `[${localMcpHost}]` : localMcpHost}:${env.port}${MCP_PATH}`;
+const executor: AgentExecutor = workerHub ?? new LocalCodexExecutor(localMcpUrl);
+if (!workerHub) void recordLocalCodexModels();
 const agentRunner = new AgentRunner(
   settingsStore,
   taskSync,
@@ -58,7 +89,9 @@ const agentRunner = new AgentRunner(
   toolSessions,
   activity,
   runs,
+  executor,
   courseDirections,
+  models.isSelectable,
 );
 const workflows = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
 
@@ -74,6 +107,7 @@ app.get("/api/health", async (_request, response) => {
     taskSync: taskSyncHealth,
     canvas: canvasHealth,
     agent: { sdk: "@openai/codex-sdk", defaultModel: (await settingsStore.get()).defaultModel },
+    agents: executor.status(),
   });
 });
 
@@ -116,6 +150,19 @@ app.get("/api/overview", async (_request, response) => {
 
 app.get("/api/settings", async (_request, response) => {
   response.json(await settingsStore.get());
+});
+
+app.get("/api/agent-models", (_request, response) => {
+  response.json(models.describe());
+});
+
+app.post("/api/agent-models/refresh", (_request, response) => {
+  if (workerHub) {
+    response.status(202).json({ requested: workerHub.requestModelRefresh() });
+    return;
+  }
+  void recordLocalCodexModels();
+  response.status(202).json({ requested: true });
 });
 
 app.put("/api/settings", async (request, response) => {
@@ -183,6 +230,8 @@ app.post("/api/agent-runs/:id/cancel", async (request, response) => {
 });
 
 app.post("/api/agent-workflows", async (request, response) => {
+  const execution = executor.status();
+  if (!execution.available) throw new AgentsUnavailableError(execution.message);
   response.status(202).json(await workflows.start(request.body));
 });
 
@@ -199,6 +248,7 @@ app.get("/api/active-work", async (_request, response) => {
   response.json({
     workflows: workflows.list().filter((workflow) => workflow.status === "queued" || workflow.status === "running"),
     runs: activeRuns.map((run) => ({ run, progress: buildAgentProgress(run, recentActivity) })),
+    agents: executor.status(),
   });
 });
 
@@ -226,6 +276,7 @@ app.get("/api/diagnostics", async (_request, response) => {
       taskSyncTunnel: taskSyncTunnel?.status() ?? null,
       canvasBaseUrl: currentSettings.connections.canvasBaseUrl,
     },
+    agents: executor.status(),
     predictor: {
       configured: Boolean(env.predictorCommand),
       message: env.predictorCommand
@@ -247,6 +298,7 @@ app.post("/api/connection-test", async (_request, response) => {
     canvasBaseUrl: currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl,
     taskSyncRoute,
     codexModel: currentSettings.defaultModel,
+    agents: executor.status(),
     mcpHealth: () => toolSessions.health(),
     workspaceStats: () => workspaces.stats(),
     predictorConfigured: Boolean(env.predictorCommand),
@@ -325,10 +377,20 @@ app.post("/api/internal/canvas-tools", async (request, response) => {
   response.json(result);
 });
 
-app.post("/api/internal/canvas-mcp", async (request, response) => {
+// POST carries MCP messages and DELETE ends the session. The tools never push unsolicited
+// messages, so the optional GET event stream is declined as the MCP transport spec allows.
+app.get(MCP_PATH, (_request, response) => {
+  response.status(405).set("Allow", "POST, DELETE").end();
+});
+app.post(MCP_PATH, async (request, response) => {
   const authorization = request.header("authorization") ?? "";
   const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
   await toolSessions.handleMcp(token, request, response, request.body);
+});
+app.delete(MCP_PATH, async (request, response) => {
+  const authorization = request.header("authorization") ?? "";
+  const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  await toolSessions.handleMcp(token, request, response, undefined);
 });
 
 app.use("/workspace-files", workspaceFilesRouter(workspaces));
@@ -341,7 +403,13 @@ app.get("/{*path}", (_request, response, next) => {
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   void _next;
-  const status = error instanceof ToolAuthorizationError ? 403 : error instanceof ZodError ? 400 : 500;
+  const status = error instanceof ToolAuthorizationError
+    ? 403
+    : error instanceof ZodError
+      ? 400
+      : error instanceof AgentsUnavailableError
+        ? 503
+        : 500;
   const message = error instanceof ZodError
     ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")
     : error instanceof Error
@@ -361,12 +429,43 @@ for (const run of await runs.list(250)) {
   );
 }
 await workspaces.pruneWorkspaces(settings.cache.workspaceRetentionHours);
-app.listen(env.port, "127.0.0.1", () => {
+const httpServer = app.listen(env.port, env.host, () => {
+  const address = `http://${env.host.includes(":") ? `[${env.host}]` : env.host}:${env.port}`;
   void activity.record({
     category: "system",
     action: "server.start",
     status: "completed",
-    summary: `School Dashboard listening on http://127.0.0.1:${env.port}`,
+    summary: `School Dashboard listening on ${address}`,
+    metadata: { agentExecution: executor.mode },
   });
-  process.stdout.write(`School Dashboard API listening on http://127.0.0.1:${env.port}\n`);
+  process.stdout.write(
+    `School Dashboard API listening on ${address} (agents: ${workerHub ? "laptop agent worker" : "local Codex"})\n`,
+  );
 });
+workerHub?.attach(httpServer);
+// systemd stops the service with SIGTERM; exit cleanly so a restart is not logged as a failure.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    workerHub?.close();
+    httpServer.close();
+    process.exit(0);
+  });
+}
+if (workerHub && !env.workerToken) {
+  process.stderr.write("SCHOOL_DASHBOARD_AGENT_EXECUTION=worker needs SCHOOL_DASHBOARD_WORKER_TOKEN; agents stay unavailable until it is set.\n");
+}
+
+// Local mode reports this machine's Codex model list, as the laptop worker does in worker mode.
+async function recordLocalCodexModels(): Promise<void> {
+  const source = hostname();
+  try {
+    await models.record({ source, codexVersion: codexCliVersion(), models: await listCodexModels(), error: null });
+  } catch (error) {
+    await models.record({
+      source,
+      codexVersion: codexCliVersion(),
+      models: null,
+      error: error instanceof Error ? error.message : "Could not list Codex models.",
+    }).catch(() => undefined);
+  }
+}

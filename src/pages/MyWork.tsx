@@ -20,6 +20,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
+import { useAgentAvailability } from "../agent-status";
 import { schoolApi } from "../api";
 import { ProgressTimeline } from "../components/AgentProgress";
 import { EmptyState, ErrorNotice } from "../components/Status";
@@ -242,6 +243,7 @@ function AssignmentInspector({
   const [cancelling, setCancelling] = useState(false);
   const [workflowError, setWorkflowError] = useState<unknown>(null);
   const isManualTask = Boolean(task.manually_managed);
+  const agents = useAgentAvailability();
   useEffect(() => {
     let current = true;
     void schoolApi.context(task.logical_id)
@@ -306,11 +308,13 @@ function AssignmentInspector({
 
       <section className="workflow-picker">
         <h3>Choose a workflow</h3>
+        {agents.available ? null : <p className="workflow-unavailable">Agents are offline right now.</p>}
         <div className="workflow-actions">
           {workflowActions.map(({ label, steps, icon: Icon, primary }) => (
             <button
               className={primary ? "workflow-action primary" : "workflow-action"}
-              disabled={Boolean(active || starting)}
+              disabled={Boolean(active || starting || !agents.available)}
+              title={agents.reason ?? undefined}
               key={label}
               onClick={() => void startWorkflow(label, steps)}
             >

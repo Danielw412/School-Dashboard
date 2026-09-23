@@ -1,5 +1,6 @@
 import type {
   AgentRun,
+  AgentModels,
   AgentProgress,
   AgentWorkflow,
   ActiveWork,
@@ -7,7 +8,6 @@ import type {
   AssignmentContext,
   Diagnostics,
   ConnectionTestResult,
-  ModelName,
   ReasoningEffort,
   TrackedTask,
   TaskCourse,
@@ -54,7 +54,7 @@ export const schoolApi = {
   startRun: (input: {
     feature: AgentRun["feature"];
     logicalId: string;
-    model?: ModelName;
+    model?: string;
     reasoningEffort?: ReasoningEffort;
     useTestQuestionPredictor?: boolean;
     extractionRunId?: string;
@@ -71,6 +71,8 @@ export const schoolApi = {
     method: "POST",
     body: "{}",
   }),
+  agentModels: () => api<AgentModels>("/api/agent-models"),
+  refreshAgentModels: () => api<{ requested: boolean }>("/api/agent-models/refresh", { method: "POST", body: "{}" }),
   settings: () => api<AppSettings>("/api/settings"),
   saveSettings: (settings: AppSettings) =>
     api<{ settings: AppSettings; restartRequired: boolean }>("/api/settings", {

@@ -6,7 +6,9 @@ School Dashboard is a local React + Express app layered on top of **Canvas Task 
 
 Main flow:
 
-`React UI -> /api -> TaskSyncClient / CanvasClient -> AgentRunner -> assignment workspace -> CanvasToolSessions (MCP) -> WorkspaceManager -> validated structured output -> UI`
+`React UI -> /api -> TaskSyncClient / CanvasClient -> AgentRunner -> assignment workspace -> AgentExecutor (Codex turn) -> CanvasToolSessions (MCP) -> WorkspaceManager -> validated structured output -> UI`
+
+The dashboard normally runs on a Linux server (`SCHOOL_DASHBOARD_AGENT_EXECUTION=worker`) and Codex runs on the Windows laptop: `WorkerHub` queues each prepared Codex turn and sends it over the laptop's outbound WebSocket to the agent worker, which runs it with the laptop's own `~/.codex` in a local copy of the run's seed files, calls the server's MCP endpoint over Tailscale, and streams compact events and the result back. Local mode (`LocalCodexExecutor`) runs the same turn in-process for single-machine setups.
 
 Agent features are `directions`, `problemExtraction`, `answerKey`, and `studyGuide`. Answer keys are special: they may only consume a completed problem-extraction run for the same assignment.
 
@@ -22,13 +24,17 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `server/task-sync.ts` — typed client for Canvas Task Sync's canonical `/api/v1/tasks` and browser-resource APIs. Do not duplicate Task Sync's discovery/reconciliation/completion logic or Chrome capture broker here; `completed=false` intentionally includes only tasks whose live Google status is `needsAction`.
 - `server/ssh-tunnel.ts` — supervised SSH tunnel used when `TASK_SYNC_SSH_TARGET` points at a Task Sync backend on a server. The local port must equal the backend port because Task Sync only accepts its own loopback `Host`.
 - `server/canvas-client.ts` — Canvas API access, assignment resolution, course search, source-context recovery, HTML normalization, downloads/submissions.
-- `server/agent-runner.ts` — Luna/Codex run lifecycle, feature schemas/prompts, model settings, workspace setup, structured-output validation.
+- `server/agent-runner.ts` — Luna/Codex run lifecycle, feature schemas/prompts, model settings, workspace setup, structured-output validation. It hands the Codex turn to an `AgentExecutor`.
+- `server/agent-execution.ts` / `server/codex-execution.ts` — executor interface and status, and the one Codex SDK invocation (`runCodexTurn`: read-only sandbox, feature flags, MCP overrides, secret-free env) shared by local mode and the laptop worker.
+- `server/worker-hub.ts` (server) / `server/worker-client.ts` + `server/agent-worker.ts` (laptop) / `server/worker-protocol.ts` — laptop agent worker: WebSocket endpoint and auth, job queue and concurrency, reconnect grace and re-attachment, seed-file mirroring, event compaction, buffered results. Both sides validate every frame with the shared zod protocol.
+- `server/model-catalog.ts` / `server/codex-models.ts` — the Codex app-server `model/list` reported by the machine that runs Codex, persisted on the server; decides which model IDs are selectable (built-ins plus a detected Luna Reserve).
+- `server/network-access.ts` — loopback/Tailscale-only access, Host and cross-origin checks for the network-facing server.
 - `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to Luna. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
 - `server/workspace.ts` — temporary workspaces, Canvas file cache, Poppler PDF inspection/text/rendering, OCR, problem detection, and cropping.
 - `server/settings.ts` / `server/env.ts` — local configuration, models/prompts, paths, and environment variables.
 - `server/activity.ts` / `server/agent-progress.ts` — redacted activity logging and user-facing run progress.
 - `server/predictor.ts` — optional external Test Question Predictor adapter.
-- `scripts/` — Windows startup helpers plus the legacy Canvas-tool compatibility CLI. Luna's normal retrieval path is MCP, not the script endpoint.
+- `scripts/` — `deploy-server.ps1` (laptop -> server deploy), `linux/install-server.sh` + `deploy/linux/school-dashboard.service` (server systemd user service), `install-windows-worker.ps1` (laptop worker scheduled task), single-machine Windows startup helpers, and the legacy Canvas-tool compatibility CLI. Luna's normal retrieval path is MCP, not the script endpoint.
 - `design/concepts/` — UI reference images, not runtime code.
 
 Tests are generally colocated with the implementation as `*.test.ts` / `*.test.tsx`.
@@ -42,6 +48,8 @@ Tests are generally colocated with the implementation as `*.test.ts` / `*.test.t
 - Reuse preloaded context, direct identifiers/URLs, caches, and batched operations before adding broader searches or repeated retrieval.
 - Keep PDF processing centralized in `WorkspaceManager`. The intended order is roughly: index -> cached text/contact sheet/problem detection -> targeted render/OCR -> semantic crop.
 - Submissions are user-confirmed HTTP actions in `server/index.ts`; agent runs should not gain mutation access.
+- In worker mode the server never runs Codex, and the laptop worker never receives Canvas credentials: a job carries only the prompt, output schema, the run's seed files, and its short-lived MCP token. Keep Canvas/PDF/OCR work on the server behind MCP, keep Codex-specific behavior in `runCodexTurn`, and bump `WORKER_PROTOCOL_VERSION` for incompatible frame changes (server and laptop are updated separately).
+- Do not move `~/.codex`, Codex sessions, or agent execution to the server, and do not expose the dashboard or worker endpoint beyond loopback and the tailnet.
 - Persistent runtime data lives in `.school-dashboard/`; temporary run workspaces live under the OS temp directory. Neither is source code.
 - When changing API shapes, update server validation/types and the corresponding frontend types/consumers together. If the Canvas Task Sync `/api/v1/tasks` or browser-resource contract changes, update both repositories.
 
@@ -53,7 +61,7 @@ Copy-Item .env.example .env
 npm run dev
 ```
 
-Development UI: `http://127.0.0.1:5174`. Production server defaults to `http://127.0.0.1:8892` after `npm run build && npm start`.
+Development UI: `http://127.0.0.1:5174`. Production server defaults to `http://127.0.0.1:8892` after `npm run build && npm start`. The deployed dashboard is `http://latitude7370:8892` (Tailscale); `npm run worker` runs the laptop agent worker in a terminal, and `scripts/deploy-server.ps1` ships changes to the server (see README, "Server + laptop deployment").
 
 Before finishing a code change, run the relevant tests and normally all three checks:
 

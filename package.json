@@ -9,6 +9,7 @@
     "dev:client": "vite --host 127.0.0.1 --port 5174",
     "build": "tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.app.json && vite build",
     "start": "tsx server/index.ts",
+    "worker": "tsx server/agent-worker.ts",
     "canvas-tool": "powershell.exe -NoLogo -NoProfile -NonInteractive -File scripts/canvas-tool.ps1",
     "test": "vitest run",
     "lint": "eslint ."
@@ -27,6 +28,7 @@
     "@types/sanitize-html": "^2.16.1",
     "@types/supertest": "^7.2.1",
     "@types/turndown": "^5.0.6",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.0",
     "concurrently": "^10.0.5",
     "eslint": "^10.9.1",
@@ -61,6 +63,7 @@
     "sharp": "^0.35.4",
     "tesseract.js": "^7.0.0",
     "turndown": "^7.2.4",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   }
 }

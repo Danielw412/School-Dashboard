@@ -40,6 +40,30 @@ describe("model settings compatibility", () => {
     }
   });
 
+  it("accepts a Codex-reported Luna Reserve ID and falls back per field when it disappears", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-settings-"));
+    const path = join(root, "settings.json");
+    let reserveListed = true;
+    const store = new SettingsStore(path, (model) =>
+      modelSchema.safeParse(model).success || (reserveListed && model === "gpt-6-luna-reserve"));
+    try {
+      const saved = await store.save({
+        ...structuredClone(defaultSettings),
+        featureModels: { ...defaultSettings.featureModels, studyGuide: "gpt-6-luna-reserve", answerKey: "gpt-6-sol" },
+        prompts: { ...defaultSettings.prompts, answerKey: "Keep this customized answer-key prompt." },
+      });
+      expect(saved.featureModels.studyGuide).toBe("gpt-6-luna-reserve");
+      await expect(store.save({ ...saved, defaultModel: "gpt-99-imaginary" })).rejects.toThrow(/not a model Codex currently supports/u);
+
+      reserveListed = false;
+      const settings = await store.get();
+      expect(settings.featureModels).toEqual({ ...defaultSettings.featureModels, answerKey: "gpt-6-sol" });
+      expect(settings.prompts.answerKey).toBe("Keep this customized answer-key prompt.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("accepts verified current IDs and rejects retired models for new runs", () => {
     for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol"]) expect(modelSchema.parse(model)).toBe(model);
     for (const model of ["gpt-5.6-luna", "gpt-5.6-terra", "GPT-6 Luna"]) expect(modelSchema.safeParse(model).success).toBe(false);

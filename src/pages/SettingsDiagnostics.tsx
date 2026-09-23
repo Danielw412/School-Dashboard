@@ -1,4 +1,4 @@
-import { modelLabel, modelNames } from "../models";
+import { modelLabel } from "../models";
 import {
   Activity,
   AlertTriangle,
@@ -26,10 +26,11 @@ import { ClassDirections } from "../components/ClassDirections";
 import { ErrorNotice } from "../components/Status";
 import { relativeTime } from "../format";
 import { usePolling } from "../hooks/usePolling";
-import type { AppSettings, ConnectionTestResult, Diagnostics, ModelName, ReasoningEffort, TaskSyncTunnelStatus } from "../types";
+import { useSelectableModels } from "../hooks/useSelectableModels";
+import type { AppSettings, ConnectionTestResult, Diagnostics, ReasoningEffort, TaskSyncTunnelStatus } from "../types";
 
-const models = [...modelNames];
-const reasoning: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const reasoning = (["none", "minimal", "low", "medium", "high", "xhigh", "max"] as ReasoningEffort[])
+  .map((id) => ({ id, label: id }));
 
 export function SettingsDiagnosticsPage() {
   const [tab, setTab] = useState<"settings" | "classDirections" | "diagnostics">("settings");
@@ -89,11 +90,30 @@ export function SettingsDiagnosticsPage() {
 }
 
 function SettingsForm({ settings, taskSyncTunnel, update, onDefaults }: { settings: AppSettings; taskSyncTunnel: TaskSyncTunnelStatus | null; update: (updater: (value: AppSettings) => void) => void; onDefaults: () => Promise<void> }) {
+  const { selectable: models, models: detected, refresh } = useSelectableModels();
+  const [checking, setChecking] = useState(false);
+  const checkAgain = async () => {
+    setChecking(true);
+    try {
+      await schoolApi.refreshAgentModels();
+      // The agent machine answers asynchronously; its Codex app-server takes a few seconds.
+      await new Promise((resolve) => window.setTimeout(resolve, 4_000));
+      await refresh();
+    } catch {
+      // The note keeps showing the last known detection result.
+    } finally {
+      setChecking(false);
+    }
+  };
   return (
     <div className="settings-layout">
       <SettingsSection icon={Cpu} title="Models & reasoning">
-        <div className="field-grid"><SelectField label="Default model" value={settings.defaultModel} values={models} onChange={(value) => update((next) => { next.defaultModel = value as ModelName; })} /><SelectField label="Default reasoning" value={settings.reasoningEffort} values={reasoning} onChange={(value) => update((next) => { next.reasoningEffort = value as ReasoningEffort; })} /></div>
-        <div className="feature-model-grid">{Object.entries(settings.featureModels).map(([feature, value]) => <SelectField key={feature} label={humanFeature(feature)} value={value} values={models} onChange={(nextValue) => update((next) => { next.featureModels[feature as keyof AppSettings["featureModels"]] = nextValue as ModelName; })} />)}</div>
+        <div className="field-grid"><SelectField label="Default model" value={settings.defaultModel} options={models} onChange={(value) => update((next) => { next.defaultModel = value; })} /><SelectField label="Default reasoning" value={settings.reasoningEffort} options={reasoning} onChange={(value) => update((next) => { next.reasoningEffort = value as ReasoningEffort; })} /></div>
+        <div className="feature-model-grid">{Object.entries(settings.featureModels).map(([feature, value]) => <SelectField key={feature} label={humanFeature(feature)} value={value} options={models} onChange={(nextValue) => update((next) => { next.featureModels[feature as keyof AppSettings["featureModels"]] = nextValue; })} />)}</div>
+        <div className="model-availability">
+          <p className="setting-note"><strong>Luna Reserve:</strong> {detected?.lunaReserve.detail ?? "Checking the agent machine's Codex model list."}</p>
+          <button className="text-button" disabled={checking} onClick={() => void checkAgain()}>{checking ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}Check again</button>
+        </div>
       </SettingsSection>
 
       <SettingsSection icon={Database} title="Connections">
@@ -157,6 +177,14 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
       <div className="diagnostics-actions"><span>Updated {relativeTime(diagnostics.generatedAt)}</span><button className="secondary-button" onClick={refresh}><RefreshCw size={15} />Refresh</button></div>
       <div className="diagnostic-cards">
         <DiagnosticCard label="Current model" value={diagnostics.currentModel} detail={`${diagnostics.reasoningEffort} reasoning`} ok />
+        {diagnostics.agents ? <DiagnosticCard
+          label="Agents"
+          value={diagnostics.agents.mode === "local" ? "This machine" : diagnostics.agents.available ? diagnostics.agents.worker?.name ?? "Connected" : "Offline"}
+          detail={diagnostics.agents.available && diagnostics.agents.mode === "worker"
+            ? `Codex ${diagnostics.agents.worker?.codexVersion ?? "unknown"} · ${diagnostics.agents.activeJobs} running · ${diagnostics.agents.queuedJobs} queued`
+            : diagnostics.agents.message}
+          ok={diagnostics.agents.available}
+        /> : null}
         <DiagnosticCard label="Canvas" value={diagnostics.connections.canvas.connected ? diagnostics.connections.canvas.name || "Connected" : "Unavailable"} detail={diagnostics.connections.canvas.error || "Credential accepted"} ok={diagnostics.connections.canvas.connected} />
         <DiagnosticCard label="Task Sync" value={diagnostics.connections.taskSync.connected ? "Connected" : "Unavailable"} detail={diagnostics.connections.taskSync.error || (diagnostics.connections.taskSyncTunnel ? `${diagnostics.connections.taskSyncTunnel.target} over SSH` : diagnostics.connections.taskSyncApiBase)} ok={diagnostics.connections.taskSync.connected} />
         <DiagnosticCard label="Predictor" value={diagnostics.predictor.configured ? "Configured" : "Optional"} detail={diagnostics.predictor.message} ok={diagnostics.predictor.configured} />
@@ -172,8 +200,10 @@ function SettingsSection({ icon: Icon, title, children }: { icon: LucideIcon; ti
   return <section className="settings-section"><header><span><Icon size={18} /></span><h2>{title}</h2></header><div className="settings-section-body">{children}</div></section>;
 }
 
-function SelectField({ label, value, values, onChange }: { label: string; value: string; values: string[]; onChange: (value: string) => void }) {
-  return <label>{label}<select value={value} onChange={(event) => onChange(event.target.value)}>{values.map((item) => <option key={item} value={item}>{modelLabel(item)}</option>)}</select></label>;
+function SelectField({ label, value, options, onChange }: { label: string; value: string; options: Array<{ id: string; label: string }>; onChange: (value: string) => void }) {
+  // Keep a saved value visible even before the detected model list has loaded.
+  const choices = options.some((option) => option.id === value) ? options : [...options, { id: value, label: modelLabel(value) }];
+  return <label>{label}<select value={value} onChange={(event) => onChange(event.target.value)}>{choices.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>;
 }
 
 function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {

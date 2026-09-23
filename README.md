@@ -79,6 +79,93 @@ startup task), and those need to point at the same server.
 Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the production bundle from
 `http://127.0.0.1:8892`.
 
+## Server + laptop deployment
+
+The dashboard can run permanently on a Linux server while every Codex run still happens on the
+Windows laptop:
+
+```text
+browser (any tailnet device) ──HTTP──► Linux server: UI, API, run history, job queue,
+                                        Canvas + Task Sync access, PDF/OCR tools, MCP endpoint
+                                              ▲                        ▲
+                         outbound WebSocket   │                        │ per-run MCP calls
+                         (jobs down, events   │                        │ (short-lived token)
+                          and results up)     │                        │
+                                        Windows laptop: agent worker ──► Codex (laptop ~/.codex)
+```
+
+- **Server** (`SCHOOL_DASHBOARD_AGENT_EXECUTION=worker`): prepares each run exactly as before
+  (Canvas context, preflight, workspace seed files, short-lived tool capability), queues it, and
+  sends it to the laptop worker. It never launches Codex. Run history, class directions, settings,
+  and saved problem visuals live in the server's `.school-dashboard/`.
+- **Laptop worker** (`npm run worker`): keeps one outbound WebSocket to
+  `/api/agent-worker/connect`, copies the run's seed files into a local workspace under
+  `%TEMP%\school-dashboard-worker-workspaces\<workspace id>`, and runs Codex there with the
+  laptop's own `~/.codex` (auth, sessions, config). Codex calls the server's assignment-scoped MCP
+  tools over the tailnet; tool payloads such as page images stay on the laptop, and only compact
+  events plus the final structured result go back. The laptop needs no Canvas token.
+- Each run records the Codex `threadId` from the laptop and the `workspaceId` shared by the server
+  workspace and the laptop copy. Cancelling in the dashboard cancels that exact Codex job.
+- **Disconnects:** jobs keep running through short drops; the worker buffers events and re-sends
+  the final result until the server acknowledges it. The server waits two minutes for the worker
+  to reconnect before failing an in-flight run, and tells a reconnecting worker to stop runs the
+  server no longer tracks (for example after a server restart). While the laptop is offline the
+  dashboard stays up, shows **Agents unavailable**, disables agent actions, and returns HTTP 503
+  for new runs.
+- **Network:** the server listens on `0.0.0.0` but only answers loopback and Tailscale peers
+  (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`); LAN and public clients get 403. It also rejects
+  unknown `Host` headers (DNS rebinding) and cross-origin writes. The worker authenticates with
+  `SCHOOL_DASHBOARD_WORKER_TOKEN`, and Tailscale encrypts the connection. No port is opened
+  publicly; `https://`/`wss://` URLs work too if you put the server behind `tailscale serve`.
+
+First deployment from the laptop (SSH key login to the server must already work, as it does for
+the Task Sync tunnel):
+
+```powershell
+npm install
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy-server.ps1 -MigrateData
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows-worker.ps1
+```
+
+`deploy-server.ps1` uploads the working tree to `~/projects/School-Dashboard` on the server
+(default target: `TASK_SYNC_SSH_TARGET`; override with `-Server user@host`), creates the server
+`.env` once from this laptop's Canvas settings with a fresh worker token, and runs
+`scripts/linux/install-server.sh`. That script installs a checksum-verified user-local Node.js
+when the system one is too old, runs `npm ci` and `npm run build`, and installs the systemd user
+service `school-dashboard.service` (from `deploy/linux/school-dashboard.service`), which starts at
+boot when lingering is enabled (`sudo loginctl enable-linger $USER`). `-MigrateData` copies run
+history, activity, class directions, settings, and saved visuals once; it refuses to overwrite
+existing server history without `-Force`. Rerun `deploy-server.ps1` (without `-MigrateData`) to
+ship updates; it keeps the server `.env`.
+
+`install-windows-worker.ps1` registers the hidden **Homework Dashboard Agent Worker** task (starts
+at sign-in, restarts on failure), replaces the old all-in-one **Homework Dashboard Web** task
+(pass `-KeepLocalDashboard` to keep it), points the desktop shortcut at the server, and waits until
+the server reports the worker connected. `-Uninstall` removes the worker task.
+
+Useful commands:
+
+```bash
+systemctl --user status school-dashboard      # on the server
+journalctl --user -u school-dashboard -f
+```
+
+The worker logs to `.school-dashboard\agent-worker.log` on the laptop. **Settings -> Connections &
+diagnostics** shows the worker, its Codex version, and running/queued jobs.
+
+### Models and Luna Reserve
+
+The machine that runs Codex (the laptop worker, or this process in local mode) reports its Codex
+app-server `model/list`, including hidden models, when it connects and every 30 minutes;
+**Settings -> Check again** asks for a fresh list. A model whose ID or display name names Luna
+Reserve (for example `gpt-6-luna-reserve`) becomes selectable under exactly the ID Codex reports.
+Nothing else is assumed to be Luna Reserve. Settings shows why it is unavailable otherwise.
+
+## Single-machine mode
+
+Leave `SCHOOL_DASHBOARD_AGENT_EXECUTION` and `SCHOOL_DASHBOARD_HOST` unset to run everything on the
+laptop as before (loopback only, Codex in-process).
+
 To start the production dashboard automatically when you sign in to Windows, build it once and run
 the installer from this project directory:
 

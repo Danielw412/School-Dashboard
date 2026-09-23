@@ -1,7 +1,8 @@
-import { Activity, LayoutList, LoaderCircle, Menu, Settings, X, type LucideIcon } from "lucide-react";
+import { Activity, CloudOff, LayoutList, LoaderCircle, Menu, Settings, X, type LucideIcon } from "lucide-react";
 import { useState, type PropsWithChildren } from "react";
 import { NavLink } from "react-router-dom";
 
+import { AgentStatusContext } from "../agent-status";
 import { schoolApi } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
@@ -17,46 +18,55 @@ export function AppShell({ children }: PropsWithChildren) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const activeWork = usePolling(schoolApi.activeWork, 2_500);
   const hasActiveWork = Boolean(activeWork.data?.runs.length || activeWork.data?.workflows.length);
+  const agents = activeWork.data?.agents ?? null;
   return (
-    <div className="app-shell">
-      <aside className={`sidebar ${mobileOpen ? "is-open" : ""}`}>
-        <div className="brand">
-          <span className="brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
-          <strong>School Dashboard</strong>
-        </div>
-        {mobileOpen ? <button className="mobile-close icon-button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}>
-          <X size={20} />
-        </button> : null}
-        <nav aria-label="Primary navigation">
+    <AgentStatusContext.Provider value={agents}>
+      <div className="app-shell">
+        <aside className={`sidebar ${mobileOpen ? "is-open" : ""}`}>
+          <div className="brand">
+            <span className="brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
+            <strong>School Dashboard</strong>
+          </div>
+          {mobileOpen ? <button className="mobile-close icon-button" aria-label="Close navigation" onClick={() => setMobileOpen(false)}>
+            <X size={20} />
+          </button> : null}
+          <nav aria-label="Primary navigation">
+            {navItems.map(({ to, label, icon: Icon }) => (
+              <NavLink key={to} to={to} end={to === "/"} onClick={() => setMobileOpen(false)}>
+                <NavigationIcon icon={Icon} loading={to === "/" && hasActiveWork} />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </nav>
+        </aside>
+        {mobileOpen ? <button className="scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} /> : null}
+        <main className="main-stage">
+          <header className="mobile-header">
+            <button className="icon-button" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={21} /></button>
+            <div className="mobile-brand">
+              <span className="mobile-brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
+              <span>School Dashboard</span>
+            </div>
+            {hasActiveWork ? <LoaderCircle className="spin" size={17} /> : <span />}
+          </header>
+          {agents && !agents.available ? (
+            <div className="notice amber agents-offline-banner" role="status">
+              <CloudOff size={17} />
+              <div><strong>Agents unavailable</strong><p>{agents.message} Tasks, past results, and settings still work.</p></div>
+            </div>
+          ) : null}
+          {children}
+        </main>
+        <nav className="mobile-nav" aria-label="Mobile navigation">
           {navItems.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} end={to === "/"} onClick={() => setMobileOpen(false)}>
-              <NavigationIcon icon={Icon} loading={to === "/" && hasActiveWork} />
+            <NavLink key={to} to={to} end={to === "/"}>
+              <NavigationIcon icon={Icon} loading={to === "/" && hasActiveWork} size={19} />
               <span>{label}</span>
             </NavLink>
           ))}
         </nav>
-      </aside>
-      {mobileOpen ? <button className="scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} /> : null}
-      <main className="main-stage">
-        <header className="mobile-header">
-          <button className="icon-button" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={21} /></button>
-          <div className="mobile-brand">
-            <span className="mobile-brand-mark"><img className="school-logo" src={logoSrc} alt="" /></span>
-            <span>School Dashboard</span>
-          </div>
-          {hasActiveWork ? <LoaderCircle className="spin" size={17} /> : <span />}
-        </header>
-        {children}
-      </main>
-      <nav className="mobile-nav" aria-label="Mobile navigation">
-        {navItems.map(({ to, label, icon: Icon }) => (
-          <NavLink key={to} to={to} end={to === "/"}>
-            <NavigationIcon icon={Icon} loading={to === "/" && hasActiveWork} size={19} />
-            <span>{label}</span>
-          </NavLink>
-        ))}
-      </nav>
-    </div>
+      </div>
+    </AgentStatusContext.Provider>
   );
 }
 

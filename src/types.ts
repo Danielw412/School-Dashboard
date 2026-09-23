@@ -1,4 +1,3 @@
-import type { ModelName } from "./models";
 
 export type TrackedTask = {
   logical_id: string;
@@ -192,9 +191,41 @@ export type AgentWorkflow = {
   error: string | null;
 };
 
+export type AgentExecutionStatus = {
+  mode: "local" | "worker";
+  available: boolean;
+  message: string;
+  worker: null | {
+    id: string;
+    name: string;
+    hostname: string;
+    platform: string;
+    codexVersion: string | null;
+    maxConcurrentJobs: number;
+    connectedAt: string | null;
+    lastSeenAt: string | null;
+    disconnectedAt: string | null;
+  };
+  activeJobs: number;
+  queuedJobs: number;
+};
+
+export type AgentModels = {
+  selectable: Array<{ id: string; label: string }>;
+  detection: null | {
+    detectedAt: string;
+    source: string;
+    codexVersion: string | null;
+    models: Array<{ id: string; displayName: string; hidden: boolean }> | null;
+    error: string | null;
+  };
+  lunaReserve: { supported: boolean; modelId: string | null; detail: string };
+};
+
 export type ActiveWork = {
   workflows: AgentWorkflow[];
   runs: Array<{ run: AgentRun; progress: AgentProgress }>;
+  agents?: AgentExecutionStatus;
 };
 
 export type ConnectionTestResult = {
@@ -213,14 +244,15 @@ export type ConnectionTestResult = {
 export type { ModelName } from "./models";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+// Model IDs are built-in names or a Luna Reserve ID reported by Codex (see /api/agent-models).
 export type AppSettings = {
   version: 1;
-  defaultModel: ModelName;
+  defaultModel: string;
   featureModels: {
-    problemExtraction: ModelName;
-    answerKey: ModelName;
-    studyGuide: ModelName;
-    assignmentNavigation: ModelName;
+    problemExtraction: string;
+    answerKey: string;
+    studyGuide: string;
+    assignmentNavigation: string;
   };
   reasoningEffort: ReasoningEffort;
   prompts: {
@@ -255,6 +287,7 @@ export type Diagnostics = {
     taskSyncTunnel: TaskSyncTunnelStatus | null;
     canvasBaseUrl: string;
   };
+  agents?: AgentExecutionStatus;
   predictor: { configured: boolean; message: string };
   cache: { files: number; bytes: number; hits: number; misses: number };
   recentRuns: AgentRun[];

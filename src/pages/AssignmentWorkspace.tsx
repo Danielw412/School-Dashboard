@@ -1,4 +1,4 @@
-import { modelLabel, modelNames } from "../models";
+import { modelLabel } from "../models";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -16,6 +16,7 @@ import {
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
+import { useAgentAvailability } from "../agent-status";
 import { schoolApi } from "../api";
 import { RunProgressPanel } from "../components/AgentProgress";
 import { Markdown } from "../components/Markdown";
@@ -23,11 +24,11 @@ import { ProblemVisual } from "../components/ProblemVisual";
 import { EmptyState, ErrorNotice, RunStatus } from "../components/Status";
 import { classTone, formatDue, latestRun } from "../format";
 import { usePolling } from "../hooks/usePolling";
+import { useSelectableModels } from "../hooks/useSelectableModels";
 import type {
   AgentRun,
   AnswerKey,
   AssignmentDirections,
-  ModelName,
   ProblemExtraction,
   ReasoningEffort,
   StudyGuide,
@@ -45,7 +46,7 @@ export function AssignmentWorkspace() {
   const [starting, setStarting] = useState<AgentRun["feature"] | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
-  const [studyModel, setStudyModel] = useState<ModelName>("gpt-6-luna");
+  const [studyModel, setStudyModel] = useState("gpt-6-luna");
   const [reasoning, setReasoning] = useState<ReasoningEffort>("high");
   const [predictor, setPredictor] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -192,6 +193,7 @@ function TabButton({ active, onClick, icon: Icon, children }: { active: boolean;
 }
 
 function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () => void; starting: boolean }) {
+  const agents = useAgentAvailability();
   const output = run?.output as AssignmentDirections | null;
   const hasSources = Boolean(output && (
     output.resources.length ||
@@ -209,7 +211,7 @@ function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () =
   return (
     <div>
       <FeatureHeader title="Directions">
-        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>
+        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run) || !agents.available} title={agents.reason ?? undefined}>
           {starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <FileText size={17} />}
           {run ? "Get directions again" : "Get directions"}
         </button>
@@ -259,6 +261,7 @@ function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () =
 }
 
 function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; answerRun?: AgentRun; onRun: () => void; starting: boolean }) {
+  const agents = useAgentAvailability();
   const output = run?.output as ProblemExtraction | null;
   const answerBanks = output?.answerBanks ?? [];
   const answers = answerRun?.status === "completed"
@@ -267,7 +270,7 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
   return (
     <div>
       <FeatureHeader title="Assigned problems">
-        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <FileQuestion size={17} />}{run ? "Extract again" : "Get assigned problems"}</button>
+        <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run) || !agents.available} title={agents.reason ?? undefined}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <FileQuestion size={17} />}{run ? "Extract again" : "Get assigned problems"}</button>
       </FeatureHeader>
       {run && <RunBanner run={run} />}
       {!run && <EmptyState title="No problems extracted yet" detail="Start an extraction to locate exact questions in directions, linked files, pages, and PDFs." />}
@@ -327,11 +330,12 @@ function ProblemTable({ table }: { table: NonNullable<NonNullable<ProblemExtract
 }
 
 function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRun; extractionRun?: AgentRun; onRun: () => void; starting: boolean }) {
+  const agents = useAgentAvailability();
   const output = run?.output as AnswerKey | null;
   const ready = extractionRun?.status === "completed";
   return <div>
     <FeatureHeader title="Answer key">
-      <button className="primary-button" disabled={!ready || starting || isActiveRun(run)} onClick={onRun}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <BookOpenCheck size={17} />}{run ? "Generate again" : "Generate answer key"}</button>
+      <button className="primary-button" disabled={!ready || starting || isActiveRun(run) || !agents.available} title={agents.reason ?? undefined} onClick={onRun}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <BookOpenCheck size={17} />}{run ? "Generate again" : "Generate answer key"}</button>
     </FeatureHeader>
     {!ready && <div className="notice amber"><FileQuestion size={17} /><div><strong>Extract the assigned problems first</strong><p>The answer key never solves guessed problem descriptions.</p></div></div>}
     {run && <RunBanner run={run} />}
@@ -340,15 +344,17 @@ function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRu
   </div>;
 }
 
-function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predictor, setPredictor, onRun, starting }: { run?: AgentRun; model: ModelName; setModel: (value: ModelName) => void; reasoning: ReasoningEffort; setReasoning: (value: ReasoningEffort) => void; predictor: boolean; setPredictor: (value: boolean) => void; onRun: () => void; starting: boolean }) {
+function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predictor, setPredictor, onRun, starting }: { run?: AgentRun; model: string; setModel: (value: string) => void; reasoning: ReasoningEffort; setReasoning: (value: ReasoningEffort) => void; predictor: boolean; setPredictor: (value: boolean) => void; onRun: () => void; starting: boolean }) {
+  const agents = useAgentAvailability();
+  const { selectable } = useSelectableModels();
   const output = run?.output as StudyGuide | null;
   return <div>
     <FeatureHeader title="Study guide" />
     <div className="generator-config">
-      <label>Model<select value={model} onChange={(event) => setModel(event.target.value as ModelName)}>{modelNames.map((item) => <option value={item} key={item}>{modelLabel(item)}</option>)}</select></label>
+      <label>Model<select value={model} onChange={(event) => setModel(event.target.value)}>{selectable.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
       <label>Reasoning<select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningEffort)}>{["minimal", "low", "medium", "high", "xhigh", "max"].map((item) => <option key={item}>{item}</option>)}</select></label>
       <label className="check-field predictor-toggle"><input type="checkbox" checked={predictor} onChange={(event) => setPredictor(event.target.checked)} /><span><strong>Use Test Question Predictor</strong></span></label>
-      <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run)}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
+      <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run) || !agents.available} title={agents.reason ?? undefined}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
     </div>
     {run && <RunBanner run={run} />}
     {!run && <EmptyState title="No study guide yet" detail="Choose a model and reasoning level, then generate a focused guide from the assessment and nearby course evidence." />}

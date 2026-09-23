@@ -1,26 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 
-import {
-  Codex,
-  type ModelReasoningEffort,
-  type ThreadEvent,
-  type Usage,
-} from "@openai/codex-sdk";
+import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import { z } from "zod";
 
 import { type ActivityStore, sanitizeForLog } from "./activity.js";
+import { AgentsUnavailableError, type AgentExecutor } from "./agent-execution.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import {
   CourseDirectionsStore,
   type CourseDirectionFeature,
 } from "./course-directions.js";
-import { env, RUNS_PATH } from "./env.js";
+import { RUNS_PATH } from "./env.js";
 import { runTestQuestionPredictor, type PredictorResult } from "./predictor.js";
 import {
   type AppSettings,
+  modelIdSchema,
+  type ModelSelectable,
   modelSchema,
   reasoningEffortSchema,
   type SettingsStore,
@@ -199,7 +196,7 @@ export type AgentRun = {
 export type StartAgentRun = {
   feature: AgentFeature;
   logicalId: string;
-  model?: z.infer<typeof modelSchema>;
+  model?: string;
   reasoningEffort?: z.infer<typeof reasoningEffortSchema>;
   useTestQuestionPredictor?: boolean;
   extractionRunId?: string;
@@ -366,7 +363,9 @@ export class AgentRunner {
     private readonly toolSessions: CanvasToolSessions,
     private readonly activity: ActivityStore,
     private readonly runs: AgentRunStore,
+    private readonly executor: AgentExecutor,
     private readonly courseDirections = new CourseDirectionsStore(),
+    private readonly isSelectableModel: ModelSelectable = (model) => modelSchema.safeParse(model).success,
   ) {}
 
   async start(input: StartAgentRun): Promise<AgentRun> {
@@ -374,12 +373,15 @@ export class AgentRunner {
       .object({
         feature: featureSchema,
         logicalId: z.string().min(1),
-        model: modelSchema.optional(),
+        model: modelIdSchema.refine(this.isSelectableModel, "This model is not currently supported by Codex.").optional(),
         reasoningEffort: reasoningEffortSchema.optional(),
         useTestQuestionPredictor: z.boolean().optional(),
         extractionRunId: z.string().uuid().optional(),
       })
       .parse(input);
+    // Fail fast (HTTP 503) instead of recording a run that cannot reach Codex.
+    const execution = this.executor.status();
+    if (!execution.available) throw new AgentsUnavailableError(execution.message);
     const settings = await this.settingsStore.get();
     const task = await this.taskSync.getTask(parsed.logicalId);
     const savedCourseDirections = await this.courseDirections.get(task.course.id);
@@ -565,89 +567,78 @@ export class AgentRunner {
         });
       }
       const instructions = buildInstructions(run.feature, run.prompt, predictor, run.courseDirections?.directions);
-      const configuredMcpServers = await configuredMcpServerNames();
       controller.signal.throwIfAborted();
-      const codex = new Codex({
-        env: {
-          ...sanitizedEnvironment(),
-          ...(toolSession ? {
-            SCHOOL_DASHBOARD_TOOL_TOKEN: toolSession.token,
-          } : {}),
-        },
-        config: {
-          show_raw_agent_reasoning: false,
-          features: {
-            apps: false,
-            plugins: false,
-            browser_use: false,
-            browser_use_external: false,
-            computer_use: false,
-            image_generation: false,
-            skill_search: false,
-            shell_tool: !toolSession,
-          },
-        },
-        configOverrides: buildMcpConfigOverrides(Boolean(toolSession), env.port, configuredMcpServers),
-      });
-      const thread = codex.startThread({
-        model: run.model,
-        modelReasoningEffort: run.effectiveReasoningEffort as ModelReasoningEffort,
-        sandboxMode: "read-only",
-        workingDirectory: workspace.path,
-        skipGitRepoCheck: true,
-        networkAccessEnabled: run.feature !== "answerKey",
-        webSearchMode: "disabled",
-        approvalPolicy: "never",
-        threadSource: "school-dashboard",
-      });
-      await this.activity.record({
-        category: "agent",
-        action: "codex.start",
-        status: "completed",
-        summary: run.taskTitle,
-        metadata: { runId: run.id, workspace: workspace.id, model: run.model },
-      });
       await this.runs.update(run.id, { workspaceId: workspace.id });
-      const timeoutSignal = AbortSignal.timeout(run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000);
-      const { events } = await thread.runStreamed(instructions, {
-        outputSchema: schemaForFeature(run.feature),
-        signal: AbortSignal.any([controller.signal, timeoutSignal]),
-      });
+      const timeoutMs = run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000;
       const rawEvents: unknown[] = [];
       let usage: Usage | null = null;
       let rawStructuredOutput: string | null = null;
-      for await (const event of events) {
-        controller.signal.throwIfAborted();
-        rawEvents.push(sanitizeForLog(compactEventForLog(event)));
-        if (event.type === "thread.started") {
-          await this.runs.update(run.id, { threadId: event.thread_id });
-        }
-        if (event.type === "turn.completed") usage = event.usage;
-        if (event.type === "item.completed" && event.item.type === "agent_message") {
-          rawStructuredOutput = event.item.text;
-        }
-        if (event.type === "item.started") {
+      const result = await this.executor.run({
+        runId: run.id,
+        feature: run.feature,
+        taskTitle: run.taskTitle,
+        model: run.model,
+        reasoningEffort: run.effectiveReasoningEffort,
+        instructions,
+        outputSchema: schemaForFeature(run.feature),
+        networkAccessEnabled: run.feature !== "answerKey",
+        workspace,
+        toolToken: toolSession?.token ?? null,
+        timeoutMs,
+      }, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]),
+        onStarted: async () => {
+          const worker = this.executor.status().worker;
           await this.activity.record({
             category: "agent",
-            action: event.item.type,
-            status: "started",
-            summary: event.item.type === "reasoning"
-              ? "Reasoning about inspected evidence"
-              : `${event.item.type.replaceAll("_", " ")} in progress`,
-            metadata: { runId: run.id },
+            action: "codex.start",
+            status: "completed",
+            summary: run.taskTitle,
+            metadata: {
+              runId: run.id,
+              workspace: workspace.id,
+              model: run.model,
+              ...(this.executor.mode === "worker" && worker
+                ? { worker: worker.name, progressLabel: `Starting the configured Codex model on ${worker.name}` }
+                : {}),
+            },
           });
-        }
-        if (event.type === "item.completed") {
-          await this.activity.record({
-            category: "agent",
-            action: event.item.type,
-            status: event.item.type === "error" ? "failed" : "completed",
-            summary: summarizeItem(event),
-            metadata: { runId: run.id },
-          });
-        }
-      }
+        },
+        onEvent: async (event: ThreadEvent) => {
+          controller.signal.throwIfAborted();
+          rawEvents.push(sanitizeForLog(compactEventForLog(event)));
+          if (event.type === "thread.started") {
+            await this.runs.update(run.id, { threadId: event.thread_id });
+          }
+          if (event.type === "turn.completed") usage = event.usage;
+          if (event.type === "item.completed" && event.item.type === "agent_message") {
+            rawStructuredOutput = event.item.text;
+          }
+          if (event.type === "item.started") {
+            await this.activity.record({
+              category: "agent",
+              action: event.item.type,
+              status: "started",
+              summary: event.item.type === "reasoning"
+                ? "Reasoning about inspected evidence"
+                : `${event.item.type.replaceAll("_", " ")} in progress`,
+              metadata: { runId: run.id },
+            });
+          }
+          if (event.type === "item.completed") {
+            await this.activity.record({
+              category: "agent",
+              action: event.item.type,
+              status: event.item.type === "error" ? "failed" : "completed",
+              summary: summarizeItem(event),
+              metadata: { runId: run.id },
+            });
+          }
+        },
+      });
       controller.signal.throwIfAborted();
+      usage = result.usage ?? usage;
+      rawStructuredOutput = result.finalResponse ?? rawStructuredOutput;
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
       const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
       const policyCheckedOutput = run.feature === "problemExtraction"
@@ -666,7 +657,7 @@ export class AgentRunner {
       await this.runs.updateIfActive(run.id, {
         status: "completed",
         completedAt: new Date().toISOString(),
-        threadId: thread.id,
+        threadId: result.threadId,
         usage,
         events: rawEvents.slice(-250),
         rawStructuredOutput: safeRawStructuredOutput,
@@ -774,43 +765,6 @@ export function buildInstructions(
   return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nThis is a focused assessment investigation. Inspect the assessment description, its containing or nearby modules, and only relevant pages, assignments, notes, PDFs, worksheets, or teacher review material. Separate teacher-stated scope from your own inferences. Predictor adapter status:\n${JSON.stringify(predictor)}\nIf predictor status is unavailable, state that exactly and do not fabricate predicted history. If available, treat its output as one labeled evidence source, not teacher-provided scope.`;
 }
 
-const BUILTIN_MCP_SERVERS = ["node_repl", "openaiDeveloperDocs", "cua_repl"];
-
-export function buildMcpConfigOverrides(
-  enabled: boolean,
-  port: number,
-  configuredServers: string[] = [],
-): string[] {
-  const overrides = [...new Set([...BUILTIN_MCP_SERVERS, ...configuredServers])]
-    .filter((name) => name !== "school_dashboard" && /^[A-Za-z0-9_-]+$/u.test(name))
-    .map((name) => `mcp_servers.${name}.enabled=false`);
-  if (!enabled) return overrides;
-  const url = JSON.stringify(`http://127.0.0.1:${port}/api/internal/canvas-mcp`);
-  return [
-    ...overrides,
-    `mcp_servers.school_dashboard.url=${url}`,
-    'mcp_servers.school_dashboard.bearer_token_env_var="SCHOOL_DASHBOARD_TOOL_TOKEN"',
-    "mcp_servers.school_dashboard.required=true",
-    "mcp_servers.school_dashboard.startup_timeout_sec=10",
-    "mcp_servers.school_dashboard.tool_timeout_sec=240",
-    'mcp_servers.school_dashboard.default_tools_approval_mode="auto"',
-  ];
-}
-
-export async function configuredMcpServerNames(
-  configPath = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"),
-): Promise<string[]> {
-  try {
-    const config = await readFile(configPath, "utf8");
-    const names = new Set<string>();
-    const pattern = /^\s*\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))(?:\.[^\]]+)?\]\s*$/gmu;
-    for (const match of config.matchAll(pattern)) names.add(match[1] ?? match[2]!);
-    return [...names];
-  } catch {
-    return [];
-  }
-}
-
 export function moduleSequenceTarget(
   context: AssignmentContext,
 ): { type: "ModuleItem" | "Assignment"; id: number } | null {
@@ -893,7 +847,7 @@ function outputParser(feature: AgentFeature) {
 export function resolveAgentPreferences(
   settings: AppSettings,
   feature: AgentFeature,
-  modelOverride?: z.infer<typeof modelSchema>,
+  modelOverride?: string,
   reasoningOverride?: z.infer<typeof reasoningEffortSchema>,
 ) {
   const settingsFeature = feature === "directions" ? "assignmentNavigation" : feature;
@@ -907,14 +861,6 @@ export function resolveAgentPreferences(
 
 function schemaForFeature(feature: AgentFeature): unknown {
   return z.toJSONSchema(outputParser(feature), { target: "draft-7" });
-}
-
-function sanitizedEnvironment(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined)
-      .filter(([key]) => !/(CANVAS|GOOGLE|GEMINI|TOKEN|SECRET|PASSWORD|COOKIE|API_KEY)/i.test(key)),
-  );
 }
 
 export function compactEventForLog(event: ThreadEvent): unknown {

@@ -8,7 +8,6 @@ import {
   type AgentRun,
   AgentRunStore,
   buildInstructions,
-  buildMcpConfigOverrides,
   compactEventForLog,
   enforceProblemVisualPolicy,
   moduleSequenceTarget,
@@ -18,6 +17,7 @@ import {
   stripLegacyAnswerMetadata,
 } from "./agent-runner.js";
 import type { AssignmentContext } from "./canvas-client.js";
+import { buildMcpConfigOverrides } from "./codex-execution.js";
 import { defaultSettings } from "./settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -91,7 +91,7 @@ describe("agent run preferences", () => {
   });
 
   it("connects Luna to only the short-lived structured MCP server", () => {
-    const overrides = buildMcpConfigOverrides(true, 8892, ["personal_server"]);
+    const overrides = buildMcpConfigOverrides("http://127.0.0.1:8892/api/internal/canvas-mcp", ["personal_server"]);
     const override = overrides.join("\n");
 
     expect(override).toContain("school_dashboard");
@@ -100,8 +100,11 @@ describe("agent run preferences", () => {
     expect(override).not.toContain("canvas-tool.mjs");
     expect(overrides).toContain("mcp_servers.personal_server.enabled=false");
     expect(overrides).toContain("mcp_servers.node_repl.enabled=false");
-    expect(buildMcpConfigOverrides(false, 8892)).not.toContain("mcp_servers={}");
-    expect(buildMcpConfigOverrides(false, 8892).every((value) => value.endsWith(".enabled=false"))).toBe(true);
+    expect(buildMcpConfigOverrides(null)).not.toContain("mcp_servers={}");
+    expect(buildMcpConfigOverrides(null).every((value) => value.endsWith(".enabled=false"))).toBe(true);
+    // The laptop worker points the same capability at the dashboard server over the tailnet.
+    expect(buildMcpConfigOverrides("http://latitude7370:8892/api/internal/canvas-mcp").join("\n"))
+      .toContain('mcp_servers.school_dashboard.url="http://latitude7370:8892/api/internal/canvas-mcp"');
   });
 
   it("uses a resolved module item to preload its module neighborhood", () => {
