@@ -336,10 +336,30 @@ export type ProblemExtraction = {
     table?: null | { caption: string | null; columns: string[]; rows: string[][] };
     provenance: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>;
     visual: null | { path: string; page: number; caption: string; kind?: "figure" | "diagram" | "graph" | "chart" | "table" | "spectrum" | "map" | "image" };
+    // Absent on runs saved before missing visuals became per-problem warnings.
+    missingVisual?: null | MissingVisual;
+    sourcePages?: SourcePageRef[];
     confidence: "high" | "medium" | "low";
   }>;
   unresolved: Array<{ reference: string; reason: string; searched: string[] }>;
   sourcesInspected: Array<{ name: string; type: string; url: string | null; pages: number[] }>;
+  sourceDocuments?: SourceDocument[];
+};
+
+export type MissingVisual = {
+  reference: string;
+  status: "not_in_source" | "not_located";
+  detail: string;
+};
+
+export type SourcePageRef = { documentId: string; page: number };
+
+// Full-page images of an extraction's source file, saved with the run's workspace assets.
+export type SourceDocument = {
+  id: string;
+  name: string;
+  pageCount: number;
+  pages: Array<{ page: number; path: string }>;
 };
 
 export type AssignmentDirections = {

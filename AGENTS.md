@@ -10,7 +10,7 @@ Main flow:
 
 The dashboard normally runs on a Linux server (`SCHOOL_DASHBOARD_AGENT_EXECUTION=worker`), and each Codex turn runs wherever the student's **Run agents on** switch points: on the Windows laptop, or on the server itself. `AgentExecutionRouter` picks the executor when a run starts (the choice persists in `AgentTargetStore`), and the run stays there even if the switch changes. For the laptop, `WorkerHub` queues the prepared turn and sends it over the laptop's outbound WebSocket to the agent worker, which runs it with the laptop's own `~/.codex` in a local copy of the run's seed files, calls the server's MCP endpoint over Tailscale, and streams compact events and the result back. For the server, `LocalCodexExecutor` runs the same turn in-process with the server's own `~/.codex`, in the server workspace, against the same MCP endpoint over loopback. Single-machine setups have only the local target.
 
-Agent features are `directions`, `problemExtraction`, `answerKey`, and `studyGuide`. Answer keys are special: they may only consume a completed problem-extraction run for the same assignment.
+Agent features are `directions`, `problemExtraction`, `answerKey`, and `studyGuide`. Answer keys are special: they may only consume a completed problem-extraction run for the same assignment. A problem whose required visual could not be attached still completes, with a per-problem `missingVisual` warning; each completed extraction also saves full source-page images, which the student opens beside a problem and the answer-key run reads.
 
 Class directions are feature-scoped. When a relevant agent feature is added, add its own class-direction field through persistence, API/types, UI, and prompt selection instead of reusing another feature's directions.
 
@@ -30,6 +30,7 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `server/worker-hub.ts` (server) / `server/worker-client.ts` + `server/agent-worker.ts` (laptop) / `server/worker-protocol.ts` — laptop agent worker: WebSocket endpoint and auth, job queue and concurrency, reconnect grace and re-attachment, seed-file mirroring, event compaction, buffered results. Both sides validate every frame with the shared zod protocol.
 - `server/model-catalog.ts` / `server/codex-models.ts` — the Codex app-server `model/list` reported by each machine that can run Codex, persisted on the server per target; the selected target's list decides which model IDs are selectable (built-ins plus a detected Luna Reserve).
 - `server/network-access.ts` — loopback/Tailscale-only access, Host and cross-origin checks for the network-facing server.
+- `server/source-pages.ts` / `src/components/SourcePageViewer.tsx` — full source-page images saved with an extraction (cited PDF pages, or the whole file when short) and the floating zoom/pan page window that shows them.
 - `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to Luna. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
 - `server/workspace.ts` — temporary workspaces, Canvas file cache, Poppler PDF inspection/text/rendering, OCR, problem detection, and cropping.
 - `server/settings.ts` / `server/env.ts` — local configuration, models/prompts, paths, and environment variables.

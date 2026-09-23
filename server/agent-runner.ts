@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { basename, dirname, extname } from "node:path";
 
 import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import { z } from "zod";
@@ -27,6 +27,12 @@ import {
   reasoningEffortSchema,
   type SettingsStore,
 } from "./settings.js";
+import {
+  collectSourcePages,
+  sourceDocumentSchema,
+  type SourcePageRef,
+  sourcePageRefSchema,
+} from "./source-pages.js";
 import type { TaskSyncClient } from "./task-sync.js";
 import { directionsEvidenceSufficient, type CanvasToolSessions } from "./tool-sessions.js";
 import type { WorkspaceManager } from "./workspace.js";
@@ -87,6 +93,33 @@ export const directionsSchema = z.object({
   ),
 });
 
+export const missingVisualSchema = z.object({
+  reference: z.string().describe("The figure label or wording that names the visual, such as \"Figure 5.21\" or \"the drawing\"."),
+  status: z.enum(["not_in_source", "not_located"]).describe("not_in_source: the assignment's files do not reproduce this visual (for example a textbook figure). not_located: the visual is in the files but no correct crop could be attached."),
+  detail: z.string().describe("One short sentence for the student, naming the page where the visual appears when known."),
+});
+
+const extractedProblemSchema = z.object({
+  number: z.string(),
+  markdown: z.string(),
+  answerBankId: z.string().nullable(),
+  table: problemTableSchema.nullable(),
+  provenance: z.array(provenanceSchema).min(1),
+  visual: z
+    .object({
+      path: z.string(),
+      page: z.number().int().positive(),
+      caption: z.string(),
+      kind: visualKindSchema,
+    })
+    .nullable()
+    .describe("Null unless the question requires a supplied figure, diagram, graph, table, map, image, or other non-text visual to be understood or solved."),
+  missingVisual: missingVisualSchema
+    .nullable()
+    .describe("Null unless the question needs a visual that is not attached. The problem is still returned."),
+  confidence: z.enum(["high", "medium", "low"]),
+});
+
 export const problemExtractionSchema = z.object({
   assignmentTitle: z.string(),
   summary: z.string(),
@@ -99,25 +132,7 @@ export const problemExtractionSchema = z.object({
       provenance: z.array(provenanceSchema).min(1),
     }),
   ),
-  problems: z.array(
-    z.object({
-      number: z.string(),
-      markdown: z.string(),
-      answerBankId: z.string().nullable(),
-      table: problemTableSchema.nullable(),
-      provenance: z.array(provenanceSchema).min(1),
-      visual: z
-        .object({
-          path: z.string(),
-          page: z.number().int().positive(),
-          caption: z.string(),
-          kind: visualKindSchema,
-        })
-        .nullable()
-        .describe("Null unless the question requires a supplied figure, diagram, graph, table, map, image, or other non-text visual to be understood or solved."),
-      confidence: z.enum(["high", "medium", "low"]),
-    }),
-  ),
+  problems: z.array(extractedProblemSchema),
   unresolved: z.array(
     z.object({ reference: z.string(), reason: z.string(), searched: z.array(z.string()) }),
   ),
@@ -125,6 +140,16 @@ export const problemExtractionSchema = z.object({
     z.object({ name: z.string(), type: z.string(), url: z.string().nullable(), pages: z.array(z.number().int().positive()) }),
   ),
 });
+
+// What the dashboard stores: Luna's extraction plus full source-page images it adds afterwards.
+export const savedProblemExtractionSchema = problemExtractionSchema.extend({
+  problems: z.array(extractedProblemSchema.extend({
+    sourcePages: z.array(sourcePageRefSchema).default([]),
+  })),
+  sourceDocuments: z.array(sourceDocumentSchema).default([]),
+});
+export type ProblemExtraction = z.infer<typeof problemExtractionSchema>;
+export type SavedProblemExtraction = z.infer<typeof savedProblemExtractionSchema>;
 
 export const answerKeySchema = z.object({
   assignmentTitle: z.string(),
@@ -480,6 +505,9 @@ export class AgentRunner {
     controller: AbortController,
   ) {
     let toolToken: string | null = null;
+    // Kept outside the try so a run rejected after Luna answered still records what she returned.
+    const rawEvents: unknown[] = [];
+    let rawStructuredOutput: string | null = null;
     try {
       controller.signal.throwIfAborted();
       await this.runs.update(run.id, { status: "running" });
@@ -580,9 +608,7 @@ export class AgentRunner {
       controller.signal.throwIfAborted();
       await this.runs.update(run.id, { workspaceId: workspace.id });
       const timeoutMs = run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000;
-      const rawEvents: unknown[] = [];
       let usage: Usage | null = null;
-      let rawStructuredOutput: string | null = null;
       const result = await this.executor.run({
         runId: run.id,
         feature: run.feature,
@@ -657,18 +683,18 @@ export class AgentRunner {
       rawStructuredOutput = result.finalResponse ?? rawStructuredOutput;
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
       const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
-      const policyCheckedOutput = run.feature === "problemExtraction"
-        ? enforceProblemVisualPolicy(problemExtractionSchema.parse(parsedOutput))
-        : parsedOutput;
+      let finalOutput: unknown = parsedOutput;
       if (run.feature === "problemExtraction") {
-        const extraction = problemExtractionSchema.parse(policyCheckedOutput);
-        await this.workspaces.preserveWorkspaceAssets(
-          workspace.id,
-          extraction.problems.flatMap((problem) => problem.visual ? [problem.visual.path] : []),
+        const extraction = await this.attachSourcePages(
+          run,
+          workspace,
+          enforceProblemVisualPolicy(problemExtractionSchema.parse(parsedOutput)),
         );
+        await this.workspaces.preserveWorkspaceAssets(workspace.id, savedExtractionAssetPaths(extraction));
         controller.signal.throwIfAborted();
+        finalOutput = extraction;
       }
-      const safeOutput = sanitizeForLog(policyCheckedOutput);
+      const safeOutput = sanitizeForLog(finalOutput);
       const safeRawStructuredOutput = JSON.stringify(safeOutput);
       await this.runs.updateIfActive(run.id, {
         status: "completed",
@@ -694,6 +720,10 @@ export class AgentRunner {
         status: cancelled ? "cancelled" : "failed",
         completedAt: new Date().toISOString(),
         error: message,
+        // Diagnostics only: output stays null, so a rejected draft can never feed an answer key,
+        // and its assets are not preserved.
+        events: rawEvents.slice(-250),
+        rawStructuredOutput: rawStructuredOutput ? redactFailedOutput(rawStructuredOutput, toolToken) : null,
       });
       await this.activity.record({
         category: "agent",
@@ -704,6 +734,35 @@ export class AgentRunner {
       });
     } finally {
       if (toolToken) this.toolSessions.revoke(toolToken);
+    }
+  }
+
+  // Best effort: a run whose source pages cannot be rendered still completes without them.
+  private async attachSourcePages(
+    run: AgentRun,
+    workspace: Awaited<ReturnType<WorkspaceManager["create"]>>,
+    extraction: ProblemExtraction,
+  ): Promise<SavedProblemExtraction> {
+    try {
+      const { documents, problemPages } = await collectSourcePages(this.workspaces, workspace, extraction.problems);
+      return {
+        ...extraction,
+        problems: extraction.problems.map((problem, index) => ({ ...problem, sourcePages: problemPages[index] ?? [] })),
+        sourceDocuments: documents,
+      };
+    } catch (error) {
+      await this.activity.record({
+        category: "agent",
+        action: "source-pages",
+        status: "warning",
+        summary: run.taskTitle,
+        metadata: { runId: run.id, error: error instanceof Error ? error.message : "Source pages unavailable" },
+      });
+      return {
+        ...extraction,
+        problems: extraction.problems.map((problem) => ({ ...problem, sourcePages: [] })),
+        sourceDocuments: [],
+      };
     }
   }
 
@@ -721,16 +780,43 @@ export class AgentRunner {
       throw new Error("The extracted problems belong to a different assignment.");
     }
     const parsed = parseProblemExtractionOutput(extraction.output);
+    // Whole source pages are optional context; an expired page is skipped rather than fatal.
+    const sourceDocuments = extraction.workspaceId
+      ? await Promise.all(parsed.sourceDocuments.map(async (document) => ({
+        id: document.id,
+        name: document.name,
+        pages: (await Promise.all(document.pages.map(async (page) => {
+          try {
+            return [{
+              page: page.page,
+              path: await this.workspaces.copyWorkspaceAsset(
+                extraction.workspaceId!,
+                page.path,
+                workspace,
+                `source-${document.id}-page-${page.page}${extname(page.path)}`,
+              ),
+            }];
+          } catch {
+            return [];
+          }
+        }))).flat(),
+      })))
+      : [];
+    const sourcePagesFor = (refs: SourcePageRef[]) => refs.flatMap((ref) => {
+      const document = sourceDocuments.find((item) => item.id === ref.documentId);
+      const page = document?.pages.find((item) => item.page === ref.page);
+      return document && page ? [{ document: document.name, page: page.page, path: page.path }] : [];
+    });
     const problems = await Promise.all(parsed.problems.map(async (problem, index) => {
-      if (!problem.visual) {
-        return {
-          number: problem.number,
-          markdown: problem.markdown,
-          answerBankId: problem.answerBankId,
-          table: problem.table,
-          visual: null,
-        };
-      }
+      const common = {
+        number: problem.number,
+        markdown: problem.markdown,
+        answerBankId: problem.answerBankId,
+        table: problem.table,
+        missingVisual: problem.missingVisual,
+        sourcePages: sourcePagesFor(problem.sourcePages),
+      };
+      if (!problem.visual) return { ...common, visual: null };
       if (!extraction.workspaceId) {
         throw new Error("An extracted problem visual is unavailable. Extract the problems again.");
       }
@@ -745,15 +831,33 @@ export class AgentRunner {
       } catch {
         throw new Error("An extracted problem visual has expired. Extract the problems again.");
       }
-      return {
-        number: problem.number,
-        markdown: problem.markdown,
-        answerBankId: problem.answerBankId,
-        table: problem.table,
-        visual: { ...problem.visual, path },
-      };
+      return { ...common, visual: { ...problem.visual, path } };
     }));
-    return { assignmentTitle: parsed.assignmentTitle, answerBanks: parsed.answerBanks, problems };
+    return {
+      assignmentTitle: parsed.assignmentTitle,
+      answerBanks: parsed.answerBanks,
+      problems,
+      sourceDocuments: sourceDocuments
+        .filter((document) => document.pages.length > 0)
+        .map((document) => ({ name: document.name, pages: document.pages })),
+    };
+  }
+}
+
+// Every workspace file a saved extraction points at: attached crops and full source pages.
+export function savedExtractionAssetPaths(extraction: SavedProblemExtraction): string[] {
+  return [
+    ...extraction.problems.flatMap((problem) => problem.visual ? [problem.visual.path] : []),
+    ...extraction.sourceDocuments.flatMap((document) => document.pages.map((page) => page.path)),
+  ];
+}
+
+function redactFailedOutput(raw: string, toolToken: string | null): string {
+  const withoutToken = toolToken ? raw.replaceAll(toolToken, "[redacted]") : raw;
+  try {
+    return JSON.stringify(sanitizeForLog(JSON.parse(withoutToken)));
+  } catch {
+    return String(sanitizeForLog(withoutToken.slice(0, 200_000)));
   }
 }
 
@@ -773,10 +877,10 @@ export function buildInstructions(
     return `${workspaceRules}\n${canvasRules}\n\nFeature prompt:\n${customPrompt}\n\nMandatory Directions scope: determine only the assigned work, relevant instructions, submission requirements, and due date. If preflight.directionsEvidenceSufficient is true, answer immediately from the preloaded data; every other retrieval tool is intentionally unavailable. For agenda/table tasks, treat sourceContext.contextMarkdown and sourceContext.cells as the relevant surrounding row, not merely the classified homework sentence: preserve exact due times, submission method, required materials, related links, and nearby instructions. If resolution is missing or incomplete, call recover_canvas_context once; it uses the task title, source sentence, source anchor, source/page metadata, and direct URLs. If the relevant context directly references instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only the minimum directly relevant linked resource(s) needed before finalizing and prefer those direct links over any course search. If a known required link is external or API-inaccessible, use read_linked_resource_with_chrome once for that URL. Do not search the course while a directly relevant instruction link is already known, do not open unrelated links, do not open or inspect PDF/file question content in Directions, and do not search broadly. Stop immediately once assigned work, submission method, due information, and explicitly referenced instructions are sufficiently verified. Everything in the response must be a brief Luna-authored paraphrase, never raw Canvas HTML: overviewMarkdown is at most two short sentences; use no more than five instructions; keep assigned-work items exact and terse; make submission.methodMarkdown one short sentence; use short deliverable phrases; and make dueMarkdown the concise verified date/time. Never include attempt counts, solve problems, repeat facts, or invent missing details.`;
   }
   if (feature === "problemExtraction") {
-    return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources together when possible. Put every subpart and every multiple-choice answer choice on its own Markdown line, with a blank line before the first choice; never run choices together in one paragraph. When one answer bank is shared by two or more problems, create exactly one separate answerBanks entry, link each covered problem with answerBankId, and do not repeat the bank inside any problem markdown. For a simple source table, populate the structured table field and omit pipe-table Markdown. If a table's spatial layout or visual encoding matters, leave table null and attach a tight table screenshot instead. Set visual to null by default. A visual is allowed if and only if the problem requires a supplied figure, diagram, graph, chart, spectrum, table, map, or other non-text image to understand or solve it; a source-page screenshot is not provenance and must never be attached merely because the question came from a PDF. A targeted page render may be inspected to correct unclear OCR, but it must not be attached to a text-only problem. When a visual is required, call semantic_crop_pdf once and always set each region's kind. Use the exact figure label when one exists; otherwise use the short source phrase immediately above or inside the visual, such as an axis label or “spectra below.” A completed crop is the final image and must be assigned to that problem's visual field. Only if a genuinely required unlabeled visual returns not_found may you use known render coordinates once. Do not retry near-identical semantic queries. Do not crop or attach text-only problems. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
+    return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources together when possible. Put every subpart and every multiple-choice answer choice on its own Markdown line, with a blank line before the first choice; never run choices together in one paragraph. When one answer bank is shared by two or more problems, create exactly one separate answerBanks entry, link each covered problem with answerBankId, and do not repeat the bank inside any problem markdown. For a simple source table, populate the structured table field and omit pipe-table Markdown. If a table's spatial layout or visual encoding matters, leave table null and attach a tight table screenshot instead. Set visual and missingVisual to null by default. A visual is allowed if and only if the problem requires a figure, diagram, drawing, graph, chart, spectrum, table, map, or other non-text image that the assignment's own files supply; a source-page screenshot is not provenance and must never be attached merely because the question came from a PDF. A targeted page render may be inspected to correct unclear OCR, but it must not be attached to a text-only problem. Wording such as “as the drawing shows” or “point A in the drawing” needs a visual just like a figure number. detect_pdf_problems reports figures (a drawing inside a detected problem's region) and figureCaptions (every figure caption read on the searched pages); use them to find the supplied visuals, and remember OCR can misread a caption digit (P6.20 read as P8.20). Request every required visual on the same PDF together in one semantic_crop_pdf call; always set each region's kind, and set problemNumber whenever the problem is numbered on the page. Use the exact figure label when one exists; otherwise use the short source phrase immediately above or inside the visual, such as an axis label or “spectra below.” The tool falls back to the drawing inside that problem's region when the label is unreadable and reports how each crop was located (anchor and note). Look at every returned crop before using it: a completed crop that shows the whole intended visual is the final image and must be assigned to that problem's visual field, but a crop that shows the wrong or partial content must not be attached. For a required visual that returned not_found or a wrong crop, you may crop known render coordinates once with crop_image_regions and inspect that result the same way. Do not retry near-identical semantic queries. If a required supplied visual still cannot be attached, keep the problem and set missingVisual with status not_located, naming the page where the visual appears. When a problem cites a figure the assignment's files do not reproduce (for example a textbook figure number with no matching caption on any inspected page), do not crop anything; keep the problem and set missingVisual with status not_in_source. Do not crop or attach text-only problems. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
   }
   if (feature === "answerKey") {
-    return `${workspaceRules}\nRead only extracted-problems.json and the local visual paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question, linked answer bank, structured table, and attached visual in extracted-problems.json. Inspect every attached visual whenever it affects the question. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
+    return `${workspaceRules}\nRead only extracted-problems.json and the local image paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question, linked answer bank, structured table, attached visual, and source page image in extracted-problems.json. Inspect every attached visual whenever it affects the question. sourceDocuments holds full-page images of the assignment's source file, and each problem's sourcePages names the pages it came from. Open a problem's source pages whenever it has a missingVisual, its attached visual looks cropped, unreadable, or unrelated, or data it needs is absent from the markdown; read any other page of the sheet when the problem depends on it. A missingVisual with status not_in_source is not shown on any page: solve from the text when that is possible, otherwise state exactly what the missing figure would have to show in warnings, and never invent values from it. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
   }
   return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nThis is a focused assessment investigation. Inspect the assessment description, its containing or nearby modules, and only relevant pages, assignments, notes, PDFs, worksheets, or teacher review material. Separate teacher-stated scope from your own inferences. Predictor adapter status:\n${JSON.stringify(predictor)}\nIf predictor status is unavailable, state that exactly and do not fabricate predicted history. If available, treat its output as one labeled evidence source, not teacher-provided scope.`;
 }
@@ -789,20 +893,31 @@ export function moduleSequenceTarget(
   return null;
 }
 
+const VISUAL_NOUN = String.raw`(?:figure|fig\.?|diagram|drawing|graph|chart|plot|spectrum|spectra|table|map|illustration|picture|photo(?:graph)?|circuit|free[- ]body diagram)`;
+
 export function problemRequiresVisual(markdown: string): boolean {
-  const visual = String.raw`(?:figure|fig\.?|diagram|graph|chart|plot|spectrum|spectra|table|map|illustration|photo|circuit|free[- ]body diagram)`;
+  const visual = VISUAL_NOUN;
   return new RegExp(String.raw`\b(?:use|using|from|according to|refer(?:ring)? to)\s+(?:the\s+)?${visual}\b`, "iu").test(markdown) ||
-    new RegExp(String.raw`\b(?:following|provided|attached)\s+${visual}\b`, "iu").test(markdown) ||
+    new RegExp(String.raw`\b(?:following|provided|attached|accompanying)\s+${visual}\b`, "iu").test(markdown) ||
     new RegExp(String.raw`\b${visual}\s+(?:above|below|shown|provided|attached|depicts?|illustrates?|shows?|lists?)\b`, "iu").test(markdown) ||
     /\b(?:figure|fig\.?)\s*[A-Z]?\d+(?:\.\d+)?\b/iu.test(markdown) ||
-    new RegExp(String.raw`\b(?:shown|depicted|pictured|illustrated)\s+(?:above|below|in|on)\s+(?:the\s+)?${visual}\b`, "iu").test(markdown) ||
-    /\b(?:as\s+)?(?:shown|depicted|pictured|illustrated)\s+(?:above|below)\b/iu.test(markdown) ||
+    new RegExp(String.raw`\b(?:shown|depicted|pictured|illustrated|labeled|marked)\s+(?:above|below|in|on)\s+(?:the\s+)?${visual}\b`, "iu").test(markdown) ||
+    // "(point A in the drawing)", "the angle in the figure"
+    new RegExp(String.raw`\b(?:in|on)\s+the\s+${visual}\b`, "iu").test(markdown) ||
+    /\bas\s+(?:shown|depicted|pictured|illustrated)\b/iu.test(markdown) ||
+    /\b(?:shown|depicted|pictured|illustrated)\s+(?:above|below)\b/iu.test(markdown) ||
     /\b(?:data|results?)\s+(?:shown\s+)?(?:above|below)\b/iu.test(markdown);
 }
 
-export function enforceProblemVisualPolicy(
-  output: z.infer<typeof problemExtractionSchema>,
-): z.infer<typeof problemExtractionSchema> {
+// The figure a problem names, for the student-facing missing-visual note.
+function referencedVisual(markdown: string): string {
+  const reference = markdown.match(/\b(?:figure|fig\.?)\s*[A-Z]?\d+(?:\.\d+)*\b/iu)?.[0]
+    ?? markdown.match(new RegExp(String.raw`\bthe\s+(?:[a-z-]+\s+)?${VISUAL_NOUN}`, "iu"))?.[0]
+    ?? "The referenced visual";
+  return reference.charAt(0).toUpperCase() + reference.slice(1);
+}
+
+export function enforceProblemVisualPolicy(output: ProblemExtraction): ProblemExtraction {
   const answerBankIds = new Set(output.answerBanks.map((bank) => bank.id));
   const missingAnswerBanks = output.problems
     .filter((problem) => problem.answerBankId && !answerBankIds.has(problem.answerBankId))
@@ -811,20 +926,28 @@ export function enforceProblemVisualPolicy(
     throw new Error(`Problems ${missingAnswerBanks.join(", ")} reference an unavailable answer bank.`);
   }
 
-  const problems = output.problems.map((problem) => ({
-    ...problem,
-    visual: problem.visual && (
+  // A missing visual is a per-problem warning, not a reason to discard the whole extraction:
+  // the problem text is still useful, the student can open the source page, and the answer
+  // key gets the same page images.
+  const problems = output.problems.map((problem) => {
+    const visual = problem.visual && (
       problemRequiresVisual(problem.markdown) ||
       problemRequiresVisual(problem.visual.caption) ||
       problem.visual.kind !== "image"
-    ) ? problem.visual : null,
-  }));
-  const missingVisuals = problems
-    .filter((problem) => problemRequiresVisual(problem.markdown) && !problem.visual && !problem.table)
-    .map((problem) => problem.number);
-  if (missingVisuals.length > 0) {
-    throw new Error(`Problems ${missingVisuals.join(", ")} require a source visual, but no crop or structured table was returned.`);
-  }
+    ) ? problem.visual : null;
+    const unexplained = !visual && !problem.table && !problem.missingVisual && problemRequiresVisual(problem.markdown);
+    return {
+      ...problem,
+      visual,
+      missingVisual: unexplained
+        ? {
+          reference: referencedVisual(problem.markdown),
+          status: "not_located" as const,
+          detail: "This problem refers to a visual that was not attached. Open the source page to see it.",
+        }
+        : problem.missingVisual,
+    };
+  });
 
   return {
     ...output,
@@ -832,8 +955,8 @@ export function enforceProblemVisualPolicy(
   };
 }
 
-export function parseProblemExtractionOutput(value: unknown): z.infer<typeof problemExtractionSchema> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return problemExtractionSchema.parse(value);
+export function parseProblemExtractionOutput(value: unknown): SavedProblemExtraction {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return savedProblemExtractionSchema.parse(value);
   const record = value as Record<string, unknown>;
   const problems = Array.isArray(record.problems)
     ? record.problems.map((problem) => {
@@ -845,12 +968,13 @@ export function parseProblemExtractionOutput(value: unknown): z.infer<typeof pro
         return {
           answerBankId: null,
           table: null,
+          missingVisual: null,
           ...item,
           visual,
         };
       })
     : record.problems;
-  return problemExtractionSchema.parse({ answerBanks: [], ...record, problems });
+  return savedProblemExtractionSchema.parse({ answerBanks: [], ...record, problems });
 }
 
 function outputParser(feature: AgentFeature) {

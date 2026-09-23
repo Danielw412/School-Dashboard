@@ -1,13 +1,12 @@
 import { useState } from "react";
 
+import { workspaceFileUrl } from "../api";
 import type { ProblemExtraction } from "../types";
 
 type Visual = NonNullable<ProblemExtraction["problems"][number]["visual"]>;
 
 export function ProblemVisual({ visual, workspaceId }: { visual: Visual; workspaceId: string | null }) {
-  const src = workspaceId
-    ? `/workspace-files/${encodeURIComponent(workspaceId)}/${visual.path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/")}`
-    : null;
+  const src = workspaceId ? workspaceFileUrl(workspaceId, visual.path) : null;
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
 
   return <figure>

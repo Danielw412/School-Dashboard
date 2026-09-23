@@ -474,6 +474,7 @@ export class CanvasToolSessions {
           query: z.string().min(1),
           kind: z.enum(["figure", "diagram", "graph", "chart", "table", "spectrum", "map", "image"]),
           padding: z.number().int().min(0).max(100).optional(),
+          problemNumber: z.string().min(1).max(20).optional(),
         })).min(1).max(20).parse(input.regions);
         const crops = await this.workspaces.semanticCropPdfRegions(path, regions, session.workspace);
         const normalized = crops.map((crop) => ({
@@ -701,7 +702,7 @@ export class CanvasToolSessions {
     );
     register(
       "detect_pdf_problems",
-      "Locate requested problem numbers from cached PDF text. Pass sectionHeading when the assignment names a worksheet/section so repeated numbers outside that section are ignored. For any scanned document over four pages, first use its contact sheet and pass only the selected pages so OCR stays bounded.",
+      "Locate requested problem numbers from cached PDF text. Pass sectionHeading when the assignment names a worksheet/section so repeated numbers outside that section are ignored. For any scanned document over four pages, first use its contact sheet and pass only the selected pages so OCR stays bounded. Also reports figures (detected problems whose region contains a drawing, with its caption when read) and figureCaptions (every figure caption read on the searched pages; OCR may misread a digit). A figure number cited in a problem but absent from figureCaptions is likely not supplied.",
       "pdf-detect-problems",
       z.object({
         path: z.string().min(1),
@@ -712,7 +713,7 @@ export class CanvasToolSessions {
     );
     register(
       "crop_image_regions",
-      "Fallback for a required visual with known coordinates. Do not crop text-only problems, and do not re-crop a successful semantic_crop_pdf result.",
+      "Fallback for a required visual whose semantic crop returned not_found or showed the wrong content, using coordinates read from a displayed render. Look at the result and attach it only if it shows the whole visual. Do not crop text-only problems, and do not re-crop a correct semantic_crop_pdf result.",
       "image-crop",
       z.object({
         path: z.string().min(1).optional(),
@@ -722,7 +723,7 @@ export class CanvasToolSessions {
     );
     register(
       "semantic_crop_pdf",
-      "Create final, tight crops only for non-text visuals required by a problem. Set kind for every region. Use an exact figure label when available; otherwise query the short phrase immediately above or inside the visual (including an axis label). Captioned figures are automatically bounded above their label. Text-only queries without a visual kind are skipped, and one missed region does not abort the batch.",
+      "Create final, tight crops only for non-text visuals required by a problem. Request every required visual on a PDF in one call. Set kind for every region and problemNumber for a numbered problem. Use an exact figure label when available; otherwise query the short phrase immediately above or inside the visual (including an axis label). Captioned figures are automatically bounded above their label, and a caption misread by OCR is matched when it is the only close one. When the label cannot be read, the drawing inside problemNumber's region is used. Each result's anchor and note say how it was located; look at every crop before attaching it. Text-only queries without a visual kind are skipped, and one missed region does not abort the batch.",
       "pdf-semantic-crop",
       z.object({
         path: z.string().min(1),
@@ -731,6 +732,7 @@ export class CanvasToolSessions {
           query: z.string().min(1).describe("Exact figure/diagram label or another explicit required-visual reference; never submit ordinary problem text."),
           kind: z.enum(["figure", "diagram", "graph", "chart", "table", "spectrum", "map", "image"]),
           padding: z.number().int().min(0).max(100).optional(),
+          problemNumber: z.string().min(1).max(20).optional().describe("The problem's printed number, used to find its drawing when the label cannot be read."),
         })).min(1).max(20),
       }),
     );
@@ -1115,7 +1117,7 @@ function mcpServerInstructions(profile: ToolSession["profile"]): string {
   const common = "Call get_preloaded_context first. If it answers the request, stop without another tool. Otherwise use direct Canvas URLs and known IDs first, then recovered source context, then at most one focused search. Use the Chrome extension only for one already-known linked resource that the Canvas API cannot read; never use it for discovery, and never retry a failed URL. Index each PDF once. Prefer cached text, then one contact sheet, then OCR only on selected unusable-text pages. Images produced inside a batch are already displayed, so do not repeat their tools. Do not render a page after detection and an exact-label semantic crop have already completed. Batch independent operations. Stop once the requested facts or problem text are sufficiently verified. All tools are assignment/course scoped and read-only.";
   return profile === "directions"
     ? `${common} If Directions context directly references instructions, directions, guidelines, a rubric, requirements, a checklist, or criteria, read only the relevant linked resource before finalizing and do not search or inspect unrelated resources. Directions may otherwise recover and follow only directly relevant Canvas context; file/PDF content inspection is intentionally unavailable.`
-    : `${common} For problem extraction, use automatic problem detection before manual page inspection. Crop only a required non-text visual, using one exact figure-label semantic crop as the final image; never crop ordinary problem text.`;
+    : `${common} For problem extraction, use automatic problem detection before manual page inspection. Crop only a required non-text visual supplied in the assignment's files, requesting all of them in one semantic crop call with problemNumber set, and look at each crop before attaching it; never crop ordinary problem text. A visual that cannot be attached, or a cited figure the files do not reproduce, is reported in that problem's missingVisual.`;
 }
 
 const imageResultActions = new Set([

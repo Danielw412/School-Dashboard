@@ -8,8 +8,10 @@ import {
   CircleAlert,
   FileQuestion,
   FileText,
+  ImageOff,
   NotebookTabs,
   LoaderCircle,
+  ScanSearch,
   Send,
   X,
 } from "lucide-react";
@@ -21,6 +23,7 @@ import { schoolApi } from "../api";
 import { RunProgressPanel } from "../components/AgentProgress";
 import { Markdown } from "../components/Markdown";
 import { ProblemVisual } from "../components/ProblemVisual";
+import { SourcePageViewer, type SourcePageRequest } from "../components/SourcePageViewer";
 import { EmptyState, ErrorNotice, RunStatus } from "../components/Status";
 import { classTone, formatDue, latestRun } from "../format";
 import { usePolling } from "../hooks/usePolling";
@@ -29,8 +32,10 @@ import type {
   AgentRun,
   AnswerKey,
   AssignmentDirections,
+  MissingVisual,
   ProblemExtraction,
   ReasoningEffort,
+  SourcePageRef,
   StudyGuide,
 } from "../types";
 
@@ -267,6 +272,8 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
   const answers = answerRun?.status === "completed"
     ? (answerRun.output as AnswerKey | null)?.answers ?? []
     : [];
+  const [pageRequest, setPageRequest] = useState<SourcePageRequest | null>(null);
+  const openPage = (label: string) => (ref: SourcePageRef) => setPageRequest({ ...ref, label });
   return (
     <div>
       <FeatureHeader title="Assigned problems">
@@ -287,13 +294,21 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
             const firstLinkedIndex = output.problems.findIndex((item) => item.answerBankId === bank.id);
             return firstLinkedIndex === index;
           });
+          const sourcePages = problem.sourcePages ?? [];
+          const visualPage = sourcePages.find((item) => item.page === problem.visual?.page) ?? sourcePages[0];
+          const showPage = openPage(`Problem ${problem.number}`);
           return <Fragment key={`${problem.number}-${index}`}>
             {banks.map((bank) => <AnswerBankCard key={bank.id} bank={bank} />)}
             <article className="problem-panel">
-              <div className="problem-number"><span>Problem</span>{problem.number}<small className={`confidence ${problem.confidence}`}>{problem.confidence}</small></div>
+              <div className="problem-number">
+                <span>Problem</span>{problem.number}
+                {(problem.visual || problem.missingVisual) && visualPage && <button className="view-page-button" onClick={() => showPage(visualPage)} title="Open the whole source page beside this problem"><ScanSearch size={14} />View page {visualPage.page}</button>}
+                <small className={`confidence ${problem.confidence}`}>{problem.confidence}</small>
+              </div>
               <Markdown className="problem-markdown">{problem.markdown}</Markdown>
               {problem.table && <ProblemTable table={problem.table} />}
               {problem.visual && <ProblemVisual visual={problem.visual} workspaceId={run?.workspaceId ?? null} />}
+              {problem.missingVisual && <MissingVisualNotice missing={problem.missingVisual} />}
               {answer && <details className="inline-answer">
                 <summary>Show answer <ChevronDown size={15} /></summary>
                 <div className="inline-answer-body">
@@ -301,14 +316,31 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
                   <details className="inline-solution"><summary>Show full solution <ChevronDown size={14} /></summary><Markdown>{answer.solutionMarkdown}</Markdown></details>
                 </div>
               </details>}
-              <SourceDisclosure items={problem.provenance} />
+              <SourceDisclosure items={problem.provenance} pages={sourcePages} onOpenPage={showPage} />
             </article>
           </Fragment>;
         })}
         {output.unresolved.length > 0 && <div className="unresolved-block"><h3>Could not verify</h3>{output.unresolved.map((item) => <div key={item.reference}><strong>{item.reference}</strong><p>{item.reason}</p><span>Searched: {item.searched.join(", ")}</span></div>)}</div>}
       </div>}
+      {pageRequest && output && <SourcePageViewer
+        documents={output.sourceDocuments ?? []}
+        workspaceId={run?.workspaceId ?? null}
+        request={pageRequest}
+        onNavigate={(page) => setPageRequest({ ...pageRequest, page })}
+        onClose={() => setPageRequest(null)}
+      />}
     </div>
   );
+}
+
+function MissingVisualNotice({ missing }: { missing: MissingVisual }) {
+  const heading = missing.status === "not_in_source"
+    ? `${missing.reference} isn't included in the assignment files`
+    : `${missing.reference} couldn't be attached`;
+  return <div className={`notice missing-visual ${missing.status === "not_in_source" ? "neutral" : "amber"}`} role="note">
+    <ImageOff size={16} />
+    <div><strong>{heading}</strong><p>{missing.detail}</p></div>
+  </div>;
 }
 
 function AnswerBankCard({ bank }: { bank: NonNullable<ProblemExtraction["answerBanks"]>[number] }) {
@@ -382,9 +414,13 @@ function Provenance({ items }: { items: Array<{ sourceName: string; sourceUrl: s
   return <div className="provenance"><span>Source</span>{items.map((item, index) => <span key={`${item.sourceName}-${index}`}>{item.sourceUrl ? <a href={item.sourceUrl} target="_blank" rel="noreferrer">{item.sourceName}</a> : item.sourceName}{item.page ? ` · p. ${item.page}` : ""}<small>{item.evidence}</small></span>)}</div>;
 }
 
-function SourceDisclosure({ items }: { items: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }> }) {
+function SourceDisclosure({ items, pages = [], onOpenPage }: { items: Array<{ sourceName: string; sourceUrl: string | null; page: number | null; evidence: string }>; pages?: SourcePageRef[]; onOpenPage?: (page: SourcePageRef) => void }) {
   if (!items.length) return null;
-  return <details className="source-disclosure"><summary>View sources</summary><Provenance items={items} /></details>;
+  return <details className="source-disclosure">
+    <summary>View sources</summary>
+    <Provenance items={items} />
+    {onOpenPage && pages.length > 0 && <div className="source-page-links"><span>Source pages</span>{pages.map((page) => <button key={`${page.documentId}-${page.page}`} onClick={() => onOpenPage(page)}><ScanSearch size={12} />Page {page.page}</button>)}</div>}
+  </details>;
 }
 
 

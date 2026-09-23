@@ -14,7 +14,12 @@ import {
   agentTargetSchema,
   UnknownAgentTargetError,
 } from "./agent-routing.js";
-import { AgentRunner, AgentRunStore, parseProblemExtractionOutput } from "./agent-runner.js";
+import {
+  AgentRunner,
+  AgentRunStore,
+  parseProblemExtractionOutput,
+  savedExtractionAssetPaths,
+} from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
 import { codexCliVersion, codexSignInStatus, listCodexModels } from "./codex-models.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
@@ -467,15 +472,11 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(status).json({ error: message });
 });
 
-// Preserve visuals from older saved runs before expiring their workspaces.
+// Preserve visuals and source pages from older saved runs before expiring their workspaces.
 for (const run of await runs.list(250)) {
   if (run.feature !== "problemExtraction" || run.status !== "completed" || !run.workspaceId) continue;
   const output = parseProblemExtractionOutput(run.output);
-  await workspaces.preserveWorkspaceAssets(
-    run.workspaceId,
-    output.problems.flatMap((problem) => problem.visual ? [problem.visual.path] : []),
-    true,
-  );
+  await workspaces.preserveWorkspaceAssets(run.workspaceId, savedExtractionAssetPaths(output), true);
 }
 await workspaces.pruneWorkspaces(settings.cache.workspaceRetentionHours);
 const httpServer = app.listen(env.port, env.host, () => {

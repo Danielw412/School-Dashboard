@@ -26,6 +26,8 @@ export { safeChild };
 
 const execFileAsync = promisify(execFile);
 const PDF_OCR_DPI = 170;
+// Sharp enough to zoom into small diagram labels in the page viewer.
+const SOURCE_PAGE_DPI = 200;
 
 export type CacheStats = {
   files: number;
@@ -133,6 +135,10 @@ export type PdfProblemMatch = {
   confidence: "high" | "medium" | "low";
 };
 
+// How a semantic crop found its visual. Anything but an exact caption or label is a
+// fallback the agent must confirm by looking at the returned image.
+export type PdfCropAnchor = "caption" | "ocr-corrected-caption" | "label" | "problem-number";
+
 export type PdfSemanticCrop = {
   page: number;
   query: string;
@@ -140,7 +146,16 @@ export type PdfSemanticCrop = {
   path: string | null;
   rect: { left: number; top: number; width: number; height: number } | null;
   basis: "text-layout" | "ocr-layout" | "figure-layout" | null;
+  anchor: PdfCropAnchor | null;
+  note: string | null;
   error: string | null;
+};
+
+// Detection hints about supplied visuals: a sizeable drawing inside a detected problem's
+// region, and every figure caption read on the searched pages.
+export type PdfFigureHints = {
+  figures: Array<{ problemNumber: string; page: number; caption: string | null }>;
+  figureCaptions: Array<{ page: number; caption: string }>;
 };
 
 export type PdfVisualKind = "figure" | "diagram" | "graph" | "chart" | "table" | "spectrum" | "map" | "image";
@@ -518,7 +533,7 @@ export class WorkspaceManager {
     usedOcr: boolean;
     unresolvedProblemNumbers: string[];
     ocrSkippedPages: number[];
-  }> {
+  } & PdfFigureHints> {
     const index = await this.indexPdf(pdfPath, requestedProblems);
     const pages = selectedPages?.length
       ? [...new Set(selectedPages)]
@@ -562,13 +577,105 @@ export class WorkspaceManager {
     );
     const matches = dedupeProblemMatches([...textMatches, ...ocrMatches]);
     const resolved = new Set(matches.map((match) => normalizeProblemNumber(match.problemNumber)));
+    const textPageNumbers = new Set(pages.filter((page) => !nonTextPages.includes(page)));
+    const hints = await this.figureHints(pdfPath, matches, pages.filter((page) => textPageNumbers.has(page)), ocr, workspace)
+      .catch((): PdfFigureHints => ({ figures: [], figureCaptions: [] }));
     return {
       matches,
       searchedPages: pages,
       usedOcr: ocr.length > 0,
       unresolvedProblemNumbers: requestedProblems.filter((problem) => !resolved.has(normalizeProblemNumber(problem))),
       ocrSkippedPages: nonTextPages.filter((page) => !ocrPages.includes(page)),
+      ...hints,
     };
+  }
+
+  // Best-effort hints only: a failure here must never fail problem detection.
+  private async figureHints(
+    pdfPath: string,
+    matches: PdfProblemMatch[],
+    textPages: number[],
+    ocr: PdfOcrPage[],
+    workspace: AssignmentWorkspace,
+  ): Promise<PdfFigureHints> {
+    const ocrByPage = new Map(ocr.map((page) => [page.page, page]));
+    const linePages = [...new Set([...textPages, ...ocrByPage.keys()])].sort((left, right) => left - right);
+    const matchPages = new Set(matches.map((match) => match.page));
+    const figureCaptions: PdfFigureHints["figureCaptions"] = [];
+    const figures: PdfFigureHints["figures"] = [];
+    // Drawings are only measured on pages holding a detected problem, and on a bounded number of them.
+    const analyzedPages = new Set(linePages.filter((page) => matchPages.has(page)).slice(0, 12));
+    for (const page of linePages) {
+      const render = analyzedPages.has(page)
+        ? await this.renderPdfPage(pdfPath, page, workspace, PDF_OCR_DPI)
+        : null;
+      const size = render ? await sharp(render).metadata() : null;
+      const lines = await this.visualLinesForPage(pdfPath, page, ocrByPage.get(page) ?? null,
+        size?.width ?? 1, size?.height ?? 1);
+      for (const line of lines) {
+        if (isCaption(line) && !isFigureMention(line)) figureCaptions.push({ page, caption: line.text.trim() });
+      }
+      if (!render) continue;
+      const visualPage = await this.cached(`visual-layout:${render}`, () => analyzeVisualPage(render));
+      for (const match of matches.filter((item) => item.page === page)) {
+        const figure = figureNearProblem(visualPage, lines, match.problemNumber);
+        if (figure) figures.push({ problemNumber: match.problemNumber, page, caption: figure.caption });
+      }
+    }
+    return { figures, figureCaptions };
+  }
+
+  // Printed-text lines in render pixel coordinates: OCR regions for scanned pages,
+  // otherwise the PDF text layer scaled onto the render.
+  private async visualLinesForPage(
+    pdfPath: string,
+    page: number,
+    ocr: PdfOcrPage | null,
+    width: number,
+    height: number,
+  ): Promise<VisualLine[]> {
+    if (ocr) {
+      return ocr.regions.map((line) => ({ text: line.text, ...scaleAndClampRect(line,
+        ocr.imageWidth ?? width, ocr.imageHeight ?? height, width, height, 0) }));
+    }
+    const layout = await this.extractPdfLayout(pdfPath, page);
+    return layout.lines.map((line) => ({
+      text: line.text,
+      ...scaleAndClampRect({ left: line.xMin, top: line.yMin, width: line.xMax - line.xMin, height: line.yMax - line.yMin },
+        layout.width, layout.height, width, height, 0),
+    }));
+  }
+
+  // Full-page JPEGs kept with an extraction so the student and the answer-key run can read
+  // the whole source page when a crop is missing or wrong.
+  async renderSourcePages(
+    pdfPath: string,
+    pages: number[],
+    workspace: AssignmentWorkspace,
+    dpi = SOURCE_PAGE_DPI,
+  ): Promise<Array<{ page: number; path: string }>> {
+    assertPdf(pdfPath);
+    const directory = join(workspace.path, "source-pages");
+    await mkdir(directory, { recursive: true });
+    const stem = safeName(basename(pdfPath, extname(pdfPath)));
+    const results: Array<{ page: number; path: string }> = [];
+    for (const page of [...new Set(pages)].sort((left, right) => left - right)) {
+      const outputStem = join(directory, `${stem}-page-${page}`);
+      const path = await this.cached(`pdf-source-page:${pdfPath}:${page}:${dpi}:${workspace.id}`, async () => {
+        try {
+          await execFileAsync(
+            "pdftoppm",
+            ["-f", String(page), "-l", String(page), "-singlefile", "-jpeg", "-jpegopt", "quality=82", "-r", String(dpi), pdfPath, outputStem],
+            { timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
+          );
+        } catch (error) {
+          throw new Error(`PDF rendering requires Poppler's pdftoppm: ${errorMessage(error)}`);
+        }
+        return `${outputStem}.jpg`;
+      });
+      results.push({ page, path });
+    }
+    return results;
   }
 
   async cropImages(
@@ -583,7 +690,7 @@ export class WorkspaceManager {
 
   async semanticCropPdfRegions(
     pdfPath: string,
-    regions: Array<{ page: number; query: string; kind?: PdfVisualKind; padding?: number }>,
+    regions: Array<{ page: number; query: string; kind?: PdfVisualKind; padding?: number; problemNumber?: string }>,
     workspace: AssignmentWorkspace,
   ): Promise<PdfSemanticCrop[]> {
     if (regions.length === 0) throw new Error("Choose at least one semantic PDF region.");
@@ -610,19 +717,31 @@ export class WorkspaceManager {
       const height = metadata.height ?? 1;
       const layout = layouts.get(region.page)!;
       const visualPage = await this.cached(`visual-layout:${renderPath}`, () => analyzeVisualPage(renderPath));
-      let lines = layout.lines.map((line) => ({
+      const textLines = layout.lines.map((line) => ({
         text: line.text,
         ...scaleAndClampRect({ left: line.xMin, top: line.yMin, width: line.xMax - line.xMin, height: line.yMax - line.yMin },
           layout.width, layout.height, width, height, 0),
       }));
-      let rect = semanticVisualRect(visualPage, lines, region.query, region.padding);
-      if (!rect) {
-        const [ocr] = await this.ocrPdfPages(pdfPath, [region.page], workspace);
-        lines = ocr.regions.map((line) => ({ text: line.text, ...scaleAndClampRect(line,
-          ocr.imageWidth ?? width, ocr.imageHeight ?? height, width, height, 0) }));
-        rect = semanticVisualRect(visualPage, lines, region.query, region.padding);
+      let ocrLines: VisualLine[] | null = null;
+      const readOcrLines = async () => {
+        if (!ocrLines) {
+          const [ocr] = await this.ocrPdfPages(pdfPath, [region.page], workspace);
+          ocrLines = await this.visualLinesForPage(pdfPath, region.page, ocr!, width, height);
+        }
+        return ocrLines;
+      };
+      let match = semanticVisualRect(visualPage, textLines, region.query, region.padding)
+        ?? semanticVisualRect(visualPage, await readOcrLines(), region.query, region.padding);
+      // A scanned label or caption can be unreadable even when the problem start is not;
+      // the drawing inside that problem's region is then the best remaining anchor.
+      const problemNumber = region.problemNumber ? normalizeProblemNumber(region.problemNumber) : "";
+      let fellBack = false;
+      if (!match && /^\d{1,4}[a-z]?$/u.test(problemNumber)) {
+        match = problemVisualRect(visualPage, textLines, problemNumber, region.padding)
+          ?? problemVisualRect(visualPage, await readOcrLines(), problemNumber, region.padding);
+        fellBack = match !== null;
       }
-      if (!rect) {
+      if (!match) {
         results.push({
           page: region.page,
           query: region.query,
@@ -630,7 +749,11 @@ export class WorkspaceManager {
           path: null,
           rect: null,
           basis: null,
-          error: `Could not locate a complete region for ${region.query} on page ${region.page}. Use an exact problem number or figure label, or crop known render coordinates.`,
+          anchor: null,
+          note: null,
+          error: `Could not locate a complete region for ${region.query} on page ${region.page}. ${problemNumber
+            ? `Problem ${region.problemNumber} did not anchor a drawing either.`
+            : "Pass problemNumber for a numbered problem, or crop known render coordinates."}`,
         });
         continue;
       }
@@ -638,9 +761,11 @@ export class WorkspaceManager {
         page: region.page,
         query: region.query,
         status: "completed",
-        rect,
+        rect: match.rect,
         basis: "figure-layout",
-        path: await this.cropImage(relative(workspace.path, renderPath), rect, workspace),
+        anchor: match.anchor,
+        note: cropAnchorNote(match, region, fellBack),
+        path: await this.cropImage(relative(workspace.path, renderPath), match.rect, workspace),
         error: null,
       });
     }
@@ -966,7 +1091,8 @@ function findOcrProblemEnd(
 
 function detectProblemStarts(text: string): Array<{ number: string; offset: number }> {
   const starts: Array<{ number: string; offset: number }> = [];
-  const pattern = /^(?:[^\S\r\n]*(?:problem|question|exercise|review|example)[^\S\r\n]*)?(\d{1,4}[a-z]?)(?:[^\S\r\n]*[.)\]:-]|[^\S\r\n]{2,})[^\S\r\n]*\S/imug;
+  // Textbooks star harder problems ("*19.", "**20."); the stars are not part of the number.
+  const pattern = /^(?:[^\S\r\n]*[*•]{1,3})?(?:[^\S\r\n]*(?:problem|question|exercise|review|example)[^\S\r\n]*)?(\d{1,4}[a-z]?)(?:[^\S\r\n]*[.)\]:-](?!\d)|[^\S\r\n]{2,})[^\S\r\n]*\S/imug;
   for (const match of text.matchAll(pattern)) {
     starts.push({ number: match[1]!, offset: match.index ?? 0 });
   }
@@ -981,7 +1107,7 @@ function detectProblemStartsWithOcrHints(
   if (wanted.size === 0) return starts;
   const seenOffsets = new Set(starts.map((start) => start.offset));
   const alreadyFound = new Set(starts.map((start) => normalizeProblemNumber(start.number)));
-  const pattern = /^[^\S\r\n]*[[(]?[^\S\r\n]*([0-9A-Z|]{1,4})[^\S\r\n]*[\])}.:]?[^\S\r\n]+\S/gimu;
+  const pattern = /^[^\S\r\n]*[*•]{0,3}[^\S\r\n]*[[(]?[^\S\r\n]*([0-9A-Z|]{1,4})[^\S\r\n]*[\])}.:]?[^\S\r\n]+\S/gimu;
   for (const match of text.matchAll(pattern)) {
     const offset = match.index ?? 0;
     if (seenOffsets.has(offset)) continue;
@@ -1242,6 +1368,8 @@ function skippedTextCrop(region: { page: number; query: string }): PdfSemanticCr
     path: null,
     rect: null,
     basis: null,
+    anchor: null,
+    note: null,
     error: "Skipped because the request does not identify a required visual. Return the problem as Markdown without an image.",
   };
 }
@@ -1320,47 +1448,149 @@ function figureIdentifier(text: string): string | null {
     ?.toLowerCase().replace(/[−–]/gu, "-").replace(/,/gu, ".") ?? null;
 }
 
+// A caption starts its line with the figure label. A wrapped mention such as
+// "Figure 5.21.)" at the start of a prompt line is not one.
 function isCaption(line: VisualLine): boolean {
-  return /^\s*(?:figure|fig\.?)\s*[a-z]?\d/iu.test(line.text);
+  return /^\s*(?:figure|fig\.?)\s*[a-z]?\d+(?:[.,−–-]\d+)*(?![\d.,−–-]*\))(?!\d|[.,−–-]\d)/iu.test(line.text);
+}
+
+// "...as shown in / Figure P6.43." wraps a sentence-ending mention onto its own line.
+// It starts like a caption, but a real caption's label is followed by a title or nothing.
+function isFigureMention(line: VisualLine): boolean {
+  return /^\s*(?:figure|fig\.?)\s*[a-z]?\d+(?:[.,−–-]\d+)*(?!\d)\s*[.,;:](?!\d)/iu.test(line.text);
 }
 
 function isProse(line: VisualLine): boolean {
   return !isCaption(line) && (line.text.match(/[a-z]{2,}/giu)?.length ?? 0) >= 3;
 }
 
-function visualAnchor(lines: VisualLine[], query: string): VisualLine | null {
+// Characters Tesseract confuses in low-contrast scanned figure labels (P6.20 read as P8.20).
+const OCR_CONFUSABLE = ["0odq", "1il|t7", "2z", "38b", "4a", "5s6", "68bg", "9gq"];
+
+function ocrFigureIdentifierMatches(read: string, wanted: string): boolean {
+  if (read.length !== wanted.length || read === wanted) return false;
+  return [...wanted].every((character, index) => {
+    const actual = read[index]!;
+    return actual === character || OCR_CONFUSABLE.some(group => group.includes(character) && group.includes(actual));
+  });
+}
+
+type VisualAnchor = { line: VisualLine; anchor: PdfCropAnchor };
+
+function visualAnchor(lines: VisualLine[], query: string): VisualAnchor | null {
   const figure = figureIdentifier(query);
   if (figure) {
     // A mention in a question is not the figure caption. Also reject P4.1 when
     // P4.19 was requested, instead of letting substring/token scoring choose it.
-    const captions = lines.filter(line => isCaption(line) && figureIdentifier(line.text) === figure);
-    return captions.length === 1 ? captions[0]! : null;
+    const labelled = lines.filter(line => isCaption(line) && figureIdentifier(line.text) === figure);
+    const captions = labelled.length > 1 ? labelled.filter(line => !isFigureMention(line)) : labelled;
+    if (labelled.length > 0) return captions.length === 1 ? { line: captions[0]!, anchor: "caption" } : null;
+    // Otherwise accept one caption whose label differs only by OCR-confusable characters.
+    const corrected = lines.filter(line => {
+      const read = isCaption(line) && !isFigureMention(line) ? figureIdentifier(line.text) : null;
+      return read !== null && ocrFigureIdentifierMatches(read, figure);
+    });
+    return corrected.length === 1 ? { line: corrected[0]!, anchor: "ocr-corrected-caption" } : null;
   }
   const number = problemNumberFromQuery(query);
   if (number) {
-    const matches = lines.filter(line => {
-      if (/^\s*\d+[.)]\s*[a-z]/iu.test(query) && !/[a-z]/iu.test(line.text)) return false;
-      const start = line.text.replace(/^[^\p{L}\p{N}]+/u, "")
-        .match(/^([\dIl]{1,4})(?:\s*[.)]\s*|\s+|(?=m))/u)?.[1];
-      return start?.replace(/[Il]/gu, "1") === number;
-    });
-    return matches.length === 1 ? matches[0]! : null;
+    const matches = problemStartLines(lines, number, /^\s*\d+[.)]\s*[a-z]/iu.test(query));
+    return matches.length === 1 ? { line: matches[0]!, anchor: "problem-number" } : null;
   }
   // OCR often drops a decimal point or inserts spaces within a short unit label.
   const compact = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/gu, "");
   const exact = lines.filter(line => compact(line.text) === compact(query));
-  if (exact.length > 0) return exact.length === 1 ? exact[0]! : null;
+  if (exact.length > 0) return exact.length === 1 ? { line: exact[0]!, anchor: "label" } : null;
   const index = bestSemanticMatchIndex(lines.map(line => line.text), query);
-  return index < 0 ? null : lines[index]!;
+  return index < 0 ? null : { line: lines[index]!, anchor: "label" };
 }
 
-function visualRectAtAnchor(page: VisualPage, lines: VisualLine[], anchor: VisualLine, padding: number): PixelRect | null {
+function problemStartLines(lines: VisualLine[], number: string, requireLetters = false): VisualLine[] {
+  return lines.filter(line => {
+    if (requireLetters && !/[a-z]/iu.test(line.text)) return false;
+    const start = line.text.replace(/^[^\p{L}\p{N}]+/u, "")
+      .match(/^([\dIl]{1,4})(?:\s*[.)](?!\d)\s*|\s+|(?=m))/u)?.[1];
+    return start?.replace(/[Il]/gu, "1") === number;
+  });
+}
+
+// The printed start of a numbered problem. Handwritten answers such as "12) 120 m/s"
+// also start with the number, so prefer the one line that reads like a printed prompt.
+function problemAnchorLine(lines: VisualLine[], number: string): VisualLine | null {
+  const matches = problemStartLines(lines, number);
+  if (matches.length === 1) return matches[0]!;
+  const prompts = matches.filter(isProse);
+  return prompts.length === 1 ? prompts[0]! : null;
+}
+
+// Top of the next printed problem in the same column, which bounds this problem's region.
+function nextProblemTop(page: VisualPage, lines: VisualLine[], anchor: VisualLine): number {
+  const columnTolerance = page.width * 0.08;
+  const tops = lines.filter(line => line.top > anchor.top + anchor.height &&
+    Math.abs(line.left - anchor.left) <= columnTolerance && isProse(line) &&
+    /^[^\p{L}\p{N}]*\d{1,4}\s*[.)](?!\d)/u.test(line.text)).map(line => line.top);
+  return Math.min(page.height, ...tops);
+}
+
+function problemVisualRect(page: VisualPage, lines: VisualLine[], number: string, padding = 18): SemanticVisualMatch | null {
+  const anchor = problemAnchorLine(lines, number);
+  if (!anchor) return null;
+  const rect = visualRectAtAnchor(page, lines, anchor, padding, nextProblemTop(page, lines, anchor));
+  return rect ? { rect, anchor: "problem-number", anchorText: anchor.text } : null;
+}
+
+// A detection hint, not a crop: is there a sizeable drawing between this problem's start
+// and the next problem in its column? Stricter sizes keep handwriting from counting.
+function figureNearProblem(page: VisualPage, lines: VisualLine[], problemNumber: string): { caption: string | null } | null {
+  const number = normalizeProblemNumber(problemNumber);
+  if (!/^\d{1,4}[a-z]?$/u.test(number)) return null;
+  const anchor = problemAnchorLine(lines, number);
+  if (!anchor) return null;
+  const bottom = Math.min(nextProblemTop(page, lines, anchor), anchor.top + page.height * 0.4);
+  const [columnLeft, columnRight] = columnSpan(page, lines, anchor);
+  const drawing = page.components.find(component => component.top > anchor.top + anchor.height &&
+    component.top < bottom &&
+    component.width >= page.width * 0.06 && component.height >= page.height * 0.04 &&
+    component.width * component.height < page.width * page.height * 0.5 &&
+    component.left < columnRight && component.left + component.width > columnLeft);
+  if (!drawing) return null;
+  const caption = lines.find(line => isCaption(line) && !isFigureMention(line) &&
+    line.top >= anchor.top && line.top < bottom + page.height * 0.05 &&
+    line.left < columnRight && line.left + line.width > columnLeft);
+  return { caption: caption?.text.trim() ?? null };
+}
+
+// Horizontal extent of the anchor's column. OCR sometimes merges a line across both
+// columns of a two-column page; clamp it to the anchor's half so the other column's
+// drawings do not count.
+function columnSpan(page: VisualPage, lines: VisualLine[], anchor: VisualLine): [number, number] {
+  let left = anchor.left - page.width * 0.05;
+  let right = anchor.left + anchor.width + page.width * 0.05;
+  const prose = lines.filter(isProse);
+  const leftColumn = prose.filter(line => line.left < page.width * 0.25 && line.width < page.width * 0.55).length;
+  const rightColumn = prose.filter(line => line.left > page.width * 0.42 && line.left < page.width * 0.62).length;
+  if (leftColumn >= 3 && rightColumn >= 3) {
+    const middle = page.width / 2;
+    if (anchor.left < middle - page.width * 0.1) right = Math.min(right, middle + page.width * 0.03);
+    else left = Math.max(left, middle - page.width * 0.03);
+  }
+  return [left, right];
+}
+
+function visualRectAtAnchor(
+  page: VisualPage,
+  lines: VisualLine[],
+  anchor: VisualLine,
+  padding: number,
+  // Graphics starting at or below this line belong to a later problem.
+  limitTop = page.height,
+): PixelRect | null {
   const { width, height, components } = page;
   const prose = lines.filter(isProse);
   const inside = (inner: PixelRect, outer: PixelRect) => inner.left >= outer.left - 2 && inner.top >= outer.top - 2 &&
     inner.left + inner.width <= outer.left + outer.width + 2 && inner.top + inner.height <= outer.top + outer.height + 2;
   const graphics = components.filter(c => c.width >= width * 0.025 && c.height >= height * 0.022 &&
-    c.width * c.height < width * height * 0.6 &&
+    c.width * c.height < width * height * 0.6 && c.top < limitTop &&
     !prose.some(line => inside(c, line)));
   const caption = isCaption(anchor);
   const prompt = isProse(anchor) || Boolean(problemNumberFromQuery(anchor.text));
@@ -1427,13 +1657,39 @@ function visualRectAtAnchor(page: VisualPage, lines: VisualLine[], anchor: Visua
     width: bounds.width + leftPadding + rightPadding, height: bounds.height + topPadding + bottomPadding }, width, height);
 }
 
-function semanticVisualRect(page: VisualPage, lines: VisualLine[], query: string, padding = 18): PixelRect | null {
-  const anchor = visualAnchor(lines, query);
-  return anchor ? visualRectAtAnchor(page, lines, anchor, padding) : null;
+type SemanticVisualMatch = { rect: PixelRect; anchor: PdfCropAnchor; anchorText: string };
+
+function semanticVisualRect(page: VisualPage, lines: VisualLine[], query: string, padding = 18): SemanticVisualMatch | null {
+  const found = visualAnchor(lines, query);
+  const rect = found ? visualRectAtAnchor(page, lines, found.line, padding) : null;
+  return found && rect ? { rect, anchor: found.anchor, anchorText: found.line.text } : null;
+}
+
+function cropAnchorNote(
+  match: SemanticVisualMatch,
+  region: { query: string; problemNumber?: string },
+  fellBackToProblem: boolean,
+): string | null {
+  if (match.anchor === "ocr-corrected-caption") {
+    return `Located at the scanned caption read as "${match.anchorText.trim()}", an OCR misreading of ${region.query}. Confirm the image shows the requested figure before attaching it.`;
+  }
+  if (fellBackToProblem) {
+    return `${region.query} was not readable on this page, so this is the drawing inside problem ${region.problemNumber}'s region. Confirm the image shows the required visual before attaching it.`;
+  }
+  return null;
 }
 
 export async function semanticVisualRectFromImage(imagePath: string, lines: VisualLine[], query: string, padding = 18): Promise<PixelRect | null> {
-  return semanticVisualRect(await analyzeVisualPage(imagePath), lines, query, padding);
+  return semanticVisualRect(await analyzeVisualPage(imagePath), lines, query, padding)?.rect ?? null;
+}
+
+// Test hooks for the detection-only and problem-number paths.
+export async function problemVisualRectFromImage(imagePath: string, lines: VisualLine[], problemNumber: string, padding = 18): Promise<PixelRect | null> {
+  return problemVisualRect(await analyzeVisualPage(imagePath), lines, problemNumber, padding)?.rect ?? null;
+}
+
+export async function figureNearProblemFromImage(imagePath: string, lines: VisualLine[], problemNumber: string): Promise<{ caption: string | null } | null> {
+  return figureNearProblem(await analyzeVisualPage(imagePath), lines, problemNumber);
 }
 
 function scaleAndClampRect(
@@ -1507,7 +1763,8 @@ function semanticMatchScore(text: string, query: string): number {
 
 function problemNumberFromQuery(query: string): string | null {
   const explicit = query.match(/\b(?:problem|question|exercise)\s*#?\s*(\d{1,4}[a-z]?)\b/iu)?.[1];
-  const leading = query.match(/^\s*(\d{1,4}[a-z]?)(?:\s*[.)\]:-]|\s*$)/iu)?.[1];
+  // "12.0 m" and "65.0°" are labels, not problems 12 and 65.
+  const leading = query.match(/^\s*(\d{1,4}[a-z]?)(?:\s*[.)\]:-](?!\d)|\s*$)/iu)?.[1];
   return explicit || leading ? normalizeProblemNumber(explicit ?? leading!) : null;
 }
 

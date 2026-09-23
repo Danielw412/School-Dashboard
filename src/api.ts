@@ -36,6 +36,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+// Saved run images (problem crops, source pages) are served from their workspace.
+export function workspaceFileUrl(workspaceId: string, path: string): string {
+  return `/workspace-files/${encodeURIComponent(workspaceId)}/${path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export const schoolApi = {
   tasks: () => api<TrackedTask[]>("/api/tasks?completed=all"),
   task: (logicalId: string) => api<TrackedTask>(`/api/tasks/${encodeURIComponent(logicalId)}`),

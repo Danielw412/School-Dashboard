@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ const apiMocks = vi.hoisted(() => ({
   cancelRun: vi.fn(),
 }));
 
-vi.mock("../api", () => ({ schoolApi: apiMocks }));
+vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), schoolApi: apiMocks }));
 
 const task = {
   logical_id: "physics:assignment:42",
@@ -215,6 +215,81 @@ describe("AssignmentWorkspace directions", () => {
     expect(screen.getAllByText("Answer bank")).toHaveLength(1);
     expect(screen.getByRole("table", { name: "Visible-light reference" })).toBeInTheDocument();
     expect(screen.getByText("410 nm")).toBeInTheDocument();
+  });
+
+  it("keeps problems with missing visuals and opens their source page beside the problem", async () => {
+    const run = problemRun();
+    const cite = (page: number) => [{ sourceName: "Circular motion packet.pdf", sourceUrl: null, page, evidence: "Printed problem" }];
+    run.output = {
+      assignmentTitle: "Unit 2 Assignment 2",
+      summary: "Three problems found.",
+      answerBanks: [],
+      problems: [{
+        number: "19",
+        markdown: "A swing ride's chairs hang from 12.0-m cables, as the drawing shows.",
+        answerBankId: null,
+        table: null,
+        provenance: cite(2),
+        visual: null,
+        missingVisual: { reference: "The drawing", status: "not_located", detail: "The swing diagram is on page 2." },
+        sourcePages: [{ documentId: "document-2110126", page: 2 }],
+        confidence: "high",
+      }, {
+        number: "39",
+        markdown: "Find the maximum speed. (Hint: see Figure 5.21.)",
+        answerBankId: null,
+        table: null,
+        provenance: cite(3),
+        visual: null,
+        missingVisual: { reference: "Figure 5.21", status: "not_in_source", detail: "It is a textbook figure." },
+        sourcePages: [{ documentId: "document-2110126", page: 3 }],
+        confidence: "medium",
+      }, {
+        number: "11",
+        markdown: "A 125-kg crate rests on the flatbed of a truck.",
+        answerBankId: null,
+        table: null,
+        provenance: cite(2),
+        visual: null,
+        missingVisual: null,
+        sourcePages: [{ documentId: "document-2110126", page: 2 }],
+        confidence: "high",
+      }],
+      unresolved: [],
+      sourcesInspected: [],
+      sourceDocuments: [{
+        id: "document-2110126",
+        name: "Circular motion packet.pdf",
+        pageCount: 7,
+        pages: [1, 2, 3, 4, 5, 6, 7].map((page) => ({ page, path: `source-pages/packet-page-${page}.jpg` })),
+      }],
+    };
+    apiMocks.runs.mockResolvedValue([run]);
+    const user = userEvent.setup();
+    renderWorkspace("?tab=problems");
+
+    expect(await screen.findByText("The drawing couldn't be attached")).toBeInTheDocument();
+    expect(screen.getByText("Figure 5.21 isn't included in the assignment files")).toBeInTheDocument();
+    // Only visual problems get the prominent page button; every problem lists its page under sources.
+    expect(screen.getAllByRole("button", { name: /^View page/ }).map((button) => button.textContent)).toEqual(["View page 2", "View page 3"]);
+
+    await user.click(screen.getByRole("button", { name: "View page 2" }));
+    const viewer = screen.getByRole("dialog", { name: "Problem 19" });
+    expect(viewer).toHaveTextContent("Page 2 of 7 · Circular motion packet.pdf");
+    // The problem text stays on screen next to the non-modal page window.
+    expect(screen.getByText(/as the drawing shows/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getByRole("img", { name: "Circular motion packet.pdf page 3" }))
+      .toHaveAttribute("src", "/workspace-files/workspace-1/source-pages/packet-page-3.jpg");
+
+    const crateSources = screen.getAllByText("View sources")[2]!.closest("details")!;
+    await user.click(within(crateSources).getByText("View sources"));
+    await user.click(within(crateSources).getByRole("button", { name: "Page 2" }));
+    expect(screen.getByRole("dialog", { name: "Problem 11" })).toHaveTextContent("Page 2 of 7");
+
+    await user.click(screen.getByRole("button", { name: "Close page viewer" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 

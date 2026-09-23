@@ -11,9 +11,11 @@ import {
   compactEventForLog,
   enforceProblemVisualPolicy,
   moduleSequenceTarget,
+  parseProblemExtractionOutput,
   problemRequiresVisual,
   resolveAgentPreferences,
   sanitizeStoredAgentEvents,
+  savedExtractionAssetPaths,
   stripLegacyAnswerMetadata,
 } from "./agent-runner.js";
 import type { AssignmentContext } from "./canvas-client.js";
@@ -21,6 +23,23 @@ import { buildMcpConfigOverrides } from "./codex-execution.js";
 import { defaultSettings } from "./settings.js";
 
 const temporaryDirectories: string[] = [];
+
+function problem(
+  number: string,
+  markdown: string,
+  missingVisual: Parameters<typeof enforceProblemVisualPolicy>[0]["problems"][number]["missingVisual"] = null,
+) {
+  return {
+    number,
+    markdown,
+    answerBankId: null,
+    table: null,
+    provenance: [{ sourceName: "Packet", sourceUrl: null, page: 2, evidence: `Problem ${number}` }],
+    visual: null,
+    missingVisual,
+    confidence: "high" as const,
+  };
+}
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -129,9 +148,14 @@ describe("agent run preferences", () => {
     expect(instructions).toContain("one distinct refinement contact sheet");
     expect(instructions).toContain("every necessary page together in one render_pdf_pages call");
     expect(instructions).toContain("pass that heading");
-    expect(instructions).toContain("Set visual to null by default");
+    expect(instructions).toContain("Set visual and missingVisual to null by default");
     expect(instructions).toContain("if and only if the problem requires");
-    expect(instructions).toContain("call semantic_crop_pdf once");
+    expect(instructions).toContain("in one semantic_crop_pdf call");
+    expect(instructions).toContain("set problemNumber whenever the problem is numbered");
+    expect(instructions).toContain("Look at every returned crop before using it");
+    expect(instructions).toContain("missingVisual with status not_located");
+    expect(instructions).toContain("missingVisual with status not_in_source");
+    expect(instructions).toContain("figureCaptions");
     expect(instructions).toContain("Render pages only when genuinely needed");
     expect(instructions).toContain("Do not crop or attach text-only problems");
     expect(instructions).toContain("Stop as soon as every requested problem is verified");
@@ -140,14 +164,19 @@ describe("agent run preferences", () => {
     expect(instructions).toContain("always set each region's kind");
   });
 
-  it("rejects missing required visuals and removes page crops from text-only problems", () => {
+  it("flags missing required visuals per problem and removes page crops from text-only problems", () => {
     expect(problemRequiresVisual("Calculate $A \\cdot B$ from the listed components.")).toBe(false);
     expect(problemRequiresVisual("Sketch a diagram, then calculate the resultant.")).toBe(false);
     expect(problemRequiresVisual("Find the image distance for the lens.")).toBe(false);
+    expect(problemRequiresVisual("A 125-kg crate rests on the flatbed of a truck that moves at 15.0 m/s.")).toBe(false);
     expect(problemRequiresVisual("Use Figure P3.15 to determine the resultant.")).toBe(true);
     expect(problemRequiresVisual("Determine the components of the force shown below.")).toBe(true);
     expect(problemRequiresVisual("The photoelectron spectra below show two peaks.")).toBe(true);
     expect(problemRequiresVisual("The mass spectrometer produced the data below.")).toBe(true);
+    // The September 23 misses: plain wording that still depends on the packet's drawing.
+    expect(problemRequiresVisual("Chairs are swung in a circle by 12.0-m cables attached to a vertical rotating pole, as the drawing shows.")).toBe(true);
+    expect(problemRequiresVisual("She reaches the point where a jump is necessary (point A in the drawing).")).toBe(true);
+    expect(problemRequiresVisual("The stone is wedged into the tread, as shown.")).toBe(true);
 
     const output = enforceProblemVisualPolicy({
       assignmentTitle: "Vectors",
@@ -161,6 +190,7 @@ describe("agent run preferences", () => {
           table: null,
           provenance: [{ sourceName: "Packet", sourceUrl: null, page: 2, evidence: "Problem 12" }],
           visual: { path: "renders/page-2.png", page: 2, caption: "Source page", kind: "image" },
+          missingVisual: null,
           confidence: "high",
         },
         {
@@ -170,6 +200,7 @@ describe("agent run preferences", () => {
           table: null,
           provenance: [{ sourceName: "Packet", sourceUrl: null, page: 3, evidence: "Problem 15" }],
           visual: { path: "renders/figure-15.png", page: 3, caption: "Figure P3.15", kind: "figure" },
+          missingVisual: null,
           confidence: "high",
         },
       ],
@@ -180,28 +211,65 @@ describe("agent run preferences", () => {
     expect(output.problems[0]?.visual).toBeNull();
     expect(output.problems[1]?.visual?.path).toBe("renders/figure-15.png");
 
-    expect(() => enforceProblemVisualPolicy({
-      assignmentTitle: "Atomic theory",
-      summary: "One problem",
+    const partial = enforceProblemVisualPolicy({
+      assignmentTitle: "Circular motion",
+      summary: "Three problems",
       answerBanks: [],
+      problems: [
+        problem("2", "The photoelectron spectra below show two peaks."),
+        problem("39", "The maximum tension ... (Hint: see Figure 5.21.)", {
+          reference: "Figure 5.21",
+          status: "not_in_source",
+          detail: "Figure 5.21 is a textbook figure that the packet does not reproduce.",
+        }),
+        problem("11", "A 125-kg crate rests on the flatbed of a truck."),
+      ],
+      unresolved: [],
+      sourcesInspected: [{ name: "Packet", type: "PDF", url: null, pages: [26] }],
+    });
+
+    // Unexplained gaps become warnings; Luna's own explanation is kept; text-only stays clean.
+    expect(partial.problems[0]!.missingVisual).toEqual({
+      reference: "The photoelectron spectra",
+      status: "not_located",
+      detail: expect.stringContaining("Open the source page"),
+    });
+    expect(partial.problems[1]!.missingVisual?.status).toBe("not_in_source");
+    expect(partial.problems[2]!.missingVisual).toBeNull();
+
+    expect(() => enforceProblemVisualPolicy({
+      ...partial,
+      problems: [{ ...partial.problems[2]!, answerBankId: "bank-1" }],
+    })).toThrow(/unavailable answer bank/);
+  });
+
+  it("reads runs saved before per-problem missing visuals and source pages", () => {
+    const legacy = parseProblemExtractionOutput({
+      assignmentTitle: "Vectors",
+      summary: "One problem",
       problems: [{
-        number: "2",
-        markdown: "The photoelectron spectra below show two peaks.",
-        answerBankId: null,
-        table: null,
-        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 26, evidence: "Problem 2" }],
-        visual: null,
+        number: "1",
+        markdown: "Add the vectors.",
+        provenance: [{ sourceName: "Packet", sourceUrl: null, page: 1, evidence: "Problem 1" }],
+        visual: { path: "renders/figure.png", page: 1, caption: "Figure 1" },
         confidence: "high",
       }],
       unresolved: [],
-      sourcesInspected: [{ name: "Packet", type: "PDF", url: null, pages: [26] }],
-    })).toThrow(/require a source visual/);
+      sourcesInspected: [],
+    });
+
+    expect(legacy.problems[0]).toMatchObject({ missingVisual: null, sourcePages: [], visual: { kind: "image" } });
+    expect(legacy.sourceDocuments).toEqual([]);
+    expect(savedExtractionAssetPaths(legacy)).toEqual(["renders/figure.png"]);
   });
 
   it("keeps answer generation local to parsed questions and visuals", () => {
     const instructions = buildInstructions("answerKey", defaultSettings.prompts.answerKey, null);
 
     expect(instructions).toContain("attached visual");
+    expect(instructions).toContain("sourceDocuments holds full-page images");
+    expect(instructions).toContain("whenever it has a missingVisual");
+    expect(instructions).toContain("never invent values from it");
     expect(instructions).toContain("no Canvas helper or network access");
     expect(instructions).toContain("do not generate a checks list");
     expect(instructions).toContain("Do not navigate Canvas, cite extracted provenance, or mention sources");
