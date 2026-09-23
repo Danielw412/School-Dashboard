@@ -36,7 +36,7 @@ if ($Uninstall) {
     if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
-    Write-Host "The laptop agent worker no longer starts automatically. Agents show as unavailable on the dashboard."
+    Write-Host "The laptop agent worker no longer starts automatically. Laptop agents show as unavailable on the dashboard; switch Run agents on to Server to keep using agents."
     return
 }
 

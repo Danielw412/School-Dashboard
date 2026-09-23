@@ -177,14 +177,7 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
       <div className="diagnostics-actions"><span>Updated {relativeTime(diagnostics.generatedAt)}</span><button className="secondary-button" onClick={refresh}><RefreshCw size={15} />Refresh</button></div>
       <div className="diagnostic-cards">
         <DiagnosticCard label="Current model" value={diagnostics.currentModel} detail={`${diagnostics.reasoningEffort} reasoning`} ok />
-        {diagnostics.agents ? <DiagnosticCard
-          label="Agents"
-          value={diagnostics.agents.mode === "local" ? "This machine" : diagnostics.agents.available ? diagnostics.agents.worker?.name ?? "Connected" : "Offline"}
-          detail={diagnostics.agents.available && diagnostics.agents.mode === "worker"
-            ? `Codex ${diagnostics.agents.worker?.codexVersion ?? "unknown"} · ${diagnostics.agents.activeJobs} running · ${diagnostics.agents.queuedJobs} queued`
-            : diagnostics.agents.message}
-          ok={diagnostics.agents.available}
-        /> : null}
+        {diagnostics.agents ? <AgentCards agents={diagnostics.agents} /> : null}
         <DiagnosticCard label="Canvas" value={diagnostics.connections.canvas.connected ? diagnostics.connections.canvas.name || "Connected" : "Unavailable"} detail={diagnostics.connections.canvas.error || "Credential accepted"} ok={diagnostics.connections.canvas.connected} />
         <DiagnosticCard label="Task Sync" value={diagnostics.connections.taskSync.connected ? "Connected" : "Unavailable"} detail={diagnostics.connections.taskSync.error || (diagnostics.connections.taskSyncTunnel ? `${diagnostics.connections.taskSyncTunnel.target} over SSH` : diagnostics.connections.taskSyncApiBase)} ok={diagnostics.connections.taskSync.connected} />
         <DiagnosticCard label="Predictor" value={diagnostics.predictor.configured ? "Configured" : "Optional"} detail={diagnostics.predictor.message} ok={diagnostics.predictor.configured} />
@@ -194,6 +187,30 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
       <section className="diagnostic-section"><header><div><h2>Canvas and tool activity</h2></div></header><div className="activity-list">{diagnostics.activity.map((event) => <div key={event.id}><span className={`activity-dot ${event.status}`} /><span><strong>{event.action}</strong><small>{event.category}</small></span><p>{event.summary}</p><time>{relativeTime(event.timestamp)}</time></div>)}</div></section>
     </div>
   );
+}
+
+function AgentCards({ agents }: { agents: NonNullable<Diagnostics["agents"]> }) {
+  const targets = agents.targets ?? [];
+  if (targets.length < 2) {
+    return <DiagnosticCard
+      label="Agents"
+      value={agents.mode === "local" ? "This machine" : agents.available ? agents.worker?.name ?? "Connected" : "Offline"}
+      detail={agents.available && agents.mode === "worker"
+        ? `Codex ${agents.worker?.codexVersion ?? "unknown"} · ${agents.activeJobs} running · ${agents.queuedJobs} queued`
+        : agents.message}
+      ok={agents.available}
+    />;
+  }
+  // Server + laptop deployment: one card per place agents can run, marking where new runs go.
+  return <>{targets.map((target) => <DiagnosticCard
+    key={target.id}
+    label={`${target.label} agents${target.id === agents.mode ? " · selected" : ""}`}
+    value={target.available ? target.host ?? "Ready" : target.id === "worker" ? "Offline" : "Unavailable"}
+    detail={target.available
+      ? `${target.id === "worker" ? `Codex ${agents.worker?.codexVersion ?? "unknown"} · ` : ""}${target.activeJobs} running · ${target.queuedJobs} queued`
+      : target.message}
+    ok={target.available}
+  />)}</>;
 }
 
 function SettingsSection({ icon: Icon, title, children }: { icon: LucideIcon; title: string; children: React.ReactNode }) {

@@ -34,6 +34,15 @@ vi.mock("@openai/codex-sdk", () => ({
   },
 }));
 
+const codexModels = vi.hoisted(() => ({
+  listCodexMcpServers: vi.fn(async (options: { env?: Record<string, string>; cwd?: string }): Promise<string[] | null> => {
+    void options;
+    return null;
+  }),
+}));
+
+vi.mock("./codex-models.js", () => codexModels);
+
 let codexHome: string;
 const savedEnvironment = { ...process.env };
 
@@ -41,6 +50,8 @@ beforeEach(async () => {
   sdk.options.length = 0;
   sdk.threadOptions.length = 0;
   sdk.script = { events: [], exitError: null };
+  codexModels.listCodexMcpServers.mockReset();
+  codexModels.listCodexMcpServers.mockResolvedValue(null);
   codexHome = await mkdtemp(join(tmpdir(), "school-codex-home-"));
   await writeFile(join(codexHome, "config.toml"), "[mcp_servers.personal_notes]\ncommand = \"notes\"\n");
   process.env.CODEX_HOME = codexHome;
@@ -99,6 +110,36 @@ describe("runCodexTurn", () => {
       workingDirectory: "C:/worker-workspaces/task-1",
       approvalPolicy: "never",
     });
+  });
+
+  it("disables exactly the MCP servers this machine's Codex reports, so a missing desktop-app server is not invented", async () => {
+    codexModels.listCodexMcpServers.mockResolvedValue(["personal_notes", "school_dashboard"]);
+    sdk.script.events = [
+      { type: "item.completed", item: { id: "m", type: "agent_message", text: "{}" } },
+    ] as ThreadEvent[];
+
+    await runCodexTurn(turn, { signal: new AbortController().signal, onEvent: () => undefined });
+
+    const options = sdk.options[0] as { configOverrides: string[] };
+    expect(options.configOverrides).toContain("mcp_servers.personal_notes.enabled=false");
+    expect(options.configOverrides).not.toContain("mcp_servers.node_repl.enabled=false");
+    expect(options.configOverrides).not.toContain("mcp_servers.school_dashboard.enabled=false");
+    expect(codexModels.listCodexMcpServers).toHaveBeenCalledWith(expect.objectContaining({ cwd: "C:/worker-workspaces/task-1" }));
+    expect(codexModels.listCodexMcpServers.mock.calls[0]![0].env).not.toHaveProperty("CANVAS_API_TOKEN");
+  });
+
+  it("falls back to config.toml and the desktop-app servers when Codex cannot list its servers", async () => {
+    sdk.script.events = [
+      { type: "item.completed", item: { id: "m", type: "agent_message", text: "{}" } },
+    ] as ThreadEvent[];
+
+    await runCodexTurn(turn, { signal: new AbortController().signal, onEvent: () => undefined });
+
+    const options = sdk.options[0] as { configOverrides: string[] };
+    expect(options.configOverrides).toEqual(expect.arrayContaining([
+      "mcp_servers.node_repl.enabled=false",
+      "mcp_servers.personal_notes.enabled=false",
+    ]));
   });
 
   it("reports the turn's own failure instead of the CLI's exit noise", async () => {

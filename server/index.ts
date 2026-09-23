@@ -6,19 +6,21 @@ import multer from "multer";
 import { z, ZodError } from "zod";
 
 import { ActivityStore } from "./activity.js";
-import {
-  type AgentExecutor,
-  AgentsUnavailableError,
-  LocalCodexExecutor,
-} from "./agent-execution.js";
+import { AgentsUnavailableError, LocalCodexExecutor } from "./agent-execution.js";
 import { buildAgentProgress } from "./agent-progress.js";
+import {
+  AgentExecutionRouter,
+  AgentTargetStore,
+  agentTargetSchema,
+  UnknownAgentTargetError,
+} from "./agent-routing.js";
 import { AgentRunner, AgentRunStore, parseProblemExtractionOutput } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
-import { codexCliVersion, listCodexModels } from "./codex-models.js";
+import { codexCliVersion, codexSignInStatus, listCodexModels } from "./codex-models.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
 import { CourseDirectionsStore, courseDirectionsRouter } from "./course-directions.js";
-import { APP_ROOT, env, WORKER_STATE_PATH } from "./env.js";
+import { AGENT_TARGET_PATH, APP_ROOT, CODEX_MODELS_PATH, env, WORKER_STATE_PATH } from "./env.js";
 import { ModelCatalog } from "./model-catalog.js";
 import { networkAccessMiddleware } from "./network-access.js";
 import { SettingsStore } from "./settings.js";
@@ -41,7 +43,19 @@ app.use(express.json({ limit: "2mb" }));
 
 const MCP_PATH = "/api/internal/canvas-mcp";
 const activity = new ActivityStore();
-const models = new ModelCatalog();
+// Local mode: Codex runs in this process only. Worker mode (the server + laptop deployment): each
+// new run goes to the laptop agent worker or to Codex on this server, whichever the student
+// selected with the dashboard's switch (the laptop until they choose).
+const agentTargets = new AgentTargetStore({
+  path: AGENT_TARGET_PATH,
+  targets: env.agentExecution === "worker" ? ["local", "worker"] : ["local"],
+  fallback: env.agentExecution,
+});
+await agentTargets.load();
+const models = new ModelCatalog(CODEX_MODELS_PATH, {
+  activeTarget: () => agentTargets.current(),
+  legacyTarget: env.agentExecution,
+});
 await models.load();
 const settingsStore = new SettingsStore(undefined, models.isSelectable);
 const courseDirections = new CourseDirectionsStore();
@@ -64,8 +78,7 @@ const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
 await runs.failInterrupted();
 const toolSessions = new CompactingCanvasToolSessions(canvas, workspaces, activity, taskSync);
-// Worker mode: Codex runs on the laptop agent worker, which dials in over the tailnet.
-// Local mode: Codex runs in this process, as it did before the server split.
+// The laptop agent worker dials in over the tailnet (worker mode only).
 const workerHub = env.agentExecution === "worker"
   ? new WorkerHub({
       token: env.workerToken,
@@ -73,14 +86,23 @@ const workerHub = env.agentExecution === "worker"
       activity,
       mcpPath: MCP_PATH,
       statePath: WORKER_STATE_PATH,
-      onModels: (report) => models.record(report),
+      onModels: (report) => models.record({ ...report, target: "worker" }),
     })
   : null;
 await workerHub?.loadState();
+// Codex in this process reaches the same assignment-scoped MCP tools over loopback.
 const localMcpHost = ["0.0.0.0", "::", ""].includes(env.host) ? "127.0.0.1" : env.host;
 const localMcpUrl = `http://${localMcpHost.includes(":") ? `[${localMcpHost}]` : localMcpHost}:${env.port}${MCP_PATH}`;
-const executor: AgentExecutor = workerHub ?? new LocalCodexExecutor(localMcpUrl);
-if (!workerHub) void recordLocalCodexModels();
+const localExecutor = new LocalCodexExecutor({
+  mcpUrl: localMcpUrl,
+  role: workerHub ? "server" : "computer",
+  maxConcurrentJobs: env.agentConcurrency,
+  activity,
+  signInStatus: () => codexSignInStatus(),
+});
+void localExecutor.refreshSignIn();
+const executor = new AgentExecutionRouter(agentTargets, { local: localExecutor, worker: workerHub });
+void recordLocalCodexModels();
 const agentRunner = new AgentRunner(
   settingsStore,
   taskSync,
@@ -157,12 +179,39 @@ app.get("/api/agent-models", (_request, response) => {
 });
 
 app.post("/api/agent-models/refresh", (_request, response) => {
-  if (workerHub) {
+  void localExecutor.refreshSignIn();
+  if (executor.mode === "worker" && workerHub) {
     response.status(202).json({ requested: workerHub.requestModelRefresh() });
     return;
   }
   void recordLocalCodexModels();
   response.status(202).json({ requested: true });
+});
+
+// Where new agent runs execute. Runs already underway stay where they started.
+app.get("/api/agent-execution", (_request, response) => {
+  response.json(executor.status());
+});
+
+app.put("/api/agent-execution", async (request, response) => {
+  const { target } = z.object({ target: agentTargetSchema }).parse(request.body);
+  const previous = executor.mode;
+  const status = await executor.select(target);
+  if (target === "local") {
+    void localExecutor.refreshSignIn();
+    if (!models.hasReport("local")) void recordLocalCodexModels();
+  }
+  if (previous !== target) {
+    const selected = status.targets?.find((item) => item.id === target);
+    await activity.record({
+      category: "system",
+      action: "agent-execution.target",
+      status: "completed",
+      summary: `New agent runs will use the ${executor.label(target).toLowerCase()}${selected?.host ? ` (${selected.host})` : ""}`,
+      metadata: { target, previous },
+    });
+  }
+  response.json(status);
 });
 
 app.put("/api/settings", async (request, response) => {
@@ -405,7 +454,7 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   void _next;
   const status = error instanceof ToolAuthorizationError
     ? 403
-    : error instanceof ZodError
+    : error instanceof ZodError || error instanceof UnknownAgentTargetError
       ? 400
       : error instanceof AgentsUnavailableError
         ? 503
@@ -436,11 +485,12 @@ const httpServer = app.listen(env.port, env.host, () => {
     action: "server.start",
     status: "completed",
     summary: `School Dashboard listening on ${address}`,
-    metadata: { agentExecution: executor.mode },
+    metadata: { agentExecution: executor.mode, agentTargets: executor.targets },
   });
-  process.stdout.write(
-    `School Dashboard API listening on ${address} (agents: ${workerHub ? "laptop agent worker" : "local Codex"})\n`,
-  );
+  const agents = workerHub
+    ? `laptop agent worker or this server; new runs use the ${executor.label(executor.mode).toLowerCase()}`
+    : "local Codex";
+  process.stdout.write(`School Dashboard API listening on ${address} (agents: ${agents})\n`);
 });
 workerHub?.attach(httpServer);
 // systemd stops the service with SIGTERM; exit cleanly so a restart is not logged as a failure.
@@ -455,17 +505,18 @@ if (workerHub && !env.workerToken) {
   process.stderr.write("SCHOOL_DASHBOARD_AGENT_EXECUTION=worker needs SCHOOL_DASHBOARD_WORKER_TOKEN; agents stay unavailable until it is set.\n");
 }
 
-// Local mode reports this machine's Codex model list, as the laptop worker does in worker mode.
+// This machine's Codex model list, reported like the laptop worker reports its own.
 async function recordLocalCodexModels(): Promise<void> {
   const source = hostname();
   try {
-    await models.record({ source, codexVersion: codexCliVersion(), models: await listCodexModels(), error: null });
+    await models.record({ source, codexVersion: codexCliVersion(), models: await listCodexModels(), error: null, target: "local" });
   } catch (error) {
     await models.record({
       source,
       codexVersion: codexCliVersion(),
       models: null,
       error: error instanceof Error ? error.message : "Could not list Codex models.",
+      target: "local",
     }).catch(() => undefined);
   }
 }

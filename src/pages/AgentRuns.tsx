@@ -26,7 +26,7 @@ export function AgentRunsPage() {
             <button className="run-row" key={run.id} onClick={() => setSelectedId(run.id)}>
               <span className="run-icon"><Cpu size={18} /></span>
               <span className="run-main"><strong>{featureName(run.feature)}</strong><span>{run.taskTitle}</span><small>{run.courseName}</small></span>
-              <span className="run-model">{modelLabel(run.model)}<small>{run.reasoningEffort}</small></span>
+              <span className="run-model">{modelLabel(run.model)}<small>{run.reasoningEffort}{run.execution ? ` · ${run.execution.label}` : ""}</small></span>
               <RunStatus status={run.status} />
               <span className="run-time"><Clock3 size={14} />{relativeTime(run.startedAt)}</span>
               <ChevronRight size={17} />
@@ -43,6 +43,7 @@ export function AgentRunsPage() {
           <dl className="diagnostic-dl">
             <div><dt>Model</dt><dd>{selected.model}</dd></div>
             <div><dt>Reasoning</dt><dd>{selected.reasoningEffort}</dd></div>
+            <div><dt>Ran on</dt><dd>{executionLabel(selected)}</dd></div>
             <div><dt>Thread</dt><dd>{selected.threadId ?? "Not started"}</dd></div>
             <div><dt>Tokens</dt><dd>{selected.usage ? (selected.usage.input_tokens + selected.usage.output_tokens).toLocaleString() : "Unavailable"}</dd></div>
           </dl>
@@ -54,6 +55,11 @@ export function AgentRunsPage() {
       ) : null}
     </div>
   );
+}
+
+function executionLabel(run: AgentRun) {
+  if (!run.execution) return "Not recorded";
+  return run.execution.host ? `${run.execution.label} (${run.execution.host})` : run.execution.label;
 }
 
 function featureName(feature: AgentRun["feature"]) {

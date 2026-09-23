@@ -2,7 +2,7 @@
 # it as ~/.config/systemd/user/school-dashboard.service. With lingering enabled for the user,
 # the dashboard starts at boot without anyone signing in.
 [Unit]
-Description=School Dashboard (web UI, API, and laptop agent job server)
+Description=School Dashboard (web UI, API, agent runs, and laptop agent job server)
 Documentation=https://github.com/Danielw412/School-Dashboard
 # Task Sync is optional at startup: the dashboard reports it unavailable until it answers.
 Wants=canvas-task-sync.service
@@ -13,15 +13,17 @@ Type=simple
 WorkingDirectory=@APP_DIR@
 # Listens on SCHOOL_DASHBOARD_HOST:SCHOOL_DASHBOARD_PORT from .env (0.0.0.0:8892 on the server)
 # and only answers loopback and Tailscale peers. The laptop agent worker dials in to
-# /api/agent-worker/connect; nothing on this machine runs Codex.
+# /api/agent-worker/connect. When the dashboard's "Run agents on" switch selects the server, Codex
+# runs here as this user, with this machine's ~/.codex, in its read-only sandbox.
 ExecStart=@NODE@ @APP_DIR@/node_modules/tsx/dist/cli.mjs server/index.ts
 Environment=NODE_ENV=production
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
 
-# A runaway guard, not a working limit; PDF rendering and OCR stay far below this.
-MemoryMax=2G
+# A runaway guard, not a working limit; PDF rendering, OCR, and server-side Codex runs
+# (SCHOOL_DASHBOARD_AGENT_CONCURRENCY at a time) stay well below this.
+MemoryMax=4G
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=full

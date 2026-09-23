@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -37,6 +37,67 @@ export function codexCliVersion(): string | null {
   } catch {
     return null;
   }
+}
+
+// Whether this machine's Codex has credentials (auth.json or the OS keyring), without starting a
+// turn. `ready: null` means the check itself could not run, which is not treated as signed out.
+export type CodexSignIn = { ready: boolean | null; detail: string };
+
+export function codexSignInStatus(options: { binary?: string; timeoutMs?: number } = {}): Promise<CodexSignIn> {
+  let binary: string;
+  try {
+    binary = options.binary ?? resolveCodexBinary();
+  } catch (error) {
+    return Promise.resolve({ ready: false, detail: error instanceof Error ? error.message : "Codex is not installed." });
+  }
+  return new Promise((resolve) => {
+    execFile(binary, ["login", "status"], { timeout: options.timeoutMs ?? 15_000, windowsHide: true }, (error, stdout, stderr) => {
+      // `codex login status` prints warnings first and its verdict last ("Logged in using ChatGPT").
+      const detail = `${stdout}\n${stderr}`.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+      if (!error) {
+        resolve({ ready: true, detail });
+      } else if (typeof error.code === "number" && !error.killed) {
+        resolve({ ready: false, detail: detail || "Not logged in" });
+      } else {
+        resolve({ ready: null, detail: error.message });
+      }
+    });
+  });
+}
+
+// Every MCP server Codex's merged configuration defines on this machine, from any config layer, as
+// `codex exec` would see it from `cwd`. Null when Codex cannot be asked.
+export function listCodexMcpServers(options: {
+  env?: Record<string, string>;
+  cwd?: string;
+  binary?: string;
+  timeoutMs?: number;
+} = {}): Promise<string[] | null> {
+  let binary: string;
+  try {
+    binary = options.binary ?? resolveCodexBinary();
+  } catch {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    execFile(binary, ["mcp", "list", "--json"], {
+      env: options.env,
+      cwd: options.cwd,
+      timeout: options.timeoutMs ?? 15_000,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) return resolve(null);
+      try {
+        const servers: unknown = JSON.parse(stdout);
+        resolve(Array.isArray(servers)
+          ? servers.flatMap((server: { name?: unknown } | null) => typeof server?.name === "string" ? [server.name] : [])
+          : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
 }
 
 type RpcModel = {

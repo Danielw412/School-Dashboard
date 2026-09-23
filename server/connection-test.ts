@@ -56,19 +56,7 @@ export async function runConnectionTest(dependencies: {
     timed("canvas-credentials", "Canvas credentials", async () => dependencies.canvasCredentialConfigured
       ? { status: "passed" as const, detail: "The Canvas base URL and server-side API token are configured." }
       : { status: "failed" as const, detail: "CANVAS_API_TOKEN is missing from the local environment." }),
-    timed("codex-sdk", dependencies.agents.mode === "worker" ? "Laptop agent worker" : "Codex agent runtime", async () => {
-      const { agents } = dependencies;
-      if (agents.mode === "local") {
-        return { status: "passed" as const, detail: `@openai/codex-sdk is loaded. Default model: ${dependencies.codexModel}.` };
-      }
-      const worker = agents.worker;
-      return agents.available && worker
-        ? {
-            status: "passed" as const,
-            detail: `${worker.name} is connected over the tailnet (Codex ${worker.codexVersion ?? "unknown"}, up to ${worker.maxConcurrentJobs} parallel runs). Default model: ${dependencies.codexModel}.`,
-          }
-        : { status: "failed" as const, detail: agents.message };
-    }),
+    ...agentChecks(dependencies.agents, dependencies.codexModel),
     timed("assignment-mcp", "Assignment MCP", async () => {
       const health = dependencies.mcpHealth();
       return health.connected
@@ -99,6 +87,39 @@ export async function runConnectionTest(dependencies: {
     status: checks.some((check) => check.status === "failed") ? "degraded" : "ready",
     checks,
   };
+}
+
+// One check per place agents can run. Only the selected target is required; the other is
+// reported as optional so an offline laptop does not fail a server-agent setup, or vice versa.
+function agentChecks(agents: AgentExecutionStatus, codexModel: string): Array<Promise<ConnectionCheck>> {
+  const targets = agents.targets ?? [{
+    id: agents.mode,
+    label: agents.mode === "worker" ? "Laptop" : "This computer",
+    host: agents.worker?.name ?? null,
+    available: agents.available,
+    message: agents.message,
+    activeJobs: agents.activeJobs,
+    queuedJobs: agents.queuedJobs,
+  }];
+  return targets.map((target) => {
+    const selected = target.id === agents.mode;
+    const label = targets.length > 1
+      ? `${target.label} agents${selected ? " (selected)" : ""}`
+      : target.id === "worker" ? "Laptop agent worker" : "Codex agent runtime";
+    return timed(selected ? "codex-sdk" : `codex-${target.id}`, label, async () => {
+      const worker = agents.worker;
+      const defaultModel = selected ? ` Default model: ${codexModel}.` : "";
+      if (!target.available) {
+        return selected
+          ? { status: "failed" as const, detail: target.message }
+          : { status: "warning" as const, detail: target.message, optional: true };
+      }
+      const detail = target.id === "worker" && worker
+        ? `${worker.name} is connected over the tailnet (Codex ${worker.codexVersion ?? "unknown"}, up to ${worker.maxConcurrentJobs} parallel runs).`
+        : target.message;
+      return { status: "passed" as const, detail: `${detail}${defaultModel}`, ...(selected ? {} : { optional: true }) };
+    });
+  });
 }
 
 async function timed(

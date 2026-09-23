@@ -16,6 +16,7 @@ export const ACTIVITY_PATH = join(APP_DATA_DIR, "activity.json");
 export const RUNS_PATH = join(APP_DATA_DIR, "runs.json");
 export const CODEX_MODELS_PATH = join(APP_DATA_DIR, "codex-models.json");
 export const WORKER_STATE_PATH = join(APP_DATA_DIR, "agent-worker.json");
+export const AGENT_TARGET_PATH = join(APP_DATA_DIR, "agent-execution.json");
 export const WORKER_WORKSPACE_ROOT = join(tmpdir(), "school-dashboard-worker-workspaces");
 
 export const env = {
@@ -24,10 +25,13 @@ export const env = {
   host: process.env.SCHOOL_DASHBOARD_HOST?.trim() || "127.0.0.1",
   allowedHosts: splitList(process.env.SCHOOL_DASHBOARD_ALLOWED_HOSTS),
   allowedNetworks: splitList(process.env.SCHOOL_DASHBOARD_ALLOWED_NETWORKS?.trim() || "loopback,tailscale"),
-  // "worker" sends every Codex turn to the laptop agent worker; "local" runs Codex in-process.
+  // "worker" adds the laptop agent worker, and the dashboard's switch then chooses between it and
+  // Codex on this server for each new run; "local" (the default) runs Codex in-process only.
   agentExecution: process.env.SCHOOL_DASHBOARD_AGENT_EXECUTION?.trim().toLowerCase() === "worker"
     ? "worker" as const
     : "local" as const,
+  // How many Codex runs this process runs at once when agents run here; extra runs wait.
+  agentConcurrency: Number.parseInt(process.env.SCHOOL_DASHBOARD_AGENT_CONCURRENCY?.trim() || "3", 10),
   workerToken: process.env.SCHOOL_DASHBOARD_WORKER_TOKEN?.trim() ?? "",
   // Laptop worker only: the dashboard server it dials out to, for example http://latitude7370:8892.
   serverUrl: process.env.SCHOOL_DASHBOARD_SERVER_URL?.trim().replace(/\/$/, "") ?? "",

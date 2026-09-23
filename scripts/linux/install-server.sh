@@ -106,6 +106,17 @@ if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != "
   log "         Enable it once with: sudo loginctl enable-linger $USER"
 fi
 
+# --- Codex on this server ------------------------------------------------------------------
+# The dashboard's "Run agents on" switch can send runs to Codex here instead of the laptop. That
+# uses this user's own ~/.codex sign-in (never the laptop's).
+codex_bin="$(find "$APP_DIR/node_modules/@openai" -path '*/vendor/*/codex' -type f 2>/dev/null | head -n 1)"
+if [[ -n "$codex_bin" ]] && "$codex_bin" login status >/dev/null 2>&1; then
+  log "Codex is signed in on this server, so agents can also run here (switch in the dashboard sidebar)"
+else
+  log "note: Codex is not signed in on this server; the Server agent option stays unavailable until you run"
+  log "      ${codex_bin:-node_modules/@openai/codex-linux-x64/vendor/*/bin/codex} login --device-auth"
+fi
+
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${port}/api/settings" >/dev/null 2>&1; then
     log "School Dashboard is up: http://$(hostname):${port}/ (Tailscale only)"

@@ -1,5 +1,7 @@
 import type {
   AgentRun,
+  AgentExecutionStatus,
+  AgentExecutionTarget,
   AgentModels,
   AgentProgress,
   AgentWorkflow,
@@ -70,6 +72,11 @@ export const schoolApi = {
   cancelWorkflow: (id: string) => api<AgentWorkflow>(`/api/agent-workflows/${encodeURIComponent(id)}/cancel`, {
     method: "POST",
     body: "{}",
+  }),
+  agentExecution: () => api<AgentExecutionStatus>("/api/agent-execution"),
+  setAgentTarget: (target: AgentExecutionTarget) => api<AgentExecutionStatus>("/api/agent-execution", {
+    method: "PUT",
+    body: JSON.stringify({ target }),
   }),
   agentModels: () => api<AgentModels>("/api/agent-models"),
   refreshAgentModels: () => api<{ requested: boolean }>("/api/agent-models/refresh", { method: "POST", body: "{}" }),

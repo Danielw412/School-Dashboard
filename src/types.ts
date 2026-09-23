@@ -136,6 +136,8 @@ export type AgentRun = {
     directions: string;
     updatedAt: string | null;
   };
+  // Where Codex ran (absent on runs from before agents could run on the server).
+  execution?: { target: AgentExecutionTarget; label: string; host: string | null };
   startedAt: string;
   completedAt: string | null;
   threadId: string | null;
@@ -191,8 +193,22 @@ export type AgentWorkflow = {
   error: string | null;
 };
 
+// "local" is the machine serving the dashboard (the server); "worker" is the laptop agent worker.
+export type AgentExecutionTarget = "local" | "worker";
+
+export type AgentExecutionTargetStatus = {
+  id: AgentExecutionTarget;
+  label: string;
+  host: string | null;
+  available: boolean;
+  message: string;
+  activeJobs: number;
+  queuedJobs: number;
+};
+
 export type AgentExecutionStatus = {
-  mode: "local" | "worker";
+  // The target new runs go to.
+  mode: AgentExecutionTarget;
   available: boolean;
   message: string;
   worker: null | {
@@ -208,6 +224,7 @@ export type AgentExecutionStatus = {
   };
   activeJobs: number;
   queuedJobs: number;
+  targets?: AgentExecutionTargetStatus[];
 };
 
 export type AgentModels = {

@@ -21,6 +21,8 @@ Canvas coursework, and runs structured Codex workflows.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.
+- A **Run agents on** switch in the sidebar that sends new runs to Codex on the Linux server or on
+  the Windows laptop, with the same scoped tools either way.
 - Live per-run elapsed time and safe action summaries, plus local settings, cache controls, recent
   runs, Canvas requests, downloads, usage, raw structured output, and redacted errors. Private model
   reasoning text is neither requested nor persisted.
@@ -81,12 +83,13 @@ Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the produ
 
 ## Server + laptop deployment
 
-The dashboard can run permanently on a Linux server while every Codex run still happens on the
-Windows laptop:
+The dashboard can run permanently on a Linux server, and each Codex run happens either on the
+Windows laptop or on the server itself:
 
 ```text
 browser (any tailnet device) ──HTTP──► Linux server: UI, API, run history, job queue,
                                         Canvas + Task Sync access, PDF/OCR tools, MCP endpoint
+                                        (+ Codex with the server's ~/.codex, when selected)
                                               ▲                        ▲
                          outbound WebSocket   │                        │ per-run MCP calls
                          (jobs down, events   │                        │ (short-lived token)
@@ -95,9 +98,10 @@ browser (any tailnet device) ──HTTP──► Linux server: UI, API, run hist
 ```
 
 - **Server** (`SCHOOL_DASHBOARD_AGENT_EXECUTION=worker`): prepares each run exactly as before
-  (Canvas context, preflight, workspace seed files, short-lived tool capability), queues it, and
-  sends it to the laptop worker. It never launches Codex. Run history, class directions, settings,
-  and saved problem visuals live in the server's `.school-dashboard/`.
+  (Canvas context, preflight, workspace seed files, short-lived tool capability), then either
+  sends it to the laptop worker or runs Codex in-process, depending on the **Run agents on**
+  switch (see below). Run history, class directions, settings, the selected target, and saved
+  problem visuals live in the server's `.school-dashboard/`.
 - **Laptop worker** (`npm run worker`): keeps one outbound WebSocket to
   `/api/agent-worker/connect`, copies the run's seed files into a local workspace under
   `%TEMP%\school-dashboard-worker-workspaces\<workspace id>`, and runs Codex there with the
@@ -109,9 +113,9 @@ browser (any tailnet device) ──HTTP──► Linux server: UI, API, run hist
 - **Disconnects:** jobs keep running through short drops; the worker buffers events and re-sends
   the final result until the server acknowledges it. The server waits two minutes for the worker
   to reconnect before failing an in-flight run, and tells a reconnecting worker to stop runs the
-  server no longer tracks (for example after a server restart). While the laptop is offline the
-  dashboard stays up, shows **Agents unavailable**, disables agent actions, and returns HTTP 503
-  for new runs.
+  server no longer tracks (for example after a server restart). While the laptop is offline and
+  selected, the dashboard stays up, shows **Agents unavailable** with a **Run on the server
+  instead** button, disables agent actions, and returns HTTP 503 for new runs.
 - **Network:** the server listens on `0.0.0.0` but only answers loopback and Tailscale peers
   (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`); LAN and public clients get 403. It also rejects
   unknown `Host` headers (DNS rebinding) and cross-origin writes. The worker authenticates with
@@ -153,11 +157,39 @@ journalctl --user -u school-dashboard -f
 The worker logs to `.school-dashboard\agent-worker.log` on the laptop. **Settings -> Connections &
 diagnostics** shows the worker, its Codex version, and running/queued jobs.
 
+### Choosing where agents run
+
+The sidebar's **Run agents on** switch (a **Server**/**Laptop** chip in the mobile header opens it)
+chooses where new runs execute:
+
+- **Laptop** (the default): the run goes to the laptop agent worker, as described above.
+- **Server**: the dashboard runs Codex in its own process on the server, as the service's user,
+  with the server's `~/.codex` sign-in, sessions, and config. Codex works directly in the server's
+  assignment workspace and reaches the same assignment-scoped `school_dashboard` MCP tools over
+  loopback, so every tool (Canvas retrieval, the Chrome-extension bridge, PDF index/text/render/OCR,
+  problem detection, and cropping) behaves exactly as it does for the laptop. It uses the same
+  read-only sandbox, disabled features, and secret-free environment.
+
+The choice is saved on the server and applies to runs started afterwards; a run in progress
+finishes where it started, and **Agent runs** records where each run executed. Server runs are
+limited to `SCHOOL_DASHBOARD_AGENT_CONCURRENCY` at a time (default 3); later ones wait for a slot.
+
+The server option needs Codex signed in for the dashboard's user on the server, once:
+
+```bash
+~/projects/School-Dashboard/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex login --device-auth
+```
+
+Until then the **Server** option shows as unavailable. `install-server.sh` reports the sign-in
+state after each deploy. **Settings -> Connections & diagnostics** shows both targets, and the
+connection test checks the selected one (the other is reported as optional).
+
 ### Models and Luna Reserve
 
-The machine that runs Codex (the laptop worker, or this process in local mode) reports its Codex
-app-server `model/list`, including hidden models, when it connects and every 30 minutes;
-**Settings -> Check again** asks for a fresh list. A model whose ID or display name names Luna
+Each machine that can run Codex (the laptop worker, and the dashboard process itself) reports its
+Codex app-server `model/list`, including hidden models: the laptop when it connects and every 30
+minutes, the dashboard at startup. The list from the machine selected under **Run agents on**
+decides what is selectable; **Settings -> Check again** asks that machine for a fresh list. A model whose ID or display name names Luna
 Reserve (for example `gpt-6-luna-reserve`) becomes selectable under exactly the ID Codex reports.
 Nothing else is assumed to be Luna Reserve. Settings shows why it is unavailable otherwise.
 

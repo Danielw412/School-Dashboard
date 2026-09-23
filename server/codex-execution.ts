@@ -9,6 +9,8 @@ import {
   type Usage,
 } from "@openai/codex-sdk";
 
+import { listCodexMcpServers } from "./codex-models.js";
+
 // One Codex turn, runnable in-process (local mode) or by the laptop agent worker. Everything here
 // reads the Codex installation of the machine it runs on: its binary, ~/.codex auth, sessions,
 // and config.toml. It never needs Canvas credentials.
@@ -39,13 +41,19 @@ export async function runCodexTurn(
   request: CodexTurnRequest,
   { signal, onEvent }: CodexTurnCallbacks,
 ): Promise<CodexTurnResult> {
-  const configuredMcpServers = await configuredMcpServerNames();
+  const env = {
+    ...sanitizedEnvironment(),
+    ...(request.mcp ? { SCHOOL_DASHBOARD_TOOL_TOKEN: request.mcp.token } : {}),
+  };
+  // Codex's own list covers every config layer; config.toml plus the usual desktop-app servers
+  // is the fallback when it cannot be asked.
+  const [reportedMcpServers, configuredMcpServers] = await Promise.all([
+    listCodexMcpServers({ env, cwd: request.workingDirectory }),
+    configuredMcpServerNames(),
+  ]);
   signal.throwIfAborted();
   const codex = new Codex({
-    env: {
-      ...sanitizedEnvironment(),
-      ...(request.mcp ? { SCHOOL_DASHBOARD_TOOL_TOKEN: request.mcp.token } : {}),
-    },
+    env,
     config: {
       show_raw_agent_reasoning: false,
       features: {
@@ -59,7 +67,11 @@ export async function runCodexTurn(
         shell_tool: !request.mcp,
       },
     },
-    configOverrides: buildMcpConfigOverrides(request.mcp?.url ?? null, configuredMcpServers),
+    configOverrides: buildMcpConfigOverrides(
+      request.mcp?.url ?? null,
+      reportedMcpServers ?? configuredMcpServers,
+      reportedMcpServers === null,
+    ),
   });
   const thread = codex.startThread({
     model: request.model,
@@ -103,13 +115,17 @@ export async function runCodexTurn(
   return { threadId: thread.id ?? threadId, usage, finalResponse };
 }
 
+// MCP servers the Codex desktop app adds on the laptop. Disabling a server that no config layer
+// defines makes Codex reject the whole configuration ("invalid transport"), so these are assumed
+// only when Codex could not report its actual server list.
 const BUILTIN_MCP_SERVERS = ["node_repl", "openaiDeveloperDocs", "cua_repl"];
 
 export function buildMcpConfigOverrides(
   schoolDashboardUrl: string | null,
   configuredServers: string[] = [],
+  includeBuiltinServers = true,
 ): string[] {
-  const overrides = [...new Set([...BUILTIN_MCP_SERVERS, ...configuredServers])]
+  const overrides = [...new Set([...(includeBuiltinServers ? BUILTIN_MCP_SERVERS : []), ...configuredServers])]
     .filter((name) => name !== "school_dashboard" && /^[A-Za-z0-9_-]+$/u.test(name))
     .map((name) => `mcp_servers.${name}.enabled=false`);
   if (!schoolDashboardUrl) return overrides;

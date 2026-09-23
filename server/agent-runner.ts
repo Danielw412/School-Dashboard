@@ -6,7 +6,12 @@ import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import { z } from "zod";
 
 import { type ActivityStore, sanitizeForLog } from "./activity.js";
-import { AgentsUnavailableError, type AgentExecutor } from "./agent-execution.js";
+import {
+  agentPlacement,
+  type AgentExecutor,
+  type AgentPlacement,
+  AgentsUnavailableError,
+} from "./agent-execution.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import {
   CourseDirectionsStore,
@@ -181,6 +186,8 @@ export type AgentRun = {
     directions: string;
     updatedAt: string | null;
   };
+  // Where Codex ran: the dashboard server or the laptop worker (absent on older runs).
+  execution?: AgentPlacement;
   startedAt: string;
   completedAt: string | null;
   threadId: string | null;
@@ -379,9 +386,11 @@ export class AgentRunner {
         extractionRunId: z.string().uuid().optional(),
       })
       .parse(input);
-    // Fail fast (HTTP 503) instead of recording a run that cannot reach Codex.
+    // Fail fast (HTTP 503) instead of recording a run that cannot reach Codex. The run stays on
+    // the target selected now, even if the student switches targets while it is underway.
     const execution = this.executor.status();
     if (!execution.available) throw new AgentsUnavailableError(execution.message);
+    const placement = agentPlacement(execution);
     const settings = await this.settingsStore.get();
     const task = await this.taskSync.getTask(parsed.logicalId);
     const savedCourseDirections = await this.courseDirections.get(task.course.id);
@@ -413,6 +422,7 @@ export class AgentRunner {
       effectiveReasoningEffort,
       prompt,
       courseDirections,
+      execution: placement,
       startedAt: new Date().toISOString(),
       completedAt: null,
       threadId: null,
@@ -585,10 +595,14 @@ export class AgentRunner {
         workspace,
         toolToken: toolSession?.token ?? null,
         timeoutMs,
+        target: run.execution?.target,
       }, {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]),
         onStarted: async () => {
-          const worker = this.executor.status().worker;
+          const placement = run.execution;
+          const host = placement?.target === "worker"
+            ? this.executor.status().worker?.name ?? placement.host
+            : placement?.host;
           await this.activity.record({
             category: "agent",
             action: "codex.start",
@@ -598,8 +612,10 @@ export class AgentRunner {
               runId: run.id,
               workspace: workspace.id,
               model: run.model,
-              ...(this.executor.mode === "worker" && worker
-                ? { worker: worker.name, progressLabel: `Starting the configured Codex model on ${worker.name}` }
+              ...(placement ? { target: placement.target } : {}),
+              ...(placement?.target === "worker" && host ? { worker: host } : {}),
+              ...(placement && placement.label !== "This computer" && host
+                ? { progressLabel: `Starting the configured Codex model on the ${placement.label.toLowerCase()} (${host})` }
                 : {}),
             },
           });

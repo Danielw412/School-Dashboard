@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,6 +71,45 @@ describe("Codex model catalog", () => {
     expect(reloaded.isSelectable("gpt-6-luna-reserve")).toBe(true);
     expect(findLunaReserveModel([{ id: "luna_reserve", displayName: "x" }])).toBe("luna_reserve");
     expect(findLunaReserveModel([{ id: "gpt-7-x", displayName: "Luna Reserve" }])).toBe("gpt-7-x");
+  });
+
+  it("follows the model list of the machine new runs are sent to", async () => {
+    const path = await catalogPath();
+    let target: "local" | "worker" = "worker";
+    const catalog = new ModelCatalog(path, { activeTarget: () => target });
+    const withReserve = [
+      ...installedModels,
+      { id: "gpt-6-luna-reserve", displayName: "GPT-6-Luna-Reserve", hidden: false, isDefault: false, reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
+    ];
+    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: withReserve, error: null, target: "worker" });
+    await catalog.record({ source: "latitude7370", codexVersion: "0.156.0", models: installedModels, error: null, target: "local" });
+
+    expect(catalog.isSelectable("gpt-6-luna-reserve")).toBe(true);
+    expect(catalog.describe().detection?.source).toBe("DESKTOP-TQMTS8O");
+    target = "local";
+    expect(catalog.isSelectable("gpt-6-luna-reserve")).toBe(false);
+    expect(catalog.describe().detection?.source).toBe("latitude7370");
+
+    const reloaded = new ModelCatalog(path, { activeTarget: () => "worker" });
+    await reloaded.load();
+    expect(reloaded.hasReport("local")).toBe(true);
+    expect(reloaded.isSelectable("gpt-6-luna-reserve")).toBe(true);
+  });
+
+  it("reads a pre-switch single-machine model list as the target that reported it", async () => {
+    const path = await catalogPath();
+    await writeFile(path, JSON.stringify({
+      detectedAt: "2026-09-23T20:09:37.606Z",
+      source: "DESKTOP-TQMTS8O",
+      codexVersion: "0.156.0",
+      models: installedModels,
+      error: null,
+    }), "utf8");
+    const catalog = new ModelCatalog(path, { activeTarget: () => "local", legacyTarget: "worker" });
+    await catalog.load();
+    expect(catalog.hasReport("worker")).toBe(true);
+    expect(catalog.hasReport("local")).toBe(false);
+    expect(catalog.describe().lunaReserve.detail).toBe("Waiting for the agent machine to report its Codex model list.");
   });
 
   it("explains when no model list has been reported yet", async () => {
