@@ -45,10 +45,14 @@ export async function runCodexTurn(
     ...sanitizedEnvironment(),
     ...(request.mcp ? { SCHOOL_DASHBOARD_TOOL_TOKEN: request.mcp.token } : {}),
   };
-  // Codex's own list covers every config layer; config.toml plus the usual desktop-app servers
-  // is the fallback when it cannot be asked.
+  // Discover servers with the same feature flags as the turn. A plugin-only server discovered
+  // with plugins enabled would become an invalid transport when the turn disables plugins.
   const [reportedMcpServers, configuredMcpServers] = await Promise.all([
-    listCodexMcpServers({ env, cwd: request.workingDirectory }),
+    listCodexMcpServers({
+      env,
+      cwd: request.workingDirectory,
+      configOverrides: ["features.apps=false", "features.plugins=false"],
+    }),
     configuredMcpServerNames(),
   ]);
   signal.throwIfAborted();

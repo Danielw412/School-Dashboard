@@ -35,7 +35,7 @@ vi.mock("@openai/codex-sdk", () => ({
 }));
 
 const codexModels = vi.hoisted(() => ({
-  listCodexMcpServers: vi.fn(async (options: { env?: Record<string, string>; cwd?: string }): Promise<string[] | null> => {
+  listCodexMcpServers: vi.fn(async (options: { env?: Record<string, string>; cwd?: string; configOverrides?: string[] }): Promise<string[] | null> => {
     void options;
     return null;
   }),
@@ -125,6 +125,10 @@ describe("runCodexTurn", () => {
     expect(options.configOverrides).not.toContain("mcp_servers.node_repl.enabled=false");
     expect(options.configOverrides).not.toContain("mcp_servers.school_dashboard.enabled=false");
     expect(codexModels.listCodexMcpServers).toHaveBeenCalledWith(expect.objectContaining({ cwd: "C:/worker-workspaces/task-1" }));
+    expect(codexModels.listCodexMcpServers.mock.calls[0]![0].configOverrides).toEqual([
+      "features.apps=false",
+      "features.plugins=false",
+    ]);
     expect(codexModels.listCodexMcpServers.mock.calls[0]![0].env).not.toHaveProperty("CANVAS_API_TOKEN");
   });
 

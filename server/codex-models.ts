@@ -72,6 +72,7 @@ export function listCodexMcpServers(options: {
   cwd?: string;
   binary?: string;
   timeoutMs?: number;
+  configOverrides?: string[];
 } = {}): Promise<string[] | null> {
   let binary: string;
   try {
@@ -80,7 +81,10 @@ export function listCodexMcpServers(options: {
     return Promise.resolve(null);
   }
   return new Promise((resolve) => {
-    execFile(binary, ["mcp", "list", "--json"], {
+    execFile(binary, [
+      ...(options.configOverrides ?? []).flatMap((override) => ["-c", override]),
+      "mcp", "list", "--json",
+    ], {
       env: options.env,
       cwd: options.cwd,
       timeout: options.timeoutMs ?? 15_000,
