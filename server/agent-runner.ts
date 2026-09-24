@@ -87,18 +87,18 @@ export const directionsSchema = z.object({
   ),
 });
 
+const answerBankSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  markdown: z.string(),
+  problemNumbers: z.array(z.string()).min(2),
+  provenance: z.array(provenanceSchema).min(1),
+});
+
 export const problemExtractionSchema = z.object({
   assignmentTitle: z.string(),
   summary: z.string(),
-  answerBanks: z.array(
-    z.object({
-      id: z.string().min(1),
-      title: z.string(),
-      markdown: z.string(),
-      problemNumbers: z.array(z.string()).min(2),
-      provenance: z.array(provenanceSchema).min(1),
-    }),
-  ),
+  answerBanks: z.array(answerBankSchema),
   problems: z.array(
     z.object({
       number: z.string(),
@@ -656,7 +656,9 @@ export class AgentRunner {
       usage = result.usage ?? usage;
       rawStructuredOutput = result.finalResponse ?? rawStructuredOutput;
       if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
-      const parsedOutput = outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
+      const parsedOutput = run.feature === "problemExtraction"
+        ? parseProblemExtractionRunOutput(JSON.parse(rawStructuredOutput))
+        : outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
       const policyCheckedOutput = run.feature === "problemExtraction"
         ? enforceProblemVisualPolicy(problemExtractionSchema.parse(parsedOutput))
         : parsedOutput;
@@ -753,7 +755,7 @@ export class AgentRunner {
         visual: { ...problem.visual, path },
       };
     }));
-    return { assignmentTitle: parsed.assignmentTitle, answerBanks: parsed.answerBanks, problems };
+    return { assignmentTitle: parsed.assignmentTitle, answerBanks: parsed.answerBanks, problems, unresolved: parsed.unresolved };
   }
 }
 
@@ -776,7 +778,7 @@ export function buildInstructions(
     return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nLocate the exact question text. Start with direct assignment/source links and recovered source context, then inspect only relevant module neighbors and linked resources. Prefer a known PDF/file URL or file ID over file listing or course search. Treat a linked answer key only as a cross-check; never use it as the source of a problem statement. Request independent Canvas resources together when possible. Put every subpart and every multiple-choice answer choice on its own Markdown line, with a blank line before the first choice; never run choices together in one paragraph. When one answer bank is shared by two or more problems, create exactly one separate answerBanks entry, link each covered problem with answerBankId, and do not repeat the bank inside any problem markdown. For a simple source table, populate the structured table field and omit pipe-table Markdown. If a table's spatial layout or visual encoding matters, leave table null and attach a tight table screenshot instead. Set visual to null by default. A visual is allowed if and only if the problem requires a supplied figure, diagram, graph, chart, spectrum, table, map, or other non-text image to understand or solve it; a source-page screenshot is not provenance and must never be attached merely because the question came from a PDF. A targeted page render may be inspected to correct unclear OCR, but it must not be attached to a text-only problem. When a visual is required, call semantic_crop_pdf once and always set each region's kind. Use the exact figure label when one exists; otherwise use the short source phrase immediately above or inside the visual, such as an axis label or “spectra below.” A completed crop is the final image and must be assigned to that problem's visual field. Only if a genuinely required unlabeled visual returns not_found may you use known render coordinates once. Do not retry near-identical semantic queries. Do not crop or attach text-only problems. Write inline math with $...$ and display math with $$...$$. Stop as soon as every requested problem is verified; if exact text cannot be found, add an unresolved entry rather than continuing broad searches or inventing it.`;
   }
   if (feature === "answerKey") {
-    return `${workspaceRules}\nRead only extracted-problems.json and the local visual paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question, linked answer bank, structured table, and attached visual in extracted-problems.json. Inspect every attached visual whenever it affects the question. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
+    return `${workspaceRules}\nRead only extracted-problems.json and the local visual paths named inside it. You have no Canvas helper or network access for this feature.\n\nFeature prompt:\n${customPrompt}\n\nMandatory Answer Key rules: use only each parsed question, linked answer bank, structured table, and attached visual in extracted-problems.json. Inspect every attached visual whenever it affects the question. The unresolved list may flag a missing or invalid answer bank; warn about unavailable choices instead of inventing them. Do not navigate Canvas, cite extracted provenance, or mention sources. Preserve problem numbering. Return a concise final answer and a complete solution using Markdown and LaTeX only. Never emit HTML tags such as <details>, <summary>, or heading tags. Silently verify the work, but do not generate a checks list or green-check commentary. These rules override any conflicting wording in the customizable feature prompt.`;
   }
   return `${workspaceRules}\n${canvasRules}\n${pdfRules}\n\nFeature prompt:\n${customPrompt}\n\nThis is a focused assessment investigation. Inspect the assessment description, its containing or nearby modules, and only relevant pages, assignments, notes, PDFs, worksheets, or teacher review material. Separate teacher-stated scope from your own inferences. Predictor adapter status:\n${JSON.stringify(predictor)}\nIf predictor status is unavailable, state that exactly and do not fabricate predicted history. If available, treat its output as one labeled evidence source, not teacher-provided scope.`;
 }
@@ -803,14 +805,6 @@ export function problemRequiresVisual(markdown: string): boolean {
 export function enforceProblemVisualPolicy(
   output: z.infer<typeof problemExtractionSchema>,
 ): z.infer<typeof problemExtractionSchema> {
-  const answerBankIds = new Set(output.answerBanks.map((bank) => bank.id));
-  const missingAnswerBanks = output.problems
-    .filter((problem) => problem.answerBankId && !answerBankIds.has(problem.answerBankId))
-    .map((problem) => problem.number);
-  if (missingAnswerBanks.length > 0) {
-    throw new Error(`Problems ${missingAnswerBanks.join(", ")} reference an unavailable answer bank.`);
-  }
-
   const problems = output.problems.map((problem) => ({
     ...problem,
     visual: problem.visual && (
@@ -830,6 +824,69 @@ export function enforceProblemVisualPolicy(
     ...output,
     problems,
   };
+}
+
+// Keep usable questions when a shared bank is omitted or malformed. Report the gap in the
+// same unresolved list used for questions that could not be verified.
+export function parseProblemExtractionRunOutput(value: unknown): z.infer<typeof problemExtractionSchema> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return problemExtractionSchema.parse(value);
+  }
+  const record = value as Record<string, unknown>;
+  const rawBanks = Array.isArray(record.answerBanks) ? record.answerBanks : [];
+  const problems = Array.isArray(record.problems) ? record.problems : [];
+  const bankIds = new Set<string>();
+  const validBanks: z.infer<typeof answerBankSchema>[] = [];
+  const warnings: Array<{ reference: string; reason: string; searched: string[] }> = [];
+  const linkedProblems = (id: string) => problems.flatMap((problem) => {
+    if (!problem || typeof problem !== "object" || Array.isArray(problem)) return [];
+    const item = problem as Record<string, unknown>;
+    return item.answerBankId === id && typeof item.number === "string" ? [item.number] : [];
+  });
+  for (const [index, rawBank] of rawBanks.entries()) {
+    const parsed = answerBankSchema.safeParse(rawBank);
+    const id = rawBank && typeof rawBank === "object" && !Array.isArray(rawBank)
+      ? (rawBank as Record<string, unknown>).id
+      : null;
+    const bankId = typeof id === "string" && id.trim() ? id : null;
+    if (parsed.success && parsed.data.title.trim() && parsed.data.markdown.trim() && !bankIds.has(parsed.data.id)) {
+      bankIds.add(parsed.data.id);
+      validBanks.push(parsed.data);
+      continue;
+    }
+    const numbers = bankId ? linkedProblems(bankId) : [];
+    warnings.push({
+      reference: bankId ? `Answer bank ${bankId}` : `Answer bank ${index + 1}`,
+      reason: `This answer bank was invalid${numbers.length ? ` for problem${numbers.length === 1 ? "" : "s"} ${numbers.join(", ")}` : ""}. Check the source page for its choices.`,
+      searched: [],
+    });
+  }
+  if (record.answerBanks !== undefined && !Array.isArray(record.answerBanks)) {
+    warnings.push({ reference: "Answer banks", reason: "The answer bank list was invalid. Check the source pages for its choices.", searched: [] });
+  }
+  for (const problem of problems) {
+    if (!problem || typeof problem !== "object" || Array.isArray(problem)) continue;
+    const item = problem as Record<string, unknown>;
+    const id = item.answerBankId;
+    if (typeof id !== "string" || !id || bankIds.has(id)) continue;
+    const reference = `Answer bank ${id}`;
+    if (warnings.some((warning) => warning.reference === reference)) continue;
+    const numbers = linkedProblems(id);
+    warnings.push({
+      reference,
+      reason: `Problem${numbers.length === 1 ? "" : "s"} ${numbers.join(", ")} reference an answer bank that was not included. Check the source page for its choices.`,
+      searched: [],
+    });
+  }
+  const unresolved = Array.isArray(record.unresolved) ? record.unresolved : [];
+  const existingReferences = new Set(unresolved.flatMap((item) =>
+    item && typeof item === "object" && !Array.isArray(item) && typeof item.reference === "string"
+      ? [item.reference] : []));
+  return problemExtractionSchema.parse({
+    ...record,
+    answerBanks: validBanks,
+    unresolved: [...unresolved, ...warnings.filter((warning) => !existingReferences.has(warning.reference))],
+  });
 }
 
 export function parseProblemExtractionOutput(value: unknown): z.infer<typeof problemExtractionSchema> {

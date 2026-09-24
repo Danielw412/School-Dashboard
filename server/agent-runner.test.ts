@@ -11,6 +11,7 @@ import {
   compactEventForLog,
   enforceProblemVisualPolicy,
   moduleSequenceTarget,
+  parseProblemExtractionRunOutput,
   problemRequiresVisual,
   resolveAgentPreferences,
   sanitizeStoredAgentEvents,
@@ -179,6 +180,34 @@ describe("agent run preferences", () => {
 
     expect(output.problems[0]?.visual).toBeNull();
     expect(output.problems[1]?.visual?.path).toBe("renders/figure-15.png");
+
+    const missingBank = parseProblemExtractionRunOutput({
+      ...output,
+      problems: [{ ...output.problems[0]!, answerBankId: "bank-1" }],
+    });
+    expect(missingBank.unresolved).toContainEqual({
+      reference: "Answer bank bank-1",
+      reason: expect.stringContaining("not included"),
+      searched: [],
+    });
+    const invalidBank = parseProblemExtractionRunOutput({
+      ...output,
+      answerBanks: [{ id: "bank-1", title: "Options", markdown: "A. 1", problemNumbers: ["12"], provenance: [] }],
+      problems: [{ ...output.problems[0]!, answerBankId: "bank-1" }],
+    });
+    expect(invalidBank.answerBanks).toEqual([]);
+    expect(invalidBank.unresolved).toContainEqual({
+      reference: "Answer bank bank-1",
+      reason: expect.stringContaining("invalid for problem 12"),
+      searched: [],
+    });
+    const blankBank = parseProblemExtractionRunOutput({
+      ...output,
+      answerBanks: [{ id: "bank-1", title: "Options", markdown: " ", problemNumbers: ["12", "15"], provenance: output.problems[0]!.provenance }],
+      problems: [{ ...output.problems[0]!, answerBankId: "bank-1" }],
+    });
+    expect(blankBank.answerBanks).toEqual([]);
+    expect(blankBank.unresolved[0]?.reference).toBe("Answer bank bank-1");
 
     expect(() => enforceProblemVisualPolicy({
       assignmentTitle: "Atomic theory",
