@@ -320,7 +320,7 @@ function ProblemsPanel({ run, answerRun, onRun, starting }: { run?: AgentRun; an
             </article>
           </Fragment>;
         })}
-        {output.unresolved.length > 0 && <div className="unresolved-block"><h3>Could not verify</h3>{output.unresolved.map((item) => <div key={item.reference}><strong>{item.reference}</strong><p>{item.reason}</p><span>Searched: {item.searched.join(", ")}</span></div>)}</div>}
+        {output.unresolved.length > 0 && <div className="unresolved-block"><h3>Could not verify</h3>{output.unresolved.map((item) => <div key={item.reference}><strong>{item.reference}</strong><p>{item.reason}</p>{item.searched.length > 0 && <span>Searched: {item.searched.join(", ")}</span>}</div>)}</div>}
       </div>}
       {pageRequest && output && <SourcePageViewer
         documents={output.sourceDocuments ?? []}

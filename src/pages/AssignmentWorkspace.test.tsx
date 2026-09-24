@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentRun, AssignmentContext, TrackedTask } from "../types";
+import type { AgentRun, AssignmentContext, ProblemExtraction, TrackedTask } from "../types";
 import { AssignmentWorkspace } from "./AssignmentWorkspace";
 
 const apiMocks = vi.hoisted(() => ({
@@ -290,6 +290,28 @@ describe("AssignmentWorkspace directions", () => {
 
     await user.click(screen.getByRole("button", { name: "Close page viewer" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("shows a missing answer bank alongside other unverified items", async () => {
+    const run = problemRun();
+    const output = run.output as ProblemExtraction;
+    run.output = {
+      ...output,
+      answerBanks: [],
+      problems: [{ ...output.problems[0]!, answerBankId: "bank-1" }],
+      unresolved: [{
+        reference: "Answer bank bank-1",
+        reason: "Problem 1 references an answer bank that was not included. Check the source page for its choices.",
+        searched: [],
+      }],
+    };
+    apiMocks.runs.mockResolvedValue([run]);
+    renderWorkspace("?tab=problems");
+
+    expect(await screen.findByText("Could not verify")).toBeInTheDocument();
+    expect(screen.getByText("Answer bank bank-1")).toBeInTheDocument();
+    expect(screen.getByText(/references an answer bank that was not included/)).toBeInTheDocument();
+    expect(screen.queryByText("Searched:")).not.toBeInTheDocument();
   });
 });
 

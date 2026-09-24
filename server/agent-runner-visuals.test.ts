@@ -187,18 +187,33 @@ describe("problem extraction with incomplete visuals", () => {
     }
   });
 
+  it("keeps questions and source pages when an answer bank is missing", async () => {
+    const incomplete = {
+      ...extraction,
+      problems: [{ ...extraction.problems[0]!, answerBankId: "missing-bank" }],
+    };
+    const { runner, finished } = await harness(async () => JSON.stringify(incomplete));
+    const run = await finished(await runner.start({ feature: "problemExtraction", logicalId: "task-1" }));
+
+    expect(run.status).toBe("completed");
+    expect(run.output).toMatchObject({
+      problems: [{ number: "23", answerBankId: "missing-bank", sourcePages: [{ documentId: "document-2110126", page: 4 }] }],
+      unresolved: [{ reference: "Answer bank missing-bank", reason: expect.stringContaining("not included") }],
+    });
+  });
+
   it("keeps a redacted draft and events for diagnosis when post-turn validation rejects the output", async () => {
     const invalid = {
       ...extraction,
-      problems: [{ ...extraction.problems[0]!, answerBankId: "missing-bank", markdown: "Token tool-token-abcdefghijklmnopqrstuvwxyz" }],
+      problems: [{ ...extraction.problems[0]!, provenance: [], markdown: "Token tool-token-abcdefghijklmnopqrstuvwxyz" }],
     };
     const { runner, finished } = await harness(async () => JSON.stringify(invalid));
     const run = await finished(await runner.start({ feature: "problemExtraction", logicalId: "task-1" }));
 
     expect(run.status).toBe("failed");
-    expect(run.error).toMatch(/unavailable answer bank/);
+    expect(run.error).toMatch(/provenance/);
     expect(run.output).toBeNull();
-    expect(run.rawStructuredOutput).toContain("missing-bank");
+    expect(run.rawStructuredOutput).toContain("provenance");
     expect(run.rawStructuredOutput).not.toContain("tool-token-abcdefghijklmnopqrstuvwxyz");
   });
 });
