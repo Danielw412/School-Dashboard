@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 
+import type { AgentProvider } from "./models";
 import type { AgentExecutionStatus, AgentExecutionTargetStatus } from "./types";
 
 // Provided by AppShell from its /api/active-work poll. Null (unknown) means agents are assumed
@@ -16,4 +17,9 @@ export function useAgentAvailability(): { available: boolean; reason: string | n
 // The target new runs go to, when the server reports more than one (server + laptop deployment).
 export function selectedAgentTarget(agents: AgentExecutionStatus | null): AgentExecutionTargetStatus | null {
   return agents?.targets?.find((target) => target.id === agents.mode) ?? null;
+}
+
+// The agent new runs use (Codex until the student picks Claude, and on servers without Claude).
+export function useSelectedAgentProvider(): AgentProvider {
+  return useContext(AgentStatusContext)?.provider ?? "codex";
 }

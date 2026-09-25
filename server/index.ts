@@ -5,13 +5,14 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 import { z, ZodError } from "zod";
 
+import { modelLabel, providerLabel } from "../src/models.js";
 import { ActivityStore } from "./activity.js";
-import { AgentsUnavailableError, LocalCodexExecutor } from "./agent-execution.js";
+import { AgentsUnavailableError, LocalAgentExecutor } from "./agent-execution.js";
 import { buildAgentProgress } from "./agent-progress.js";
 import {
   AgentExecutionRouter,
-  AgentTargetStore,
-  agentTargetSchema,
+  AgentSelectionStore,
+  agentSelectionChangeSchema,
   UnknownAgentTargetError,
 } from "./agent-routing.js";
 import {
@@ -21,6 +22,7 @@ import {
   savedExtractionAssetPaths,
 } from "./agent-runner.js";
 import { CanvasClient } from "./canvas-client.js";
+import { claudeCodeVersion, probeClaude } from "./claude-execution.js";
 import { codexCliVersion, codexSignInStatus, listCodexModels } from "./codex-models.js";
 import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
@@ -48,10 +50,10 @@ app.use(express.json({ limit: "2mb" }));
 
 const MCP_PATH = "/api/internal/canvas-mcp";
 const activity = new ActivityStore();
-// Local mode: Codex runs in this process only. Worker mode (the server + laptop deployment): each
-// new run goes to the laptop agent worker or to Codex on this server, whichever the student
-// selected with the dashboard's switch (the laptop until they choose).
-const agentTargets = new AgentTargetStore({
+// Local mode: agents run in this process only. Worker mode (the server + laptop deployment): each
+// new run goes to the laptop agent worker or to this server, whichever the student selected with
+// the dashboard's switch (the laptop until they choose). A second switch picks Codex or Claude.
+const agentTargets = new AgentSelectionStore({
   path: AGENT_TARGET_PATH,
   targets: env.agentExecution === "worker" ? ["local", "worker"] : ["local"],
   fallback: env.agentExecution,
@@ -62,7 +64,7 @@ const models = new ModelCatalog(CODEX_MODELS_PATH, {
   legacyTarget: env.agentExecution,
 });
 await models.load();
-const settingsStore = new SettingsStore(undefined, models.isSelectable);
+const settingsStore = new SettingsStore(undefined, models.isSelectable, models.isClaudeSelectable);
 const courseDirections = new CourseDirectionsStore();
 const settings = await settingsStore.get();
 // A remote Task Sync backend replaces the configured URL with its own SSH tunnel.
@@ -91,21 +93,31 @@ const workerHub = env.agentExecution === "worker"
       activity,
       mcpPath: MCP_PATH,
       statePath: WORKER_STATE_PATH,
-      onModels: (report) => models.record({ ...report, target: "worker" }),
+      onModels: async ({ claude, ...report }) => {
+        await models.record({ ...report, target: "worker" });
+        if (claude) await models.recordClaude({ ...claude, source: report.source, target: "worker" });
+      },
     })
   : null;
 await workerHub?.loadState();
-// Codex in this process reaches the same assignment-scoped MCP tools over loopback.
+// Agents in this process reach the same assignment-scoped MCP tools over loopback.
 const localMcpHost = ["0.0.0.0", "::", ""].includes(env.host) ? "127.0.0.1" : env.host;
 const localMcpUrl = `http://${localMcpHost.includes(":") ? `[${localMcpHost}]` : localMcpHost}:${env.port}${MCP_PATH}`;
-const localExecutor = new LocalCodexExecutor({
+const localExecutor = new LocalAgentExecutor({
   mcpUrl: localMcpUrl,
   role: workerHub ? "server" : "computer",
   maxConcurrentJobs: env.agentConcurrency,
   activity,
   signInStatus: () => codexSignInStatus(),
+  // This machine's Claude Code sign-in and model list, reported like the laptop worker's.
+  claudeStatus: async () => {
+    const probe = await probeClaude();
+    await models.recordClaude({ ...probe, source: hostname(), target: "local" }).catch(() => undefined);
+    return probe;
+  },
 });
 void localExecutor.refreshSignIn();
+void localExecutor.refreshClaude();
 const executor = new AgentExecutionRouter(agentTargets, { local: localExecutor, worker: workerHub });
 void recordLocalCodexModels();
 const agentRunner = new AgentRunner(
@@ -133,7 +145,11 @@ app.get("/api/health", async (_request, response) => {
     status: taskSyncHealth.connected && canvasHealth.connected ? "ready" : "degraded",
     taskSync: taskSyncHealth,
     canvas: canvasHealth,
-    agent: { sdk: "@openai/codex-sdk", defaultModel: (await settingsStore.get()).defaultModel },
+    agent: {
+      sdk: executor.provider === "claude" ? "@anthropic-ai/claude-agent-sdk" : "@openai/codex-sdk",
+      provider: executor.provider,
+      defaultModel: agentModel(executor.provider, await settingsStore.get()),
+    },
     agents: executor.status(),
   });
 });
@@ -185,6 +201,7 @@ app.get("/api/agent-models", (_request, response) => {
 
 app.post("/api/agent-models/refresh", (_request, response) => {
   void localExecutor.refreshSignIn();
+  void localExecutor.refreshClaude();
   if (executor.mode === "worker" && workerHub) {
     response.status(202).json({ requested: workerHub.requestModelRefresh() });
     return;
@@ -193,27 +210,47 @@ app.post("/api/agent-models/refresh", (_request, response) => {
   response.status(202).json({ requested: true });
 });
 
-// Where new agent runs execute. Runs already underway stay where they started.
+// Where new agent runs execute, which agent runs them, and its quick effort level. Runs already
+// underway keep what they started with.
 app.get("/api/agent-execution", (_request, response) => {
   response.json(executor.status());
 });
 
 app.put("/api/agent-execution", async (request, response) => {
-  const { target } = z.object({ target: agentTargetSchema }).parse(request.body);
-  const previous = executor.mode;
-  const status = await executor.select(target);
-  if (target === "local") {
+  const change = agentSelectionChangeSchema.parse(request.body);
+  const previous = { target: executor.mode, provider: executor.provider, effort: executor.effort(change.provider) };
+  const status = await executor.select(change);
+  if (change.target === "local") {
     void localExecutor.refreshSignIn();
     if (!models.hasReport("local")) void recordLocalCodexModels();
   }
-  if (previous !== target) {
-    const selected = status.targets?.find((item) => item.id === target);
+  if (change.provider === "claude" && status.mode === "local") void localExecutor.refreshClaude();
+  if (change.target && previous.target !== change.target) {
+    const selected = status.targets?.find((item) => item.id === change.target);
     await activity.record({
       category: "system",
       action: "agent-execution.target",
       status: "completed",
-      summary: `New agent runs will use the ${executor.label(target).toLowerCase()}${selected?.host ? ` (${selected.host})` : ""}`,
-      metadata: { target, previous },
+      summary: `New agent runs will use the ${executor.label(change.target).toLowerCase()}${selected?.host ? ` (${selected.host})` : ""}`,
+      metadata: { target: change.target, previous: previous.target },
+    });
+  }
+  if (change.provider && previous.provider !== change.provider) {
+    await activity.record({
+      category: "system",
+      action: "agent-execution.provider",
+      status: "completed",
+      summary: `New agent runs will use ${providerLabel(change.provider)}`,
+      metadata: { provider: change.provider, previous: previous.provider },
+    });
+  }
+  if (change.effort && previous.effort !== change.effort) {
+    await activity.record({
+      category: "system",
+      action: "agent-execution.effort",
+      status: "completed",
+      summary: `${providerLabel(status.provider)} effort set to ${change.effort}`,
+      metadata: { provider: status.provider, effort: change.effort, previous: previous.effort },
     });
   }
   response.json(status);
@@ -316,12 +353,18 @@ app.get("/api/diagnostics", async (_request, response) => {
       taskSync.health(),
       canvas.health(),
     ]);
+  const provider = executor.provider;
+  const quickEffort = executor.effort(provider);
   response.json({
     generatedAt: new Date().toISOString(),
-    currentModel: currentSettings.defaultModel,
+    currentProvider: provider,
+    currentModel: agentModel(provider, currentSettings),
     currentPrompts: currentSettings.prompts,
     featureModels: currentSettings.featureModels,
-    reasoningEffort: currentSettings.reasoningEffort,
+    reasoningEffort: quickEffort === "default"
+      ? provider === "claude" ? currentSettings.claude.reasoningEffort : currentSettings.reasoningEffort
+      : quickEffort,
+    claudeVersion: claudeCodeVersion(),
     connections: {
       taskSync: taskSyncHealth,
       canvas: canvasHealth,
@@ -351,7 +394,7 @@ app.post("/api/connection-test", async (_request, response) => {
     canvasCredentialConfigured: Boolean(env.canvasToken && (currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl)),
     canvasBaseUrl: currentSettings.connections.canvasBaseUrl || env.canvasBaseUrl,
     taskSyncRoute,
-    codexModel: currentSettings.defaultModel,
+    agentModel: modelLabel(agentModel(executor.provider, currentSettings)),
     agents: executor.status(),
     mcpHealth: () => toolSessions.health(),
     workspaceStats: () => workspaces.stats(),
@@ -489,8 +532,8 @@ const httpServer = app.listen(env.port, env.host, () => {
     metadata: { agentExecution: executor.mode, agentTargets: executor.targets },
   });
   const agents = workerHub
-    ? `laptop agent worker or this server; new runs use the ${executor.label(executor.mode).toLowerCase()}`
-    : "local Codex";
+    ? `laptop agent worker or this server; new runs use ${providerLabel(executor.provider)} on the ${executor.label(executor.mode).toLowerCase()}`
+    : `local ${providerLabel(executor.provider)}`;
   process.stdout.write(`School Dashboard API listening on ${address} (agents: ${agents})\n`);
 });
 workerHub?.attach(httpServer);
@@ -504,6 +547,11 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
 }
 if (workerHub && !env.workerToken) {
   process.stderr.write("SCHOOL_DASHBOARD_AGENT_EXECUTION=worker needs SCHOOL_DASHBOARD_WORKER_TOKEN; agents stay unavailable until it is set.\n");
+}
+
+// The model new runs of the agent use unless a feature says otherwise.
+function agentModel(provider: typeof executor.provider, current: Awaited<ReturnType<SettingsStore["get"]>>): string {
+  return provider === "claude" ? current.claude.model : current.defaultModel;
 }
 
 // This machine's Codex model list, reported like the laptop worker reports its own.

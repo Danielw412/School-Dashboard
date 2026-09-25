@@ -1,4 +1,4 @@
-import { modelLabel } from "../models";
+import { modelLabel, providerLabel } from "../models";
 import { ChevronRight, Clock3, Cpu, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -26,7 +26,7 @@ export function AgentRunsPage() {
             <button className="run-row" key={run.id} onClick={() => setSelectedId(run.id)}>
               <span className="run-icon"><Cpu size={18} /></span>
               <span className="run-main"><strong>{featureName(run.feature)}</strong><span>{run.taskTitle}</span><small>{run.courseName}</small></span>
-              <span className="run-model">{modelLabel(run.model)}<small>{run.reasoningEffort}{run.execution ? ` · ${run.execution.label}` : ""}</small></span>
+              <span className="run-model">{modelLabel(run.model)}<small>{run.effectiveReasoningEffort || run.reasoningEffort}{run.execution ? ` · ${run.execution.label}` : ""}</small></span>
               <RunStatus status={run.status} />
               <span className="run-time"><Clock3 size={14} />{relativeTime(run.startedAt)}</span>
               <ChevronRight size={17} />
@@ -41,10 +41,11 @@ export function AgentRunsPage() {
           <h2>{selected.taskTitle}</h2>
           <RunProgressPanel run={selected} />
           <dl className="diagnostic-dl">
+            <div><dt>Agent</dt><dd>{providerLabel(selected.provider ?? "codex")}</dd></div>
             <div><dt>Model</dt><dd>{selected.model}</dd></div>
-            <div><dt>Reasoning</dt><dd>{selected.reasoningEffort}</dd></div>
+            <div><dt>{selected.provider === "claude" ? "Effort" : "Reasoning"}</dt><dd>{selected.effectiveReasoningEffort || selected.reasoningEffort}</dd></div>
             <div><dt>Ran on</dt><dd>{executionLabel(selected)}</dd></div>
-            <div><dt>Thread</dt><dd>{selected.threadId ?? "Not started"}</dd></div>
+            <div><dt>{selected.provider === "claude" ? "Session" : "Thread"}</dt><dd>{selected.threadId ?? "Not started"}</dd></div>
             <div><dt>Tokens</dt><dd>{selected.usage ? (selected.usage.input_tokens + selected.usage.output_tokens).toLocaleString() : "Unavailable"}</dd></div>
           </dl>
           {selected.error ? <ErrorNotice error={new Error(selected.error)} /> : null}

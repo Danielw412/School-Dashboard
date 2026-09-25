@@ -95,7 +95,7 @@ async function harness(respond: (request: AgentExecutionRequest) => Promise<stri
   });
   const executor: AgentExecutor = {
     mode: "local",
-    status: () => ({ mode: "local", available: true, message: "Ready", worker: null, activeJobs: 0, queuedJobs: 0 }),
+    status: () => ({ mode: "local", provider: "codex", available: true, message: "Ready", worker: null, activeJobs: 0, queuedJobs: 0 }),
     run: async (request, callbacks) => {
       await callbacks.onStarted();
       return { threadId: "thread-1", usage: null, finalResponse: await respond(request) };

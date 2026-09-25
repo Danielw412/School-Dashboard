@@ -2,45 +2,23 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import {
-  Codex,
-  type ModelReasoningEffort,
-  type ThreadEvent,
-  type Usage,
-} from "@openai/codex-sdk";
+import { Codex, type ModelReasoningEffort, type Usage } from "@openai/codex-sdk";
 
+import {
+  type AgentTurnCallbacks,
+  type AgentTurnRequest,
+  type AgentTurnResult,
+  sanitizedEnvironment,
+} from "./agent-turn.js";
 import { listCodexMcpServers } from "./codex-models.js";
 
-// One Codex turn, runnable in-process (local mode) or by the laptop agent worker. Everything here
-// reads the Codex installation of the machine it runs on: its binary, ~/.codex auth, sessions,
-// and config.toml. It never needs Canvas credentials.
-
-export type CodexTurnRequest = {
-  model: string;
-  reasoningEffort: string;
-  instructions: string;
-  outputSchema: unknown;
-  networkAccessEnabled: boolean;
-  workingDirectory: string;
-  // The assignment-scoped school_dashboard MCP endpoint and its short-lived bearer capability.
-  mcp: { url: string; token: string } | null;
-};
-
-export type CodexTurnResult = {
-  threadId: string | null;
-  usage: Usage | null;
-  finalResponse: string | null;
-};
-
-export type CodexTurnCallbacks = {
-  signal: AbortSignal;
-  onEvent: (event: ThreadEvent) => Promise<void> | void;
-};
+// One Codex turn (see agent-turn.ts). Everything here reads the Codex installation of the machine
+// it runs on: its binary, ~/.codex auth, sessions, and config.toml.
 
 export async function runCodexTurn(
-  request: CodexTurnRequest,
-  { signal, onEvent }: CodexTurnCallbacks,
-): Promise<CodexTurnResult> {
+  request: AgentTurnRequest,
+  { signal, onEvent }: AgentTurnCallbacks,
+): Promise<AgentTurnResult> {
   const env = {
     ...sanitizedEnvironment(),
     ...(request.mcp ? { SCHOOL_DASHBOARD_TOOL_TOKEN: request.mcp.token } : {}),
@@ -156,12 +134,4 @@ export async function configuredMcpServerNames(
   } catch {
     return [];
   }
-}
-
-function sanitizedEnvironment(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined)
-      .filter(([key]) => !/(CANVAS|GOOGLE|GEMINI|TOKEN|SECRET|PASSWORD|COOKIE|API_KEY)/i.test(key)),
-  );
 }

@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ActivityStore } from "./activity.js";
 import type { AgentExecutionRequest } from "./agent-execution.js";
-import type { CodexTurnCallbacks, CodexTurnRequest, CodexTurnResult } from "./codex-execution.js";
+import type { AgentTurnCallbacks, AgentTurnRequest, AgentTurnResult } from "./agent-turn.js";
+import type { ClaudeProbe } from "./claude-execution.js";
 import { AgentWorkerClient, compactThreadEventForTransport } from "./worker-client.js";
 import { WorkerHub, type WorkerModelsReport } from "./worker-hub.js";
 import { WORKER_CONNECT_PATH } from "./worker-protocol.js";
@@ -23,7 +24,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-type RunTurn = (request: CodexTurnRequest, callbacks: CodexTurnCallbacks) => Promise<CodexTurnResult>;
+type RunTurn = (request: AgentTurnRequest, callbacks: AgentTurnCallbacks) => Promise<AgentTurnResult>;
 
 async function listen(server: Server, port = 0): Promise<number> {
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -55,7 +56,7 @@ async function startHub(options: { port?: number; reconnectGraceMs?: number } = 
   return { hub, server, port, url: `http://127.0.0.1:${port}`, reports, activity, stop };
 }
 
-async function startWorker(url: string, runTurn: RunTurn, maxConcurrentJobs = 2) {
+async function startWorker(url: string, runTurn: RunTurn, maxConcurrentJobs = 2, probeClaude?: () => Promise<ClaudeProbe>) {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "school-worker-"));
   const worker = new AgentWorkerClient({
     serverUrl: url,
@@ -73,6 +74,7 @@ async function startWorker(url: string, runTurn: RunTurn, maxConcurrentJobs = 2)
       reasoningEfforts: ["low", "high"],
       defaultReasoningEffort: "medium",
     }],
+    probeClaude,
     runTurn,
     log: () => undefined,
     reconnectInitialMs: 20,
@@ -98,6 +100,7 @@ async function serverWorkspace() {
 function request(workspace: { id: string; path: string }, overrides: Partial<AgentExecutionRequest> = {}): AgentExecutionRequest {
   return {
     runId: randomUUID(),
+    provider: "codex",
     feature: "answerKey",
     taskTitle: "Worksheet 3",
     model: "gpt-6-luna",
@@ -135,7 +138,7 @@ function socketOf(worker: AgentWorkerClient): WebSocket {
 describe("laptop agent worker round trip", () => {
   it("runs a job on the worker with its mirrored workspace and streams compact events back", async () => {
     const { hub, url, reports } = await startHub();
-    const seen: CodexTurnRequest[] = [];
+    const seen: AgentTurnRequest[] = [];
     let mirrored: { json: string; image: number[] } | null = null;
     await startWorker(url, async (turn, { onEvent }) => {
       seen.push(turn);
@@ -158,7 +161,7 @@ describe("laptop agent worker round trip", () => {
       } as ThreadEvent);
       await onEvent({ type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "{\"answers\":[]}" } });
       await onEvent({ type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } } as ThreadEvent);
-      return { threadId: "thread-123", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } as CodexTurnResult["usage"], finalResponse: "{\"answers\":[]}" };
+      return { threadId: "thread-123", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } as AgentTurnResult["usage"], finalResponse: "{\"answers\":[]}" };
     });
     await until(() => hub.status().available);
     expect(hub.status().worker).toMatchObject({ name: "laptop", codexVersion: "0.156.0", maxConcurrentJobs: 2 });
@@ -188,7 +191,57 @@ describe("laptop agent worker round trip", () => {
     expect(seen[0].workingDirectory).toContain(workspace.id);
     expect(seen[0].mcp).toEqual({ url: `${url}/api/internal/canvas-mcp`, token: "tool-capability-token-abcdef" });
     expect(seen[0].networkAccessEnabled).toBe(false);
+    expect(seen[0].provider).toBe("codex");
     expect(hub.status()).toMatchObject({ activeJobs: 0, queuedJobs: 0 });
+  });
+
+  it("runs Claude jobs on a worker whose Claude Code is signed in", async () => {
+    const { hub, url, reports } = await startHub();
+    const seen: AgentTurnRequest[] = [];
+    const probe: ClaudeProbe = {
+      version: "2.1.282",
+      ready: true,
+      detail: "Signed in (Claude Max)",
+      models: [{ id: "claude-opus-5", displayName: "Opus 5", reasoningEfforts: ["low", "high", "max"] }],
+      error: null,
+    };
+    await startWorker(url, async (turn) => {
+      seen.push(turn);
+      return { threadId: "session-1", usage: null, finalResponse: "{}" };
+    }, 2, async () => probe);
+    await until(() => hub.status("claude").available);
+    expect(hub.status("claude")).toMatchObject({ provider: "claude", message: "Claude runs on laptop through the laptop agent worker." });
+    expect(hub.status().worker?.claude).toEqual({ version: "2.1.282", ready: true, detail: "Signed in (Claude Max)", error: null });
+    expect(reports[0]?.claude).toMatchObject({ ready: true, models: [expect.objectContaining({ id: "claude-opus-5" })] });
+
+    const callbacks = { signal: new AbortController().signal, onStarted: () => undefined, onEvent: () => undefined };
+    await expect(hub.run(request(await serverWorkspace(), { provider: "claude", model: "claude-opus-5" }), callbacks))
+      .resolves.toMatchObject({ threadId: "session-1" });
+    expect(seen[0]).toMatchObject({ provider: "claude", model: "claude-opus-5" });
+  });
+
+  it("keeps Claude unavailable on a worker from before Claude support, or one that is signed out", async () => {
+    const { hub, url } = await startHub();
+    let calls = 0;
+    const { worker } = await startWorker(url, async () => {
+      calls += 1;
+      return { threadId: "thread", usage: null, finalResponse: "{}" };
+    });
+    await until(() => hub.status().available);
+    expect(hub.status("codex").available).toBe(true);
+    expect(hub.status("claude")).toMatchObject({ available: false, message: expect.stringMatching(/from before Claude support/u) });
+    const callbacks = { signal: new AbortController().signal, onStarted: () => undefined, onEvent: () => undefined };
+    await expect(hub.run(request(await serverWorkspace(), { provider: "claude" }), callbacks))
+      .rejects.toThrow(/from before Claude support/u);
+    expect(calls).toBe(0);
+    await worker.stop();
+
+    const signedOut = await startHub();
+    await startWorker(signedOut.url, async () => ({ threadId: null, usage: null, finalResponse: "{}" }), 2, async () => ({
+      version: "2.1.282", ready: false, detail: "Not signed in", models: null, error: null,
+    }));
+    await until(() => signedOut.hub.status().available);
+    expect(signedOut.hub.status("claude").message).toMatch(/Claude is not signed in on laptop\. Run "claude auth login"/u);
   });
 
   it("keeps a run alive across a dropped connection and delivers its buffered result after reconnecting", async () => {

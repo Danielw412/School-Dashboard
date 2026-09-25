@@ -20,12 +20,13 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { useAgentAvailability } from "../agent-status";
+import { useAgentAvailability, useSelectedAgentProvider } from "../agent-status";
 import { schoolApi } from "../api";
 import { ProgressTimeline } from "../components/AgentProgress";
 import { EmptyState, ErrorNotice } from "../components/Status";
 import { classTone, dueBucket, formatDue, isPastDue, parseDueDate } from "../format";
 import { usePolling } from "../hooks/usePolling";
+import { assistantName } from "../models";
 import type {
   ActiveWork,
   AgentProgress,
@@ -244,6 +245,7 @@ function AssignmentInspector({
   const [workflowError, setWorkflowError] = useState<unknown>(null);
   const isManualTask = Boolean(task.manually_managed);
   const agents = useAgentAvailability();
+  const provider = useSelectedAgentProvider();
   useEffect(() => {
     let current = true;
     void schoolApi.context(task.logical_id)
@@ -304,7 +306,7 @@ function AssignmentInspector({
       {workflowError ? <ErrorNotice error={workflowError} /> : null}
       {contextError ? <ErrorNotice error={contextError} /> : null}
 
-      {isManualTask ? <div className="requirements-block manual-task-note"><strong>Manual task</strong><p>Add a Canvas assignment URL to enable Luna assignment workflows.</p></div> : null}
+      {isManualTask ? <div className="requirements-block manual-task-note"><strong>Manual task</strong><p>Add a Canvas assignment URL to enable {assistantName(provider)} assignment workflows.</p></div> : null}
 
       <section className="workflow-picker">
         <h3>Choose a workflow</h3>
@@ -331,7 +333,7 @@ function AssignmentInspector({
           <ProgressTimeline progress={active.progress} active compact fallbackCurrent={active.current} />
           {active.workflow ? <WorkflowSequence workflow={active.workflow} /> : null}
           <button className="danger-button compact-button cancel-run-button" disabled={cancelling} onClick={() => void cancelActive()}>
-            {cancelling ? <LoaderCircle className="spin" size={15} /> : <X size={15} />}Cancel Luna
+            {cancelling ? <LoaderCircle className="spin" size={15} /> : <X size={15} />}Cancel {assistantName(active.run?.provider ?? provider)}
           </button>
         </div>
       ) : null}

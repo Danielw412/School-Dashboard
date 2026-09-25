@@ -1,3 +1,4 @@
+import type { AgentProvider, EffortChoice } from "./models";
 import type {
   AgentRun,
   AgentExecutionStatus,
@@ -79,10 +80,13 @@ export const schoolApi = {
     body: "{}",
   }),
   agentExecution: () => api<AgentExecutionStatus>("/api/agent-execution"),
-  setAgentTarget: (target: AgentExecutionTarget) => api<AgentExecutionStatus>("/api/agent-execution", {
-    method: "PUT",
-    body: JSON.stringify({ target }),
-  }),
+  // Where new runs go, which agent runs them, and the quick effort level (for `provider`, or the
+  // selected agent).
+  updateAgentSelection: (change: { target?: AgentExecutionTarget; provider?: AgentProvider; effort?: EffortChoice }) =>
+    api<AgentExecutionStatus>("/api/agent-execution", {
+      method: "PUT",
+      body: JSON.stringify(change),
+    }),
   agentModels: () => api<AgentModels>("/api/agent-models"),
   refreshAgentModels: () => api<{ requested: boolean }>("/api/agent-models/refresh", { method: "POST", body: "{}" }),
   settings: () => api<AppSettings>("/api/settings"),

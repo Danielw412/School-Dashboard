@@ -1,4 +1,4 @@
-import { modelLabel } from "../models";
+import { assistantName, effortLabel, effortLevels, modelLabel, providerLabel } from "../models";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -18,7 +18,7 @@ import {
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
-import { useAgentAvailability } from "../agent-status";
+import { useAgentAvailability, useSelectedAgentProvider } from "../agent-status";
 import { schoolApi } from "../api";
 import { RunProgressPanel } from "../components/AgentProgress";
 import { Markdown } from "../components/Markdown";
@@ -51,8 +51,9 @@ export function AssignmentWorkspace() {
   const [starting, setStarting] = useState<AgentRun["feature"] | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<unknown>(null);
-  const [studyModel, setStudyModel] = useState("gpt-6-luna");
-  const [reasoning, setReasoning] = useState<ReasoningEffort>("high");
+  // "" and "default" use the configured model and the sidebar's (or Settings') effort.
+  const [studyModel, setStudyModel] = useState("");
+  const [reasoning, setReasoning] = useState<ReasoningEffort | "default">("default");
   const [predictor, setPredictor] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
   const task = taskState.data;
@@ -77,8 +78,8 @@ export function AssignmentWorkspace() {
       await schoolApi.startRun({
         feature,
         logicalId,
-        model: feature === "studyGuide" ? studyModel : undefined,
-        reasoningEffort: feature === "studyGuide" ? reasoning : undefined,
+        model: feature === "studyGuide" ? studyModel || undefined : undefined,
+        reasoningEffort: feature === "studyGuide" && reasoning !== "default" ? reasoning : undefined,
         useTestQuestionPredictor: feature === "studyGuide" ? predictor : undefined,
         extractionRunId: feature === "answerKey" ? extractionRun?.id : undefined,
       });
@@ -131,7 +132,7 @@ export function AssignmentWorkspace() {
         <div className="workspace-actions">
           {activeRun ? (
             <button className="danger-button" disabled={cancelling} onClick={() => void cancelActive()}>
-              {cancelling ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}Cancel Luna
+              {cancelling ? <LoaderCircle className="spin" size={16} /> : <X size={16} />}Cancel {assistantName(activeRun.provider)}
             </button>
           ) : null}
           {canvasUrl && <a className="secondary-button" href={canvasUrl} target="_blank" rel="noreferrer">Canvas<ArrowUpRight size={15} /></a>}
@@ -199,6 +200,7 @@ function TabButton({ active, onClick, icon: Icon, children }: { active: boolean;
 
 function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () => void; starting: boolean }) {
   const agents = useAgentAvailability();
+  const provider = useSelectedAgentProvider();
   const output = run?.output as AssignmentDirections | null;
   const hasSources = Boolean(output && (
     output.resources.length ||
@@ -222,12 +224,12 @@ function DirectionsPanel({ run, onRun, starting }: { run?: AgentRun; onRun: () =
         </button>
       </FeatureHeader>
       {run && <RunBanner run={run} />}
-      {!run && <EmptyState title="Directions are ready to investigate" detail="Choose Get Directions and Luna will inspect the assignment, submission requirements, module neighborhood, and relevant linked Canvas resources." />}
+      {!run && <EmptyState title="Directions are ready to investigate" detail={`Choose Get Directions and ${assistantName(provider)} will inspect the assignment, submission requirements, module neighborhood, and relevant linked Canvas resources.`} />}
       {run?.status === "failed" && <ErrorNotice error={new Error(run.error || "Directions run failed")} />}
       {output && (
         <div className="content-layout directions-output">
           <article className="paper-panel">
-            <div className="paper-heading"><span>{output.assignmentTitle || "Assignment directions"}</span><small>Luna synthesis</small></div>
+            <div className="paper-heading"><span>{output.assignmentTitle || "Assignment directions"}</span><small>{assistantName(run?.provider)} synthesis</small></div>
             <Markdown>{output.overviewMarkdown}</Markdown>
             {output.assignedWork.length === 0 && instructionList}
             {output.assignedWork.length > 0 && (
@@ -376,15 +378,22 @@ function AnswerKeyPanel({ run, extractionRun, onRun, starting }: { run?: AgentRu
   </div>;
 }
 
-function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predictor, setPredictor, onRun, starting }: { run?: AgentRun; model: string; setModel: (value: string) => void; reasoning: ReasoningEffort; setReasoning: (value: ReasoningEffort) => void; predictor: boolean; setPredictor: (value: boolean) => void; onRun: () => void; starting: boolean }) {
+function StudyGuidePanel({ run, model, setModel, reasoning, setReasoning, predictor, setPredictor, onRun, starting }: { run?: AgentRun; model: string; setModel: (value: string) => void; reasoning: ReasoningEffort | "default"; setReasoning: (value: ReasoningEffort | "default") => void; predictor: boolean; setPredictor: (value: boolean) => void; onRun: () => void; starting: boolean }) {
   const agents = useAgentAvailability();
-  const { selectable } = useSelectableModels();
+  const provider = useSelectedAgentProvider();
+  const { selectable: codexModels, claude: claudeModels } = useSelectableModels();
+  // The lists follow the agent selected in the sidebar; a choice made for the other agent falls
+  // back to the configured model.
+  const selectable = provider === "claude" ? claudeModels : codexModels;
+  const modelValue = selectable.some((item) => item.id === model) ? model : "";
+  const efforts: string[] = provider === "claude" ? [...effortLevels] : ["minimal", ...effortLevels];
+  const reasoningValue = efforts.includes(reasoning) ? reasoning : "default";
   const output = run?.output as StudyGuide | null;
   return <div>
     <FeatureHeader title="Study guide" />
     <div className="generator-config">
-      <label>Model<select value={model} onChange={(event) => setModel(event.target.value)}>{selectable.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-      <label>Reasoning<select value={reasoning} onChange={(event) => setReasoning(event.target.value as ReasoningEffort)}>{["minimal", "low", "medium", "high", "xhigh", "max"].map((item) => <option key={item}>{item}</option>)}</select></label>
+      <label>{providerLabel(provider)} model<select value={modelValue} onChange={(event) => setModel(event.target.value)}><option value="">Settings default</option>{selectable.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+      <label>Reasoning<select value={reasoningValue} onChange={(event) => setReasoning(event.target.value as ReasoningEffort | "default")}><option value="default">{effortLabel("default")}</option>{efforts.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
       <label className="check-field predictor-toggle"><input type="checkbox" checked={predictor} onChange={(event) => setPredictor(event.target.checked)} /><span><strong>Use Test Question Predictor</strong></span></label>
       <button className="primary-button" onClick={onRun} disabled={starting || isActiveRun(run) || !agents.available} title={agents.reason ?? undefined}>{starting || isActiveRun(run) ? <LoaderCircle className="spin" size={17} /> : <NotebookTabs size={17} />}{run ? "Generate again" : "Generate study guide"}</button>
     </div>
@@ -403,7 +412,7 @@ function RunBanner({ run }: { run: AgentRun }) {
   return <div className="run-card">
     <div className="run-banner">
       <RunStatus status={run.status} />
-      <span>{modelLabel(run.model)}, {run.reasoningEffort} reasoning</span>
+      <span>{modelLabel(run.model)}, {run.effectiveReasoningEffort || run.reasoningEffort} {run.provider === "claude" ? "effort" : "reasoning"}</span>
       <small>{run.usage ? `${(run.usage.input_tokens + run.usage.output_tokens).toLocaleString()} tokens` : ""}</small>
     </div>
     <RunProgressPanel run={run} />

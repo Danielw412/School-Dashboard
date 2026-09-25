@@ -72,4 +72,47 @@ describe("model settings compatibility", () => {
     expect(modelLabel("gpt-5.6-terra")).toBe("GPT-5.6 Terra");
     expect(modelLabel("unknown-historical-model")).toBe("unknown-historical-model");
   });
+
+  it("labels Claude model IDs, including dated ones", () => {
+    expect(modelLabel("claude-opus-5")).toBe("Claude Opus 5");
+    expect(modelLabel("claude-opus-5-5")).toBe("Claude Opus 5.5");
+    expect(modelLabel("claude-fable-5-1")).toBe("Claude Fable 5.1");
+    expect(modelLabel("claude-sonnet-4-6")).toBe("Claude Sonnet 4.6");
+    expect(modelLabel("claude-haiku-4-5-20251001")).toBe("Claude Haiku 4.5");
+  });
+});
+
+describe("Claude settings", () => {
+  it("adds Claude defaults to settings saved before Claude support", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-settings-"));
+    const path = join(root, "settings.json");
+    try {
+      const { claude, ...legacy } = structuredClone(defaultSettings);
+      void claude;
+      await writeFile(path, JSON.stringify({ ...legacy, reasoningEffort: "medium" }));
+      const settings = await new SettingsStore(path).get();
+      expect(settings.claude).toEqual({ model: "claude-opus-5", reasoningEffort: "high" });
+      expect(settings.reasoningEffort).toBe("medium");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a model Claude Code lists and falls back when it is no longer listed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-settings-"));
+    const path = join(root, "settings.json");
+    let listed = ["claude-opus-5", "claude-sonnet-5"];
+    const store = new SettingsStore(path, undefined, (model) => listed.includes(model));
+    try {
+      const saved = await store.save({ ...structuredClone(defaultSettings), claude: { model: "claude-sonnet-5", reasoningEffort: "max" } });
+      expect(saved.claude).toEqual({ model: "claude-sonnet-5", reasoningEffort: "max" });
+      await expect(store.save({ ...saved, claude: { model: "claude-imaginary-9", reasoningEffort: "high" } }))
+        .rejects.toThrow(/not a model Claude Code currently lists/u);
+
+      listed = ["claude-opus-5"];
+      await expect(store.get()).resolves.toMatchObject({ claude: { model: "claude-opus-5", reasoningEffort: "max" } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -75,6 +75,7 @@ function progressMessage(event: ActivityEvent): string {
     "source-context": "Loading the resolved assignment and nearby module material",
     "mcp.connect": "Connecting the scoped school_dashboard tools",
     "codex.start": "Starting the configured Codex model",
+    "claude.start": "Starting the configured Claude model",
     directions: "Synthesizing concise directions",
     problemExtraction: "Extracting assigned problems",
     answerKey: "Building the answer key",

@@ -5,8 +5,8 @@ import { NavLink } from "react-router-dom";
 import { AgentStatusContext, selectedAgentTarget } from "../agent-status";
 import { schoolApi } from "../api";
 import { usePolling } from "../hooks/usePolling";
-import type { AgentExecutionTarget } from "../types";
-import { AgentTargetIcon, AgentTargetSwitch } from "./AgentTargetSwitch";
+import { providerLabel } from "../models";
+import { AgentControls, AgentProviderIcon, type AgentSelectionChange, AgentTargetIcon } from "./AgentControls";
 
 const navItems = [
   { to: "/", label: "My work", icon: LayoutList },
@@ -22,12 +22,18 @@ export function AppShell({ children }: PropsWithChildren) {
   const hasActiveWork = Boolean(activeWork.data?.runs.length || activeWork.data?.workflows.length);
   const agents = activeWork.data?.agents ?? null;
   const selectedTarget = selectedAgentTarget(agents);
-  // When the selected target is down, offer the other one if it can take runs right now.
+  const provider = agents?.provider ?? "codex";
+  const hasChoices = (agents?.targets?.length ?? 0) > 1 || (agents?.providers?.length ?? 0) > 1;
+  // When the selected agent cannot run where it is selected, offer the other machine for the
+  // same agent, or else the other agent on the same machine, if either can take runs right now.
   const fallbackTarget = agents && !agents.available
     ? agents.targets?.find((target) => target.id !== agents.mode && target.available) ?? null
     : null;
-  const selectTarget = async (target: AgentExecutionTarget) => {
-    const status = await schoolApi.setAgentTarget(target);
+  const fallbackProvider = agents && !agents.available && !fallbackTarget
+    ? agents.providers?.find((option) => option.id !== provider && option.available) ?? null
+    : null;
+  const changeAgents = async (change: AgentSelectionChange) => {
+    const status = await schoolApi.updateAgentSelection(change);
     activeWork.setData((current) => current ? { ...current, agents: status } : current);
   };
   return (
@@ -49,7 +55,7 @@ export function AppShell({ children }: PropsWithChildren) {
               </NavLink>
             ))}
           </nav>
-          <AgentTargetSwitch agents={agents} onSelect={selectTarget} />
+          <AgentControls agents={agents} onChange={changeAgents} />
         </aside>
         {mobileOpen ? <button className="scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)} /> : null}
         <main className="main-stage">
@@ -61,14 +67,14 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
             <div className="mobile-header-actions">
               {hasActiveWork ? <LoaderCircle className="spin" size={17} /> : null}
-              {selectedTarget && (agents?.targets?.length ?? 0) > 1 ? (
+              {agents && hasChoices ? (
                 <button
-                  className={`agent-target-chip ${selectedTarget.available ? "" : "warn"}`}
-                  aria-label={`Agents run on the ${selectedTarget.label.toLowerCase()}. Change where agents run`}
+                  className={`agent-target-chip ${agents.available ? "" : "warn"}`}
+                  aria-label={`${providerLabel(provider)} runs new agent runs${selectedTarget ? ` on the ${selectedTarget.label.toLowerCase()}` : ""}. Change agent settings`}
                   onClick={() => setMobileOpen(true)}
                 >
-                  <AgentTargetIcon target={selectedTarget.id} size={13} />
-                  {selectedTarget.label}
+                  <AgentProviderIcon provider={provider} size={13} />
+                  {providerLabel(provider)}{selectedTarget && (agents.targets?.length ?? 0) > 1 ? ` · ${selectedTarget.label}` : ""}
                 </button>
               ) : null}
             </div>
@@ -78,9 +84,14 @@ export function AppShell({ children }: PropsWithChildren) {
               <CloudOff size={17} />
               <div><strong>Agents unavailable</strong><p>{agents.message} Tasks, past results, and settings still work.</p></div>
               {fallbackTarget ? (
-                <button className="secondary-button" onClick={() => void selectTarget(fallbackTarget.id).catch(() => undefined)}>
+                <button className="secondary-button" onClick={() => void changeAgents({ target: fallbackTarget.id }).catch(() => undefined)}>
                   <AgentTargetIcon target={fallbackTarget.id} />
                   Run on the {fallbackTarget.label.toLowerCase()} instead
+                </button>
+              ) : fallbackProvider ? (
+                <button className="secondary-button" onClick={() => void changeAgents({ provider: fallbackProvider.id }).catch(() => undefined)}>
+                  <AgentProviderIcon provider={fallbackProvider.id} />
+                  Use {fallbackProvider.label} instead
                 </button>
               ) : null}
             </div>

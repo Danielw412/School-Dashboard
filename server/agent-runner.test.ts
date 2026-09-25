@@ -72,11 +72,30 @@ describe("agent run preferences", () => {
     const settings = structuredClone(defaultSettings);
     settings.featureModels.assignmentNavigation = "gpt-6-sol";
 
-    const resolved = resolveAgentPreferences(settings, "directions", undefined, "medium");
+    const resolved = resolveAgentPreferences(settings, "directions", { reasoningEffort: "medium" });
 
     expect(resolved.model).toBe("gpt-6-sol");
     expect(resolved.reasoningEffort).toBe("medium");
     expect(resolved.prompt).toBe(settings.prompts.assignmentNavigation);
+  });
+
+  it("uses Claude's own model and effort settings for Claude runs", () => {
+    const settings = structuredClone(defaultSettings);
+    settings.claude = { model: "claude-sonnet-5", reasoningEffort: "medium" };
+
+    expect(resolveAgentPreferences(settings, "directions", { provider: "claude" })).toMatchObject({
+      model: "claude-sonnet-5",
+      reasoningEffort: "medium",
+      prompt: settings.prompts.assignmentNavigation,
+    });
+    expect(resolveAgentPreferences(settings, "problemExtraction", { provider: "claude" }).reasoningEffort).toBe("xhigh");
+  });
+
+  it("applies the quick effort choice to every feature unless a run names its own", () => {
+    expect(resolveAgentPreferences(defaultSettings, "problemExtraction", { effort: "low" }).reasoningEffort).toBe("low");
+    expect(resolveAgentPreferences(defaultSettings, "answerKey", { provider: "claude", effort: "max" }).reasoningEffort).toBe("max");
+    expect(resolveAgentPreferences(defaultSettings, "problemExtraction", { effort: "default" }).reasoningEffort).toBe("xhigh");
+    expect(resolveAgentPreferences(defaultSettings, "studyGuide", { effort: "low", reasoningEffort: "high" }).reasoningEffort).toBe("high");
   });
 
   it("constrains directions to authoritative preloaded evidence and minimal tools", () => {

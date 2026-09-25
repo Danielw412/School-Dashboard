@@ -12,7 +12,8 @@ param(
 
 # Installs the School Dashboard laptop agent worker as a hidden per-user scheduled task that
 # starts at sign-in. The worker keeps an outbound WebSocket to the dashboard server and runs
-# Codex here, against this laptop's own ~/.codex; the dashboard itself lives on the server.
+# Codex or Claude here, with this laptop's own ~/.codex and ~/.claude sign-ins; the dashboard
+# itself lives on the server. Rerun it after updating School Dashboard to restart the worker.
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "dotenv.ps1")
@@ -99,7 +100,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description "Runs School Dashboard agent jobs from $serverUrl with this laptop's Codex." `
+    -Description "Runs School Dashboard agent jobs from $serverUrl with this laptop's Codex and Claude." `
     -Force | Out-Null
 
 [System.IO.File]::WriteAllLines($shortcutPath, @(
@@ -115,7 +116,8 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
     Start-Sleep -Seconds 1
     try {
         $agents = (Invoke-RestMethod -Uri "$serverUrl/api/active-work" -TimeoutSec 5).agents
-        if ($agents.available -and $agents.worker.hostname -eq $env:COMPUTERNAME) {
+        # Connected, whichever machine and agent the dashboard currently has selected.
+        if ($agents.worker.hostname -eq $env:COMPUTERNAME -and -not $agents.worker.disconnectedAt) {
             $connected = $true
             break
         }
@@ -130,5 +132,13 @@ if (-not $connected) {
 
 Write-Host "Laptop agent worker installed: $taskName (starts at sign-in, hidden)."
 Write-Host "Connected to $serverUrl as $env:COMPUTERNAME; agents are available on the dashboard."
+$claude = $agents.worker.claude
+if (-not $claude) {
+    Write-Host "Claude: the worker did not report Claude Code. Run npm install here, then rerun this script."
+} elseif ($claude.ready -ne $true) {
+    Write-Host "Claude: $($claude.detail). Sign in with: node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe auth login"
+} else {
+    Write-Host "Claude: $($claude.detail) (Claude Code $($claude.version))."
+}
 Write-Host "Desktop shortcut: $shortcutPath -> $serverUrl/"
 Write-Host "Worker log: $logPath"
