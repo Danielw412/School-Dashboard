@@ -5,9 +5,12 @@ import { dirname, join } from "node:path";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import WebSocket, { type RawData } from "ws";
 
-import { runCodexTurn } from "./codex-execution.js";
+import { providerLabel } from "../src/models.js";
+import { runAgentTurn } from "./agent-turn.js";
+import type { ClaudeProbe } from "./claude-execution.js";
 import { safeChild } from "./safe-path.js";
 import {
+  type ClaudeReport,
   type CodexModelInfo,
   type ServerMessage,
   serverMessageSchema,
@@ -20,8 +23,8 @@ import {
 } from "./worker-protocol.js";
 
 // Laptop side of the agent worker. It keeps one outbound WebSocket to the dashboard server,
-// runs each job with this machine's Codex (its ~/.codex auth, sessions, and config), and streams
-// compact events back. Jobs keep running across short disconnects: their messages are buffered
+// runs each job with this machine's Codex (its ~/.codex auth, sessions, and config) or Claude
+// Code (its ~/.claude sign-in), and streams compact events back. Jobs keep running across short disconnects: their messages are buffered
 // and the final result is re-sent until the server acknowledges it.
 
 const MAX_BUFFERED_EVENTS = 1_000;
@@ -42,7 +45,9 @@ export type AgentWorkerOptions = {
   workspaceRoot: string;
   codexVersion: string | null;
   listModels: () => Promise<CodexModelInfo[]>;
-  runTurn?: typeof runCodexTurn;
+  // Checks this machine's Claude Code sign-in and models. Without it the worker reports no Claude.
+  probeClaude?: () => Promise<ClaudeProbe>;
+  runTurn?: typeof runAgentTurn;
   log?: (message: string) => void;
   reconnectInitialMs?: number;
   reconnectMaxMs?: number;
@@ -60,14 +65,15 @@ export class AgentWorkerClient {
   private readonly jobs = new Map<string, LocalJob>();
   private models: CodexModelInfo[] | null = null;
   private modelsError: string | null = "Model list not read yet.";
+  private claude: ClaudeReport | undefined;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private staleTimer: NodeJS.Timeout | null = null;
   private maintenanceTimer: NodeJS.Timeout | null = null;
-  private readonly runTurn: typeof runCodexTurn;
+  private readonly runTurn: typeof runAgentTurn;
   private readonly log: (message: string) => void;
 
   constructor(private readonly options: AgentWorkerOptions) {
-    this.runTurn = options.runTurn ?? runCodexTurn;
+    this.runTurn = options.runTurn ?? runAgentTurn;
     this.log = options.log ?? ((message) => process.stdout.write(`[${new Date().toISOString()}] ${message}\n`));
   }
 
@@ -126,6 +132,7 @@ export class AgentWorkerClient {
         },
         models: this.models,
         modelsError: this.modelsError,
+        ...(this.claude ? { claude: this.claude } : {}),
         activeRunIds: this.activeRunIds(),
         finishedRunIds: [...this.jobs.values()].filter((job) => job.finished).map((job) => job.job.runId),
       });
@@ -236,12 +243,13 @@ export class AgentWorkerClient {
   private async execute(local: LocalJob): Promise<void> {
     const { job, controller } = local;
     const started = Date.now();
-    this.log(`Starting ${job.feature} for "${job.taskTitle}" with ${job.model} (${job.reasoningEffort}).`);
+    this.log(`Starting ${job.feature} for "${job.taskTitle}" with ${providerLabel(job.provider ?? "codex")} ${job.model} (${job.reasoningEffort}).`);
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(job.timeoutMs)]);
     try {
       const workingDirectory = await materializeWorkspace(this.options.workspaceRoot, job.workspace);
       signal.throwIfAborted();
       const result = await this.runTurn({
+        provider: job.provider ?? "codex",
         model: job.model,
         reasoningEffort: job.reasoningEffort,
         instructions: job.instructions,
@@ -264,7 +272,7 @@ export class AgentWorkerClient {
       const cancelled = controller.signal.aborted;
       const message = cancelled
         ? controller.signal.reason instanceof Error ? controller.signal.reason.message : "Cancelled."
-        : error instanceof Error ? error.message : "Codex run failed.";
+        : error instanceof Error ? error.message : `${providerLabel(job.provider ?? "codex")} run failed.`;
       this.complete(local, cancelled ? "cancelled" : "failed", null, message);
     }
     this.log(`Finished ${job.feature} for "${job.taskTitle}" (${local.finished?.status}) in ${Math.round((Date.now() - started) / 1000)}s.`);
@@ -303,6 +311,7 @@ export class AgentWorkerClient {
       codexVersion: this.options.codexVersion,
       models: this.models,
       modelsError: this.modelsError,
+      ...(this.claude ? { claude: this.claude } : {}),
     });
   }
 
@@ -311,6 +320,10 @@ export class AgentWorkerClient {
   }
 
   private async refreshModels(): Promise<void> {
+    await Promise.all([this.refreshCodexModels(), this.refreshClaude()]);
+  }
+
+  private async refreshCodexModels(): Promise<void> {
     try {
       this.models = await this.options.listModels();
       this.modelsError = null;
@@ -318,6 +331,20 @@ export class AgentWorkerClient {
       this.modelsError = error instanceof Error ? error.message : "Could not list Codex models.";
       this.log(`Could not read the Codex model list: ${this.modelsError}`);
     }
+  }
+
+  private async refreshClaude(): Promise<void> {
+    if (!this.options.probeClaude) return;
+    const probe = await this.options.probeClaude();
+    this.claude = {
+      version: probe.version,
+      ready: probe.ready,
+      detail: probe.detail.slice(0, 2000),
+      // A failed check keeps the last model list, as the server does for Codex.
+      models: probe.models ?? this.claude?.models ?? null,
+      error: probe.error?.slice(0, 2000) ?? null,
+    };
+    if (probe.ready !== true) this.log(`Claude is unavailable on this machine: ${probe.error ?? probe.detail}`);
   }
 
   private async pruneWorkspaces(): Promise<void> {
@@ -335,8 +362,8 @@ export class AgentWorkerClient {
   }
 }
 
-// A local copy of the run's seed files, so Codex sees the same working directory it would on
-// the server. Tool outputs are not mirrored; MCP returns them inline to Codex.
+// A local copy of the run's seed files, so the agent sees the same working directory it would on
+// the server. Tool outputs are not mirrored; MCP returns them inline to the agent.
 export async function materializeWorkspace(root: string, workspace: WorkerJob["workspace"]): Promise<string> {
   const directory = safeChild(root, workspaceIdSchema.parse(workspace.id));
   await Promise.all([

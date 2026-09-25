@@ -5,13 +5,15 @@ import {
   agentPlacement,
   type AgentExecutionCallbacks,
   type AgentExecutionRequest,
-  LocalCodexExecutor,
+  LocalAgentExecutor,
 } from "./agent-execution.js";
-import type { CodexTurnCallbacks, CodexTurnRequest, CodexTurnResult } from "./codex-execution.js";
+import type { AgentTurnCallbacks, AgentTurnRequest, AgentTurnResult } from "./agent-turn.js";
+import type { ClaudeProbe } from "./claude-execution.js";
 
-function request(runId: string, toolToken: string | null = null): AgentExecutionRequest {
+function request(runId: string, toolToken: string | null = null, provider: "codex" | "claude" = "codex"): AgentExecutionRequest {
   return {
     runId,
+    provider,
     feature: "problemExtraction",
     taskTitle: `Assignment ${runId}`,
     model: "gpt-6-luna",
@@ -32,23 +34,24 @@ function callbacks(signal = new AbortController().signal): AgentExecutionCallbac
 }
 
 function deferredTurns() {
-  const pending: Array<{ request: CodexTurnRequest; resolve: (result: CodexTurnResult) => void }> = [];
-  const runTurn = vi.fn((turn: CodexTurnRequest, turnCallbacks: CodexTurnCallbacks) => {
+  const pending: Array<{ request: AgentTurnRequest; resolve: (result: AgentTurnResult) => void }> = [];
+  const runTurn = vi.fn((turn: AgentTurnRequest, turnCallbacks: AgentTurnCallbacks) => {
     void turnCallbacks;
-    return new Promise<CodexTurnResult>((resolve) => pending.push({ request: turn, resolve }));
+    return new Promise<AgentTurnResult>((resolve) => pending.push({ request: turn, resolve }));
   });
   return { pending, runTurn };
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("LocalCodexExecutor", () => {
-  it("runs Codex here against the dashboard's own MCP endpoint", async () => {
+describe("LocalAgentExecutor", () => {
+  it("runs the agent here against the dashboard's own MCP endpoint", async () => {
     const { pending, runTurn } = deferredTurns();
-    const executor = new LocalCodexExecutor({ mcpUrl: "http://127.0.0.1:8892/api/internal/canvas-mcp", role: "server", runTurn });
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1:8892/api/internal/canvas-mcp", role: "server", runTurn });
     const run = executor.run(request("a", "tool-token-0123456789abcdef"), callbacks());
     await flush();
     expect(pending[0]!.request).toMatchObject({
+      provider: "codex",
       workingDirectory: "/tmp/workspace-a",
       mcp: { url: "http://127.0.0.1:8892/api/internal/canvas-mcp", token: "tool-token-0123456789abcdef" },
     });
@@ -61,7 +64,7 @@ describe("LocalCodexExecutor", () => {
   it("queues runs beyond its concurrency limit and reports the wait as progress", async () => {
     const { pending, runTurn } = deferredTurns();
     const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
-    const executor = new LocalCodexExecutor({ mcpUrl: "http://127.0.0.1/mcp", role: "server", maxConcurrentJobs: 1, activity, runTurn });
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1/mcp", role: "server", maxConcurrentJobs: 1, activity, runTurn });
     const first = callbacks();
     const second = callbacks();
     const firstRun = executor.run(request("a"), first);
@@ -89,7 +92,7 @@ describe("LocalCodexExecutor", () => {
 
   it("drops a cancelled run from the queue without starting Codex", async () => {
     const { pending, runTurn } = deferredTurns();
-    const executor = new LocalCodexExecutor({ mcpUrl: "http://127.0.0.1/mcp", maxConcurrentJobs: 1, runTurn });
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1/mcp", maxConcurrentJobs: 1, runTurn });
     const firstRun = executor.run(request("a"), callbacks());
     const controller = new AbortController();
     const cancelled = executor.run(request("b"), callbacks(controller.signal));
@@ -107,7 +110,7 @@ describe("LocalCodexExecutor", () => {
 
   it("is unavailable while Codex is signed out on this machine", async () => {
     const signInStatus = vi.fn(async () => ({ ready: false, detail: "Not logged in" }));
-    const executor = new LocalCodexExecutor({ mcpUrl: "http://127.0.0.1/mcp", role: "server", signInStatus });
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1/mcp", role: "server", signInStatus });
     expect(executor.status().available).toBe(true);
     await executor.refreshSignIn();
     const status = executor.status();
@@ -120,12 +123,48 @@ describe("LocalCodexExecutor", () => {
   });
 
   it("stays available when the sign-in check itself cannot run", async () => {
-    const executor = new LocalCodexExecutor({
+    const executor = new LocalAgentExecutor({
       mcpUrl: "http://127.0.0.1/mcp",
       signInStatus: async () => ({ ready: null, detail: "spawn EACCES" }),
     });
     await executor.refreshSignIn();
     expect(executor.status()).toMatchObject({ available: true });
+  });
+
+  it("passes Claude runs through with their agent, sharing the concurrency limit", async () => {
+    const { pending, runTurn } = deferredTurns();
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1/mcp", maxConcurrentJobs: 1, runTurn });
+    const claudeRun = executor.run(request("a", null, "claude"), callbacks());
+    const codexRun = executor.run(request("b"), callbacks());
+    await flush();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.request).toMatchObject({ provider: "claude", model: "gpt-6-luna" });
+    expect(executor.status("claude")).toMatchObject({ provider: "claude", activeJobs: 1, queuedJobs: 1 });
+    pending[0]!.resolve({ threadId: "session-a", usage: null, finalResponse: "{}" });
+    await expect(claudeRun).resolves.toMatchObject({ threadId: "session-a" });
+    await flush();
+    pending[1]!.resolve({ threadId: "thread-b", usage: null, finalResponse: "{}" });
+    await expect(codexRun).resolves.toMatchObject({ threadId: "thread-b" });
+  });
+
+  it("reports Claude separately from Codex, from this machine's Claude Code check", async () => {
+    const probe: ClaudeProbe = { version: "2.1.282", ready: false, detail: "Not signed in", models: null, error: null };
+    const claudeStatus = vi.fn(async () => probe);
+    const executor = new LocalAgentExecutor({ mcpUrl: "http://127.0.0.1/mcp", role: "server", claudeStatus });
+    // Unknown until the first check finishes.
+    expect(executor.status("claude").available).toBe(true);
+    await executor.refreshClaude();
+    expect(executor.status("claude")).toMatchObject({ provider: "claude", available: false });
+    expect(executor.status("claude").message).toMatch(/Claude is not signed in on the dashboard server .*claude auth login/u);
+    expect(executor.status("codex").available).toBe(true);
+
+    claudeStatus.mockResolvedValue({ ...probe, ready: true, detail: "Signed in (Claude Max)" });
+    await executor.refreshClaude();
+    expect(executor.status("claude")).toMatchObject({ available: true, message: expect.stringMatching(/^Claude runs on the dashboard server/u) });
+
+    claudeStatus.mockResolvedValue({ ...probe, ready: null, detail: "spawn ENOENT", error: "spawn ENOENT" });
+    await executor.refreshClaude();
+    expect(executor.status("claude")).toMatchObject({ available: false, message: expect.stringMatching(/spawn ENOENT/u) });
   });
 });
 
@@ -133,6 +172,7 @@ describe("agentPlacement", () => {
   it("records the selected target's label and host", () => {
     expect(agentPlacement({
       mode: "local",
+      provider: "codex",
       available: true,
       message: "",
       worker: null,

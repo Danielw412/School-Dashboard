@@ -1,3 +1,5 @@
+import type { AgentProvider, EffortChoice } from "./models";
+
 
 export type TrackedTask = {
   logical_id: string;
@@ -126,6 +128,8 @@ export type AgentRun = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
+  // The agent that ran it (absent on runs from before Claude support, which all used Codex).
+  provider?: AgentProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
   effectiveReasoningEffort: string;
@@ -136,7 +140,7 @@ export type AgentRun = {
     directions: string;
     updatedAt: string | null;
   };
-  // Where Codex ran (absent on runs from before agents could run on the server).
+  // Where the agent ran (absent on runs from before agents could run on the server).
   execution?: { target: AgentExecutionTarget; label: string; host: string | null };
   startedAt: string;
   completedAt: string | null;
@@ -206,9 +210,19 @@ export type AgentExecutionTargetStatus = {
   queuedJobs: number;
 };
 
+export type AgentProviderStatus = {
+  id: AgentProvider;
+  label: string;
+  // On the selected target.
+  available: boolean;
+  message: string;
+};
+
 export type AgentExecutionStatus = {
-  // The target new runs go to.
+  // The target new runs go to, and the agent that runs them.
   mode: AgentExecutionTarget;
+  // Absent from servers older than Claude support.
+  provider?: AgentProvider;
   available: boolean;
   message: string;
   worker: null | {
@@ -217,6 +231,7 @@ export type AgentExecutionStatus = {
     hostname: string;
     platform: string;
     codexVersion: string | null;
+    claude?: null | { version: string | null; ready: boolean | null; detail: string; error: string | null };
     maxConcurrentJobs: number;
     connectedAt: string | null;
     lastSeenAt: string | null;
@@ -225,10 +240,14 @@ export type AgentExecutionStatus = {
   activeJobs: number;
   queuedJobs: number;
   targets?: AgentExecutionTargetStatus[];
+  providers?: AgentProviderStatus[];
+  effort?: Record<AgentProvider, EffortChoice>;
 };
 
+export type SelectableModel = { id: string; label: string; efforts?: string[] };
+
 export type AgentModels = {
-  selectable: Array<{ id: string; label: string }>;
+  selectable: SelectableModel[];
   detection: null | {
     detectedAt: string;
     source: string;
@@ -237,6 +256,19 @@ export type AgentModels = {
     error: string | null;
   };
   lunaReserve: { supported: boolean; modelId: string | null; detail: string };
+  claude?: {
+    selectable: SelectableModel[];
+    detection: null | {
+      detectedAt: string;
+      source: string;
+      version: string | null;
+      ready: boolean | null;
+      detail: string;
+      models: Array<{ id: string; displayName: string; reasoningEfforts: string[] }> | null;
+      error: string | null;
+    };
+    detail: string;
+  };
 };
 
 export type ActiveWork = {
@@ -272,6 +304,8 @@ export type AppSettings = {
     assignmentNavigation: string;
   };
   reasoningEffort: ReasoningEffort;
+  // Claude's model and default effort; the fields above are Codex's.
+  claude: { model: string; reasoningEffort: ReasoningEffort };
   prompts: {
     problemExtraction: string;
     answerKey: string;
@@ -292,10 +326,12 @@ export type TaskSyncTunnelStatus = {
 
 export type Diagnostics = {
   generatedAt: string;
+  currentProvider?: AgentProvider;
   currentModel: string;
   currentPrompts: AppSettings["prompts"];
   featureModels: AppSettings["featureModels"];
   reasoningEffort: string;
+  claudeVersion?: string | null;
   connections: {
     taskSync: { connected: boolean; error?: string };
     canvas: { connected: boolean; name?: string; error?: string };

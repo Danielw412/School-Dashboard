@@ -8,18 +8,22 @@ import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
 
+import { type AgentProvider, providerLabel } from "../src/models.js";
 import type { ActivityStore } from "./activity.js";
 import {
   AgentsUnavailableError,
+  claudeAvailable,
   type AgentExecutionCallbacks,
   type AgentExecutionRequest,
   type AgentExecutionStatus,
   type AgentExecutor,
   type AgentWorkerSummary,
+  type ClaudeReadiness,
 } from "./agent-execution.js";
-import type { CodexTurnResult } from "./codex-execution.js";
+import type { AgentTurnResult } from "./agent-turn.js";
 import { buildAllowList, isAllowedAddress } from "./network-access.js";
 import {
+  type ClaudeReport,
   type CodexModelInfo,
   type ServerMessage,
   WORKER_CONNECT_PATH,
@@ -31,9 +35,10 @@ import {
 } from "./worker-protocol.js";
 
 // Server side of the laptop agent worker. The worker dials in over the tailnet and keeps one
-// WebSocket open; the server queues each prepared Codex turn, sends it down that socket, and
-// relays the streamed events and final result back to the waiting run. A dropped socket gives
-// the worker a grace period to reconnect and reclaim its in-flight runs before they fail.
+// WebSocket open; the server queues each prepared agent turn (Codex or Claude), sends it down
+// that socket, and relays the streamed events and final result back to the waiting run. A
+// dropped socket gives the worker a grace period to reconnect and reclaim its in-flight runs
+// before they fail.
 
 const MAX_WORKSPACE_BYTES = 40 * 1024 * 1024;
 const HELLO_TIMEOUT_MS = 10_000;
@@ -46,7 +51,7 @@ type PendingJob = {
   accepted: boolean;
   timer: NodeJS.Timeout | null;
   events: Promise<void>;
-  resolve: (result: CodexTurnResult) => void;
+  resolve: (result: AgentTurnResult) => void;
   reject: (error: unknown) => void;
   cleanup: () => void;
 };
@@ -62,6 +67,8 @@ export type WorkerModelsReport = {
   codexVersion: string | null;
   models: CodexModelInfo[] | null;
   error: string | null;
+  // Absent from workers older than Claude support.
+  claude?: ClaudeReport;
 };
 
 export type WorkerHubOptions = {
@@ -113,16 +120,19 @@ export class WorkerHub implements AgentExecutor {
     this.server.close();
   }
 
-  status(): AgentExecutionStatus {
+  status(provider: AgentProvider = "codex"): AgentExecutionStatus {
     const worker = this.connection?.worker ?? null;
     const known = worker ?? this.lastWorker;
     const activeJobs = [...this.jobs.values()].filter((job) => job.state !== "queued").length;
     const queuedJobs = [...this.jobs.values()].filter((job) => job.state === "queued").length;
+    const claudeProblem = worker && provider === "claude" ? workerClaudeProblem(worker) : null;
     let message: string;
     if (!this.options.token) {
       message = "Agents are unavailable: SCHOOL_DASHBOARD_WORKER_TOKEN is not set on the dashboard server.";
+    } else if (claudeProblem) {
+      message = claudeProblem;
     } else if (worker) {
-      message = `Agents run on ${worker.name} through the laptop agent worker.`;
+      message = `${providerLabel(provider)} runs on ${worker.name} through the laptop agent worker.`;
     } else if (known) {
       const since = known.disconnectedAt ? ` since ${new Date(known.disconnectedAt).toLocaleString()}` : "";
       message = `Agents are unavailable: the laptop agent worker (${known.name}) is offline${since}.`;
@@ -131,7 +141,8 @@ export class WorkerHub implements AgentExecutor {
     }
     return {
       mode: "worker",
-      available: Boolean(worker && this.options.token),
+      provider,
+      available: Boolean(worker && this.options.token && !claudeProblem),
       message,
       worker: known ? { ...known } : null,
       activeJobs,
@@ -145,13 +156,19 @@ export class WorkerHub implements AgentExecutor {
     return true;
   }
 
-  async run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<CodexTurnResult> {
+  async run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<AgentTurnResult> {
     callbacks.signal.throwIfAborted();
     if (!this.options.token) throw new AgentsUnavailableError(this.status().message);
+    const claudeProblem = request.provider === "claude" && this.connection?.worker
+      ? workerClaudeProblem(this.connection.worker)
+      : null;
+    if (claudeProblem) throw new AgentsUnavailableError(claudeProblem);
     const files = await packWorkspace(request.workspace.path);
     callbacks.signal.throwIfAborted();
     const job: WorkerJob = {
       runId: request.runId,
+      // Codex jobs leave the field out, so a worker from before Claude support still accepts them.
+      ...(request.provider === "claude" ? { provider: "claude" as const } : {}),
       feature: request.feature,
       taskTitle: request.taskTitle,
       model: request.model,
@@ -164,7 +181,7 @@ export class WorkerHub implements AgentExecutor {
       mcpPath: this.options.mcpPath,
       timeoutMs: request.timeoutMs,
     };
-    return new Promise<CodexTurnResult>((resolve, reject) => {
+    return new Promise<AgentTurnResult>((resolve, reject) => {
       const onAbort = () => this.abort(job.runId, callbacks.signal.reason);
       const pending: PendingJob = {
         job,
@@ -240,11 +257,13 @@ export class WorkerHub implements AgentExecutor {
     // Everything else belongs to the current, introduced connection only.
     if (connection !== this.connection || !connection.worker) return;
     if (parsed.type === "models") {
+      if (parsed.claude) connection.worker.claude = claudeReadiness(parsed.claude);
       void this.reportModels({
         source: workerSource(connection.worker),
         codexVersion: parsed.codexVersion,
         models: parsed.models,
         error: parsed.modelsError,
+        claude: parsed.claude,
       });
       return;
     }
@@ -276,6 +295,7 @@ export class WorkerHub implements AgentExecutor {
     const previous = this.connection;
     connection.worker = {
       ...hello.worker,
+      claude: hello.claude ? claudeReadiness(hello.claude) : null,
       connectedAt: now,
       lastSeenAt: now,
       disconnectedAt: null,
@@ -320,6 +340,7 @@ export class WorkerHub implements AgentExecutor {
       codexVersion: hello.worker.codexVersion,
       models: hello.models,
       error: hello.modelsError,
+      claude: hello.claude,
     });
   }
 
@@ -369,6 +390,12 @@ export class WorkerHub implements AgentExecutor {
       const runId = this.queue.shift()!;
       const pending = this.jobs.get(runId);
       if (!pending || pending.state !== "queued") continue;
+      // A Claude run that waited for a worker which then connected without Claude.
+      const claudeProblem = pending.job.provider === "claude" ? workerClaudeProblem(connection.worker) : null;
+      if (claudeProblem) {
+        this.fail(runId, pending, new AgentsUnavailableError(claudeProblem));
+        continue;
+      }
       this.clearTimer(pending);
       pending.state = "dispatched";
       this.send(connection, { type: "job.start", job: pending.job });
@@ -508,6 +535,22 @@ export async function packWorkspace(
   };
   await walk(root);
   return files;
+}
+
+function claudeReadiness(report: ClaudeReport): ClaudeReadiness {
+  return { version: report.version, ready: report.ready, detail: report.detail, error: report.error };
+}
+
+// Why the connected laptop worker cannot take a Claude run, or null when it can.
+function workerClaudeProblem(worker: AgentWorkerSummary): string | null {
+  const claude = worker.claude;
+  if (!claude) {
+    return `The laptop agent worker on ${worker.name} is from before Claude support. Update School Dashboard on the laptop (git pull, npm install) and restart the worker.`;
+  }
+  if (claudeAvailable(claude)) return null;
+  return claude.ready === false && /not signed in/iu.test(claude.detail)
+    ? `Claude is not signed in on ${worker.name}. Run "claude auth login" on the laptop.`
+    : `Claude is unavailable on ${worker.name}: ${claude.error ?? claude.detail}`;
 }
 
 function workerSource(worker: AgentWorkerSummary): string {

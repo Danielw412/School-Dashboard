@@ -1,4 +1,4 @@
-import { modelLabel } from "../models";
+import { effortLevels, modelLabel, providerLabel } from "../models";
 import {
   Activity,
   AlertTriangle,
@@ -31,6 +31,7 @@ import type { AppSettings, ConnectionTestResult, Diagnostics, ReasoningEffort, T
 
 const reasoning = (["none", "minimal", "low", "medium", "high", "xhigh", "max"] as ReasoningEffort[])
   .map((id) => ({ id, label: id }));
+const claudeReasoning = effortLevels.map((id) => ({ id, label: id }));
 
 export function SettingsDiagnosticsPage() {
   const [tab, setTab] = useState<"settings" | "classDirections" | "diagnostics">("settings");
@@ -90,7 +91,7 @@ export function SettingsDiagnosticsPage() {
 }
 
 function SettingsForm({ settings, taskSyncTunnel, update, onDefaults }: { settings: AppSettings; taskSyncTunnel: TaskSyncTunnelStatus | null; update: (updater: (value: AppSettings) => void) => void; onDefaults: () => Promise<void> }) {
-  const { selectable: models, models: detected, refresh } = useSelectableModels();
+  const { selectable: models, claude: claudeModels, models: detected, refresh } = useSelectableModels();
   const [checking, setChecking] = useState(false);
   const checkAgain = async () => {
     setChecking(true);
@@ -108,10 +109,14 @@ function SettingsForm({ settings, taskSyncTunnel, update, onDefaults }: { settin
   return (
     <div className="settings-layout">
       <SettingsSection icon={Cpu} title="Models & reasoning">
+        <p className="settings-subheading">Codex</p>
         <div className="field-grid"><SelectField label="Default model" value={settings.defaultModel} options={models} onChange={(value) => update((next) => { next.defaultModel = value; })} /><SelectField label="Default reasoning" value={settings.reasoningEffort} options={reasoning} onChange={(value) => update((next) => { next.reasoningEffort = value as ReasoningEffort; })} /></div>
         <div className="feature-model-grid">{Object.entries(settings.featureModels).map(([feature, value]) => <SelectField key={feature} label={humanFeature(feature)} value={value} options={models} onChange={(nextValue) => update((next) => { next.featureModels[feature as keyof AppSettings["featureModels"]] = nextValue; })} />)}</div>
+        <p className="setting-note"><strong>Luna Reserve:</strong> {detected?.lunaReserve.detail ?? "Checking the agent machine's Codex model list."}</p>
+        <p className="settings-subheading">Claude</p>
+        <div className="field-grid"><SelectField label="Model" value={settings.claude.model} options={claudeModels} onChange={(value) => update((next) => { next.claude.model = value; })} /><SelectField label="Default effort" value={settings.claude.reasoningEffort} options={claudeReasoning} onChange={(value) => update((next) => { next.claude.reasoningEffort = value as ReasoningEffort; })} /></div>
         <div className="model-availability">
-          <p className="setting-note"><strong>Luna Reserve:</strong> {detected?.lunaReserve.detail ?? "Checking the agent machine's Codex model list."}</p>
+          <p className="setting-note"><strong>Claude Code:</strong> {detected?.claude?.detail ?? "Checking the agent machine's Claude Code sign-in."} Problem extraction uses Extra high unless the sidebar's effort says otherwise.</p>
           <button className="text-button" disabled={checking} onClick={() => void checkAgain()}>{checking ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}Check again</button>
         </div>
       </SettingsSection>
@@ -176,7 +181,7 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
     <div className="diagnostics-layout">
       <div className="diagnostics-actions"><span>Updated {relativeTime(diagnostics.generatedAt)}</span><button className="secondary-button" onClick={refresh}><RefreshCw size={15} />Refresh</button></div>
       <div className="diagnostic-cards">
-        <DiagnosticCard label="Current model" value={diagnostics.currentModel} detail={`${diagnostics.reasoningEffort} reasoning`} ok />
+        <DiagnosticCard label={`Current model · ${providerLabel(diagnostics.currentProvider ?? "codex")}`} value={modelLabel(diagnostics.currentModel)} detail={`${diagnostics.reasoningEffort} effort`} ok />
         {diagnostics.agents ? <AgentCards agents={diagnostics.agents} /> : null}
         <DiagnosticCard label="Canvas" value={diagnostics.connections.canvas.connected ? diagnostics.connections.canvas.name || "Connected" : "Unavailable"} detail={diagnostics.connections.canvas.error || "Credential accepted"} ok={diagnostics.connections.canvas.connected} />
         <DiagnosticCard label="Task Sync" value={diagnostics.connections.taskSync.connected ? "Connected" : "Unavailable"} detail={diagnostics.connections.taskSync.error || (diagnostics.connections.taskSyncTunnel ? `${diagnostics.connections.taskSyncTunnel.target} over SSH` : diagnostics.connections.taskSyncApiBase)} ok={diagnostics.connections.taskSync.connected} />
@@ -191,12 +196,17 @@ function DiagnosticsPanel({ diagnostics, refresh }: { diagnostics: Diagnostics; 
 
 function AgentCards({ agents }: { agents: NonNullable<Diagnostics["agents"]> }) {
   const targets = agents.targets ?? [];
+  const agent = providerLabel(agents.provider ?? "codex");
+  const workerVersions = [
+    `Codex ${agents.worker?.codexVersion ?? "unknown"}`,
+    ...(agents.worker?.claude?.version ? [`Claude Code ${agents.worker.claude.version}`] : []),
+  ].join(" · ");
   if (targets.length < 2) {
     return <DiagnosticCard
-      label="Agents"
+      label={`${agent} agents`}
       value={agents.mode === "local" ? "This machine" : agents.available ? agents.worker?.name ?? "Connected" : "Offline"}
       detail={agents.available && agents.mode === "worker"
-        ? `Codex ${agents.worker?.codexVersion ?? "unknown"} · ${agents.activeJobs} running · ${agents.queuedJobs} queued`
+        ? `${workerVersions} · ${agents.activeJobs} running · ${agents.queuedJobs} queued`
         : agents.message}
       ok={agents.available}
     />;
@@ -204,10 +214,10 @@ function AgentCards({ agents }: { agents: NonNullable<Diagnostics["agents"]> }) 
   // Server + laptop deployment: one card per place agents can run, marking where new runs go.
   return <>{targets.map((target) => <DiagnosticCard
     key={target.id}
-    label={`${target.label} agents${target.id === agents.mode ? " · selected" : ""}`}
-    value={target.available ? target.host ?? "Ready" : target.id === "worker" ? "Offline" : "Unavailable"}
+    label={`${target.label} ${agent} agents${target.id === agents.mode ? " · selected" : ""}`}
+    value={target.available ? target.host ?? "Ready" : target.id === "worker" && (!agents.worker || agents.worker.disconnectedAt) ? "Offline" : "Unavailable"}
     detail={target.available
-      ? `${target.id === "worker" ? `Codex ${agents.worker?.codexVersion ?? "unknown"} · ` : ""}${target.activeJobs} running · ${target.queuedJobs} queued`
+      ? `${target.id === "worker" ? `${workerVersions} · ` : ""}${target.activeJobs} running · ${target.queuedJobs} queued`
       : target.message}
     ok={target.available}
   />)}</>;

@@ -2,20 +2,24 @@ import { hostname } from "node:os";
 
 import type { ThreadEvent } from "@openai/codex-sdk";
 
+import type { AgentProvider, EffortChoice } from "../src/models.js";
 import type { ActivityStore } from "./activity.js";
-import { runCodexTurn, type CodexTurnResult } from "./codex-execution.js";
+import { runAgentTurn, type AgentTurnResult } from "./agent-turn.js";
+import type { ClaudeProbe } from "./claude-execution.js";
 import type { CodexSignIn } from "./codex-models.js";
 import type { AssignmentWorkspace } from "./workspace.js";
 
 // The dashboard prepares everything a run needs (Canvas context, preflight, tool capability,
-// workspace seed files) and hands one Codex turn to an executor: in-process on the dashboard's own
-// machine ("local"), or on the laptop agent worker over its outbound WebSocket ("worker"). When
-// both exist, AgentExecutionRouter sends each run to the target the student selected.
+// workspace seed files) and hands one agent turn (Codex or Claude) to an executor: in-process on
+// the dashboard's own machine ("local"), or on the laptop agent worker over its outbound WebSocket
+// ("worker"). When both exist, AgentExecutionRouter sends each run to the target the student
+// selected.
 
 export type AgentExecutionTarget = "local" | "worker";
 
 export type AgentExecutionRequest = {
   runId: string;
+  provider: AgentProvider;
   feature: string;
   taskTitle: string;
   model: string;
@@ -32,7 +36,7 @@ export type AgentExecutionRequest = {
 
 export type AgentExecutionCallbacks = {
   signal: AbortSignal;
-  // Codex is about to start the thread (for the worker: the laptop accepted the job).
+  // The agent is about to start (for the worker: the laptop accepted the job).
   onStarted: () => Promise<void> | void;
   onEvent: (event: ThreadEvent) => Promise<void> | void;
 };
@@ -43,11 +47,22 @@ export type AgentWorkerSummary = {
   hostname: string;
   platform: string;
   codexVersion: string | null;
+  // What the laptop's Claude Code reported; absent from workers older than Claude support.
+  claude?: ClaudeReadiness | null;
   maxConcurrentJobs: number;
   connectedAt: string | null;
   lastSeenAt: string | null;
   disconnectedAt: string | null;
 };
+
+// `ready: null` means not checked yet, or the check could not run (see `error`).
+export type ClaudeReadiness = { version: string | null; ready: boolean | null; detail: string; error: string | null };
+
+// Claude can take runs once it is signed in, and also before the first check has finished (the
+// run then reports its own sign-in error).
+export function claudeAvailable(claude: ClaudeReadiness | null | undefined): boolean {
+  return claude?.ready === true || (claude?.ready === null && !claude.error);
+}
 
 export type AgentExecutionTargetStatus = {
   id: AgentExecutionTarget;
@@ -59,22 +74,37 @@ export type AgentExecutionTargetStatus = {
   queuedJobs: number;
 };
 
+export type AgentProviderStatus = {
+  id: AgentProvider;
+  label: string;
+  // On the selected target.
+  available: boolean;
+  message: string;
+};
+
 export type AgentExecutionStatus = {
-  // The target new runs go to.
+  // The target new runs go to, and the agent that runs them.
   mode: AgentExecutionTarget;
+  provider: AgentProvider;
+  // Whether that agent can take runs on that target.
   available: boolean;
   message: string;
   worker: AgentWorkerSummary | null;
   activeJobs: number;
   queuedJobs: number;
-  // Every target this dashboard can run agents on (reported by AgentExecutionRouter).
+  // Every target this dashboard can run agents on, for the selected agent, and every agent on
+  // the selected target (reported by AgentExecutionRouter).
   targets?: AgentExecutionTargetStatus[];
+  providers?: AgentProviderStatus[];
+  // The quick effort choice for each agent.
+  effort?: Record<AgentProvider, EffortChoice>;
 };
 
 export interface AgentExecutor {
   readonly mode: AgentExecutionTarget;
-  status(): AgentExecutionStatus;
-  run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<CodexTurnResult>;
+  // Availability of the given agent (Codex when omitted) on this executor's machine.
+  status(provider?: AgentProvider): AgentExecutionStatus;
+  run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<AgentTurnResult>;
 }
 
 // Where a run executes, recorded on the run for history and progress messages.
@@ -95,7 +125,7 @@ export class AgentsUnavailableError extends Error {
   }
 }
 
-export type LocalCodexExecutorOptions = {
+export type LocalAgentExecutorOptions = {
   // The dashboard's own assignment-scoped MCP endpoint (loopback).
   mcpUrl: string;
   // "server" when this dashboard also serves a laptop agent worker; "computer" when everything
@@ -106,22 +136,29 @@ export type LocalCodexExecutorOptions = {
   // Checks that Codex is signed in here. Without it the executor assumes it is.
   signInStatus?: () => Promise<CodexSignIn>;
   signInRecheckMs?: number;
-  runTurn?: typeof runCodexTurn;
+  // Checks Claude Code's sign-in here (and reports its models). Without it Claude is assumed ready.
+  claudeStatus?: () => Promise<ClaudeProbe>;
+  claudeRecheckMs?: number;
+  runTurn?: typeof runAgentTurn;
 };
 
 type Waiter = { admit: () => void };
 
-// Runs Codex in this process with this machine's own ~/.codex, against the same MCP tools and
-// workspace the laptop worker would use.
-export class LocalCodexExecutor implements AgentExecutor {
+// Runs Codex or Claude in this process with this machine's own sign-in (~/.codex, ~/.claude),
+// against the same MCP tools and workspace the laptop worker would use. Both agents share one
+// concurrency limit.
+export class LocalAgentExecutor implements AgentExecutor {
   readonly mode = "local" as const;
   private active = 0;
   private readonly waiting: Waiter[] = [];
   private signIn: CodexSignIn = { ready: null, detail: "" };
   private signInCheckedAt = 0;
   private signInCheck: Promise<void> | null = null;
+  private claude: ClaudeReadiness = { version: null, ready: null, detail: "", error: null };
+  private claudeCheckedAt = 0;
+  private claudeCheck: Promise<void> | null = null;
 
-  constructor(private readonly options: LocalCodexExecutorOptions) {}
+  constructor(private readonly options: LocalAgentExecutorOptions) {}
 
   get maxConcurrentJobs(): number {
     const limit = this.options.maxConcurrentJobs ?? 3;
@@ -144,20 +181,54 @@ export class LocalCodexExecutor implements AgentExecutor {
     return this.signIn;
   }
 
-  status(): AgentExecutionStatus {
-    if (Date.now() - this.signInCheckedAt > (this.options.signInRecheckMs ?? 60_000)) void this.refreshSignIn();
+  // Re-checks Claude Code here; `status("claude")` also refreshes it in the background when stale.
+  // Starting Claude Code takes a moment of CPU, so this runs far less often than the Codex check.
+  async refreshClaude(): Promise<ClaudeReadiness> {
+    if (!this.options.claudeStatus) return this.claude;
+    this.claudeCheck ??= this.options.claudeStatus()
+      .then(({ version, ready, detail, error }) => {
+        this.claude = { version, ready, detail, error };
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.claudeCheckedAt = Date.now();
+        this.claudeCheck = null;
+      });
+    await this.claudeCheck;
+    return this.claude;
+  }
+
+  claudeReadiness(): ClaudeReadiness {
+    return { ...this.claude };
+  }
+
+  status(provider: AgentProvider = "codex"): AgentExecutionStatus {
     const where = this.options.role === "server"
       ? `the dashboard server (${hostname()})`
       : `this machine (${hostname()})`;
-    const available = this.signIn.ready !== false;
-    let message = `Codex runs on ${where}.`;
-    if (!available) {
-      message = /not logged in/iu.test(this.signIn.detail) || !this.signIn.detail
-        ? `Agents are unavailable: Codex is not signed in on ${where}. Run "codex login --device-auth" there as the dashboard's user.`
-        : `Agents are unavailable on ${where}: ${this.signIn.detail}`;
+    let available: boolean;
+    let message: string;
+    if (provider === "claude") {
+      if (Date.now() - this.claudeCheckedAt > (this.options.claudeRecheckMs ?? 10 * 60_000)) void this.refreshClaude();
+      available = claudeAvailable(this.claude);
+      message = available
+        ? `Claude runs on ${where}.`
+        : this.claude.ready === false && /not signed in/iu.test(this.claude.detail)
+          ? `Claude is not signed in on ${where}. Run "claude auth login" there as the dashboard's user.`
+          : `Claude is unavailable on ${where}: ${this.claude.error ?? this.claude.detail}`;
+    } else {
+      if (Date.now() - this.signInCheckedAt > (this.options.signInRecheckMs ?? 60_000)) void this.refreshSignIn();
+      available = this.signIn.ready !== false;
+      message = `Codex runs on ${where}.`;
+      if (!available) {
+        message = /not logged in/iu.test(this.signIn.detail) || !this.signIn.detail
+          ? `Codex is not signed in on ${where}. Run "codex login --device-auth" there as the dashboard's user.`
+          : `Codex is unavailable on ${where}: ${this.signIn.detail}`;
+      }
     }
     return {
       mode: "local",
+      provider,
       available,
       message,
       worker: null,
@@ -166,12 +237,13 @@ export class LocalCodexExecutor implements AgentExecutor {
     };
   }
 
-  async run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<CodexTurnResult> {
+  async run(request: AgentExecutionRequest, callbacks: AgentExecutionCallbacks): Promise<AgentTurnResult> {
     await this.acquire(request, callbacks.signal);
     try {
       callbacks.signal.throwIfAborted();
       await callbacks.onStarted();
-      return await (this.options.runTurn ?? runCodexTurn)({
+      return await (this.options.runTurn ?? runAgentTurn)({
+        provider: request.provider,
         model: request.model,
         reasoningEffort: request.reasoningEffort,
         instructions: request.instructions,

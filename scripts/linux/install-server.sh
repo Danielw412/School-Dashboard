@@ -117,6 +117,17 @@ else
   log "      ${codex_bin:-node_modules/@openai/codex-linux-x64/vendor/*/bin/codex} login --device-auth"
 fi
 
+# --- Claude on this server -----------------------------------------------------------------
+# The dashboard's agent switch can pick Claude instead of Codex. On the server that uses this
+# user's own Claude Code sign-in (~/.claude), never the laptop's.
+claude_bin="$(find "$APP_DIR/node_modules/@anthropic-ai" -path '*/claude-agent-sdk-linux-*/claude' -type f 2>/dev/null | head -n 1)"
+if [[ -n "$claude_bin" ]] && "$claude_bin" auth status >/dev/null 2>&1; then
+  log "Claude Code is signed in on this server, so Claude agents can run here too"
+else
+  log "note: Claude Code is not signed in on this server; Claude on the Server option stays unavailable until you run"
+  log "      ${claude_bin:-node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude} auth login"
+fi
+
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${port}/api/settings" >/dev/null 2>&1; then
     log "School Dashboard is up: http://$(hostname):${port}/ (Tailscale only)"

@@ -647,10 +647,18 @@ input, select, textarea { min-height: 40px; border-radius: 9px; font-size: 12px;
 .agents-offline-banner { margin: 0; border-width: 0 0 1px; border-radius: 0; padding: 11px clamp(28px, 5vw, 72px); }
 .workflow-unavailable { margin: -4px 0 10px; color: #805a1b; font-size: 11px; }
 .model-availability { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.settings-subheading { margin: 4px 0 -4px; color: var(--ink); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.settings-subheading ~ .settings-subheading { margin-top: 14px; padding-top: 16px; border-top: 1px solid var(--line); }
 .model-availability .text-button { min-height: 24px; flex: 0 0 auto; font-size: 10px; gap: 5px; }
 
-/* Where agents run: dashboard server or laptop worker (matches the light sidebar and .segmented) */
+/* Which agent runs (Codex or Claude), where (dashboard server or laptop worker), and its effort
+   (matches the light sidebar and .segmented) */
 .agent-target { margin-top: auto; padding: 16px 4px 0; border-top: 1px solid var(--line); }
+.agent-choice + .agent-choice { margin-top: 12px; }
+.agent-effort { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.agent-effort > span { margin: 0 2px; color: #7b879a; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.agent-effort select { width: auto; min-width: 0; flex: 0 1 118px; min-height: 32px; padding: 4px 8px; border-color: var(--line); border-radius: 8px; color: var(--ink); background: #fff; font-size: 12px; font-weight: 700; cursor: pointer; }
+.agent-effort select:disabled { cursor: progress; }
 .agent-target-title { display: block; margin: 0 2px 8px; color: #7b879a; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .agent-target-options { padding: 3px; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; background: #eef1f5; border: 1px solid var(--line); border-radius: 10px; }
 .agent-target-options button { min-width: 0; min-height: 34px; padding: 0 7px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 7px; color: #5d6a7e; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; transition: color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .18s ease; }

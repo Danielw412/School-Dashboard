@@ -3,7 +3,7 @@
 School Dashboard is a separate, local-first companion to
 [`Danielw412/Canvas-Task-Sync`](https://github.com/Danielw412/Canvas-Task-Sync). Task Sync remains the
 system that discovers and reconciles schoolwork; this app reads its tracked-task API, navigates
-Canvas coursework, and runs structured Codex workflows.
+Canvas coursework, and runs structured agent workflows with Codex or Claude.
 
 ## What is included
 
@@ -18,11 +18,14 @@ Canvas coursework, and runs structured Codex workflows.
 - GPT-6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
   extraction, plus GPT-6 Sol, GPT-5.6 Sol, and configurable reasoning controls. Saved GPT-5.6
   Luna/Terra preferences migrate to GPT-6 Luna; historical runs retain their original model IDs.
+- Claude, through the Claude Agent SDK, as an alternative agent for every workflow. An **Agent**
+  switch in the sidebar picks Codex or Claude, and an **Effort** menu next to it sets the effort
+  level for the selected agent.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.
-- A **Run agents on** switch in the sidebar that sends new runs to Codex on the Linux server or on
-  the Windows laptop, with the same scoped tools either way.
+- A **Run agents on** switch in the sidebar that sends new runs to the Linux server or to the
+  Windows laptop, with the same scoped tools either way.
 - Live per-run elapsed time and safe action summaries, plus local settings, cache controls, recent
   runs, Canvas requests, downloads, usage, raw structured output, and redacted errors. Private model
   reasoning text is neither requested nor persisted.
@@ -83,33 +86,36 @@ Then open `http://127.0.0.1:5174`. `npm run build && npm start` serves the produ
 
 ## Server + laptop deployment
 
-The dashboard can run permanently on a Linux server, and each Codex run happens either on the
-Windows laptop or on the server itself:
+The dashboard can run permanently on a Linux server, and each agent run (Codex or Claude) happens
+either on the Windows laptop or on the server itself:
 
 ```text
 browser (any tailnet device) ──HTTP──► Linux server: UI, API, run history, job queue,
                                         Canvas + Task Sync access, PDF/OCR tools, MCP endpoint
-                                        (+ Codex with the server's ~/.codex, when selected)
+                                        (+ Codex or Claude with the server's own
+                                           ~/.codex / ~/.claude sign-in, when selected)
                                               ▲                        ▲
                          outbound WebSocket   │                        │ per-run MCP calls
                          (jobs down, events   │                        │ (short-lived token)
                           and results up)     │                        │
                                         Windows laptop: agent worker ──► Codex (laptop ~/.codex)
+                                                                     or Claude (laptop ~/.claude)
 ```
 
 - **Server** (`SCHOOL_DASHBOARD_AGENT_EXECUTION=worker`): prepares each run exactly as before
   (Canvas context, preflight, workspace seed files, short-lived tool capability), then either
-  sends it to the laptop worker or runs Codex in-process, depending on the **Run agents on**
+  sends it to the laptop worker or runs the agent in-process, depending on the **Run agents on**
   switch (see below). Run history, class directions, settings, the selected target, and saved
   problem visuals live in the server's `.school-dashboard/`.
 - **Laptop worker** (`npm run worker`): keeps one outbound WebSocket to
   `/api/agent-worker/connect`, copies the run's seed files into a local workspace under
   `%TEMP%\school-dashboard-worker-workspaces\<workspace id>`, and runs Codex there with the
-  laptop's own `~/.codex` (auth, sessions, config). Codex calls the server's assignment-scoped MCP
-  tools over the tailnet; tool payloads such as page images stay on the laptop, and only compact
+  laptop's own `~/.codex` (auth, sessions, config), or Claude with the laptop's own Claude Code
+  sign-in (`~/.claude`). The agent calls the server's assignment-scoped MCP tools over the tailnet; tool payloads such as page images stay on the laptop, and only compact
   events plus the final structured result go back. The laptop needs no Canvas token.
-- Each run records the Codex `threadId` from the laptop and the `workspaceId` shared by the server
-  workspace and the laptop copy. Cancelling in the dashboard cancels that exact Codex job.
+- Each run records the Codex `threadId` (or Claude session ID) from the laptop and the
+  `workspaceId` shared by the server workspace and the laptop copy. Cancelling in the dashboard
+  cancels that exact job.
 - **Disconnects:** jobs keep running through short drops; the worker buffers events and re-sends
   the final result until the server acknowledges it. The server waits two minutes for the worker
   to reconnect before failing an in-flight run, and tells a reconnecting worker to stop runs the
@@ -192,6 +198,47 @@ minutes, the dashboard at startup. The list from the machine selected under **Ru
 decides what is selectable; **Settings -> Check again** asks that machine for a fresh list. A model whose ID or display name names Luna
 Reserve (for example `gpt-6-luna-reserve`) becomes selectable under exactly the ID Codex reports.
 Nothing else is assumed to be Luna Reserve. Settings shows why it is unavailable otherwise.
+
+### Choosing Codex or Claude, and the effort level
+
+The sidebar's **Agent** switch picks which agent runs new runs, and **Effort** sets that agent's
+effort level (each agent keeps its own). Both are saved on the server, like the machine switch,
+and a run in progress keeps what it started with. On a phone, the header chip (for example
+**Claude · Server**) opens them.
+
+- **Codex** uses the models and reasoning set under **Settings -> Models & reasoning -> Codex**.
+- **Claude** runs through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) with
+  the model and default effort under **Settings -> Models & reasoning -> Claude** (Claude Opus 5
+  until you pick another). The model list is what that machine's Claude Code reports for its
+  signed-in account, such as Opus 5.5, Fable 5.1, and Sonnet 5.
+- **Effort -> Default** keeps the configured behavior: the Settings default for each agent, and
+  Extra high for problem extraction. Any other level (Low, Medium, High, Extra high, Max) applies
+  to every new run of the selected agent. A study guide's own Reasoning menu still wins for that
+  run.
+
+Claude gets the same limits as Codex: read-only Read, Glob, and Grep tools that cannot leave the
+assignment workspace, the assignment-scoped `school_dashboard` MCP tools and no others, none of
+the machine's Claude Code settings, CLAUDE.md, hooks, skills, or plugins, and an environment
+without the dashboard's secrets. Its progress, usage, and results show up in **Agent runs** like
+Codex runs.
+
+Claude needs a Claude Code sign-in on each machine that runs it, for the account the dashboard or
+worker runs as. The Agent SDK bundles Claude Code, so no separate install is needed:
+
+```bash
+# on the server (install-server.sh reports the sign-in state after each deploy)
+~/projects/School-Dashboard/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude auth login
+```
+
+```powershell
+# on the laptop, only if the worker reports Claude as not signed in
+node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe auth login
+```
+
+Until then, Claude shows as unavailable for that machine and the dashboard offers Codex instead.
+A laptop worker from before Claude support keeps running Codex jobs. It gets Claude after
+updating: `git pull`, `npm install`, then rerun `scripts\install-windows-worker.ps1` to restart the
+worker.
 
 ## Single-machine mode
 

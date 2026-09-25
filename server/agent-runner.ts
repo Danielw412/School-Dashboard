@@ -5,6 +5,12 @@ import { basename, dirname, extname } from "node:path";
 import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import { z } from "zod";
 
+import {
+  type AgentProvider,
+  DEFAULT_CLAUDE_MODEL,
+  type EffortChoice,
+  providerLabel,
+} from "../src/models.js";
 import { type ActivityStore, sanitizeForLog } from "./activity.js";
 import {
   agentPlacement,
@@ -13,6 +19,7 @@ import {
   AgentsUnavailableError,
 } from "./agent-execution.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
+import { claudeEffort } from "./claude-execution.js";
 import {
   CourseDirectionsStore,
   type CourseDirectionFeature,
@@ -22,7 +29,6 @@ import { runTestQuestionPredictor, type PredictorResult } from "./predictor.js";
 import {
   type AppSettings,
   modelIdSchema,
-  type ModelSelectable,
   modelSchema,
   reasoningEffortSchema,
   type SettingsStore,
@@ -201,6 +207,8 @@ export type AgentRun = {
   logicalId: string;
   taskTitle: string;
   courseName: string;
+  // The agent that ran it (absent on runs from before Claude support, which all used Codex).
+  provider?: AgentProvider;
   model: string;
   reasoningEffort: z.infer<typeof reasoningEffortSchema>;
   effectiveReasoningEffort: string;
@@ -211,7 +219,7 @@ export type AgentRun = {
     directions: string;
     updatedAt: string | null;
   };
-  // Where Codex ran: the dashboard server or the laptop worker (absent on older runs).
+  // Where the agent ran: the dashboard server or the laptop worker (absent on older runs).
   execution?: AgentPlacement;
   startedAt: string;
   completedAt: string | null;
@@ -384,6 +392,13 @@ function isTransientFileReplacementError(error: unknown): boolean {
   return ["EACCES", "EBUSY", "EEXIST", "EPERM"].includes(String(error.code));
 }
 
+// Whether a model can be chosen for new runs of the given agent.
+export type AgentModelSelectable = (model: string, provider: AgentProvider) => boolean;
+
+const builtInAgentModel: AgentModelSelectable = (model, provider) => provider === "claude"
+  ? model === DEFAULT_CLAUDE_MODEL || model.startsWith("claude-")
+  : modelSchema.safeParse(model).success;
+
 export class AgentRunner {
   private readonly activeRuns = new Map<string, AbortController>();
 
@@ -397,7 +412,7 @@ export class AgentRunner {
     private readonly runs: AgentRunStore,
     private readonly executor: AgentExecutor,
     private readonly courseDirections = new CourseDirectionsStore(),
-    private readonly isSelectableModel: ModelSelectable = (model) => modelSchema.safeParse(model).success,
+    private readonly isSelectableModel: AgentModelSelectable = builtInAgentModel,
   ) {}
 
   async start(input: StartAgentRun): Promise<AgentRun> {
@@ -405,16 +420,22 @@ export class AgentRunner {
       .object({
         feature: featureSchema,
         logicalId: z.string().min(1),
-        model: modelIdSchema.refine(this.isSelectableModel, "This model is not currently supported by Codex.").optional(),
+        model: modelIdSchema.optional(),
         reasoningEffort: reasoningEffortSchema.optional(),
         useTestQuestionPredictor: z.boolean().optional(),
         extractionRunId: z.string().uuid().optional(),
       })
       .parse(input);
-    // Fail fast (HTTP 503) instead of recording a run that cannot reach Codex. The run stays on
-    // the target selected now, even if the student switches targets while it is underway.
+    // Fail fast (HTTP 503) instead of recording a run that cannot reach its agent. The run stays
+    // on the target and agent selected now, even if the student switches while it is underway.
     const execution = this.executor.status();
     if (!execution.available) throw new AgentsUnavailableError(execution.message);
+    const provider = execution.provider;
+    z.object({
+      model: modelIdSchema
+        .refine((model) => this.isSelectableModel(model, provider), `This model is not currently available to ${providerLabel(provider)}.`)
+        .optional(),
+    }).parse({ model: parsed.model });
     const placement = agentPlacement(execution);
     const settings = await this.settingsStore.get();
     const task = await this.taskSync.getTask(parsed.logicalId);
@@ -425,15 +446,17 @@ export class AgentRunner {
       directions: savedCourseDirections.directions[parsed.feature],
       updatedAt: savedCourseDirections.updatedAt,
     };
-    const preference = resolveAgentPreferences(
-      settings,
-      parsed.feature,
-      parsed.model,
-      parsed.reasoningEffort,
-    );
+    const preference = resolveAgentPreferences(settings, parsed.feature, {
+      provider,
+      model: parsed.model,
+      reasoningEffort: parsed.reasoningEffort,
+      effort: execution.effort?.[provider],
+    });
     const model = preference.model;
     const reasoningEffort = preference.reasoningEffort;
-    const effectiveReasoningEffort = reasoningEffort === "none" ? "minimal" : reasoningEffort;
+    const effectiveReasoningEffort = provider === "claude"
+      ? claudeEffort(reasoningEffort)
+      : reasoningEffort === "none" ? "minimal" : reasoningEffort;
     const prompt = preference.prompt;
     const run: AgentRun = {
       id: randomUUID(),
@@ -442,6 +465,7 @@ export class AgentRunner {
       logicalId: parsed.logicalId,
       taskTitle: task.display_title,
       courseName: task.course.name,
+      provider,
       model,
       reasoningEffort,
       effectiveReasoningEffort,
@@ -516,7 +540,7 @@ export class AgentRunner {
         action: run.feature,
         status: "started",
         summary: run.taskTitle,
-        metadata: { runId: run.id, model: run.model, reasoningEffort: run.reasoningEffort },
+        metadata: { runId: run.id, provider: run.provider, model: run.model, reasoningEffort: run.reasoningEffort },
       });
       await this.activity.record({
         category: "agent",
@@ -609,8 +633,10 @@ export class AgentRunner {
       await this.runs.update(run.id, { workspaceId: workspace.id });
       const timeoutMs = run.feature === "problemExtraction" ? 15 * 60_000 : 8 * 60_000;
       let usage: Usage | null = null;
+      const provider = run.provider ?? "codex";
       const result = await this.executor.run({
         runId: run.id,
+        provider,
         feature: run.feature,
         taskTitle: run.taskTitle,
         model: run.model,
@@ -631,17 +657,18 @@ export class AgentRunner {
             : placement?.host;
           await this.activity.record({
             category: "agent",
-            action: "codex.start",
+            action: `${provider}.start`,
             status: "completed",
             summary: run.taskTitle,
             metadata: {
               runId: run.id,
               workspace: workspace.id,
+              provider,
               model: run.model,
               ...(placement ? { target: placement.target } : {}),
               ...(placement?.target === "worker" && host ? { worker: host } : {}),
               ...(placement && placement.label !== "This computer" && host
-                ? { progressLabel: `Starting the configured Codex model on the ${placement.label.toLowerCase()} (${host})` }
+                ? { progressLabel: `Starting the configured ${providerLabel(provider)} model on the ${placement.label.toLowerCase()} (${host})` }
                 : {}),
             },
           });
@@ -681,7 +708,7 @@ export class AgentRunner {
       controller.signal.throwIfAborted();
       usage = result.usage ?? usage;
       rawStructuredOutput = result.finalResponse ?? rawStructuredOutput;
-      if (!rawStructuredOutput) throw new Error("Codex completed without structured output.");
+      if (!rawStructuredOutput) throw new Error(`${providerLabel(provider)} completed without structured output.`);
       const parsedOutput = run.feature === "problemExtraction"
         ? parseProblemExtractionRunOutput(JSON.parse(rawStructuredOutput))
         : outputParser(run.feature).parse(JSON.parse(rawStructuredOutput));
@@ -713,7 +740,7 @@ export class AgentRunner {
         action: run.feature,
         status: "completed",
         summary: run.taskTitle,
-        metadata: { runId: run.id, model: run.model, usage },
+        metadata: { runId: run.id, provider: run.provider, model: run.model, usage },
       });
     } catch (error) {
       const cancelled = controller.signal.aborted;
@@ -1042,17 +1069,30 @@ function outputParser(feature: AgentFeature) {
   return studyGuideSchema;
 }
 
+// A run's model and effort. Explicit per-run choices win; then the quick effort chosen for the
+// agent; otherwise ("default") the agent's configured effort, with xhigh for problem extraction.
 export function resolveAgentPreferences(
   settings: AppSettings,
   feature: AgentFeature,
-  modelOverride?: string,
-  reasoningOverride?: z.infer<typeof reasoningEffortSchema>,
+  overrides: {
+    provider?: AgentProvider;
+    model?: string;
+    reasoningEffort?: z.infer<typeof reasoningEffortSchema>;
+    effort?: EffortChoice;
+  } = {},
 ) {
   const settingsFeature = feature === "directions" ? "assignmentNavigation" : feature;
+  const claude = overrides.provider === "claude";
+  const configuredModel = claude
+    ? settings.claude.model
+    : settings.featureModels[settingsFeature] ?? settings.defaultModel;
+  const configuredEffort = claude ? settings.claude.reasoningEffort : settings.reasoningEffort;
+  const quickEffort = overrides.effort && overrides.effort !== "default" ? overrides.effort : null;
   return {
-    model: modelOverride ?? settings.featureModels[settingsFeature] ?? settings.defaultModel,
-    reasoningEffort:
-      reasoningOverride ?? (feature === "problemExtraction" ? "xhigh" : settings.reasoningEffort),
+    model: overrides.model ?? configuredModel,
+    reasoningEffort: overrides.reasoningEffort
+      ?? quickEffort
+      ?? (feature === "problemExtraction" ? "xhigh" : configuredEffort),
     prompt: settings.prompts[settingsFeature],
   } as const;
 }

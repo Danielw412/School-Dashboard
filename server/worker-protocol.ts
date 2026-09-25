@@ -1,7 +1,11 @@
 import { z } from "zod";
 
+import { agentProviders } from "../src/models.js";
+
 // JSON text frames exchanged over the laptop worker's outbound WebSocket.
-// Bump the version for incompatible changes; both sides refuse a mismatched peer.
+// Bump the version for incompatible changes; both sides refuse a mismatched peer. Claude support
+// was added compatibly: a worker without it sends no `claude` report, so the server never gives
+// it a Claude job, and it still runs Codex jobs.
 export const WORKER_PROTOCOL_VERSION = 1;
 export const WORKER_CONNECT_PATH = "/api/agent-worker/connect";
 
@@ -18,8 +22,27 @@ export const codexModelInfoSchema = z.object({
 });
 export type CodexModelInfo = z.infer<typeof codexModelInfoSchema>;
 
+export const claudeModelInfoSchema = z.object({
+  id: z.string().min(1).max(120),
+  displayName: z.string().max(200),
+  reasoningEfforts: z.array(z.string().max(40)).max(20),
+});
+export type ClaudeModelInfo = z.infer<typeof claudeModelInfoSchema>;
+
+// What a machine's Claude Code reported: its version, sign-in, and model list.
+export const claudeReportSchema = z.object({
+  version: z.string().max(40).nullable(),
+  ready: z.boolean().nullable(),
+  detail: z.string().max(2000),
+  models: z.array(claudeModelInfoSchema).max(200).nullable(),
+  error: z.string().max(2000).nullable(),
+});
+export type ClaudeReport = z.infer<typeof claudeReportSchema>;
+
 export const workerJobSchema = z.object({
   runId: runIdSchema,
+  // Absent means Codex.
+  provider: z.enum(agentProviders).optional(),
   feature: z.string().min(1),
   taskTitle: z.string(),
   model: z.string().min(1),
@@ -66,6 +89,7 @@ export const workerHelloSchema = z.object({
   }),
   models: z.array(codexModelInfoSchema).max(200).nullable(),
   modelsError: z.string().max(2000).nullable(),
+  claude: claudeReportSchema.optional(),
   // Jobs still running on the laptop, and finished ones whose result the server has not acked.
   activeRunIds: z.array(runIdSchema).max(64),
   finishedRunIds: z.array(runIdSchema).max(64),
@@ -88,6 +112,7 @@ export const workerMessageSchema = z.discriminatedUnion("type", [
     codexVersion: z.string().max(40).nullable(),
     models: z.array(codexModelInfoSchema).max(200).nullable(),
     modelsError: z.string().max(2000).nullable(),
+    claude: claudeReportSchema.optional(),
   }),
 ]);
 export type WorkerMessage = z.infer<typeof workerMessageSchema>;

@@ -5,13 +5,15 @@ import { dirname } from "node:path";
 import { z } from "zod";
 
 import { env, SETTINGS_PATH } from "./env.js";
-import { migrateSavedModel, modelNames } from "../src/models.js";
+import { DEFAULT_CLAUDE_MODEL, migrateSavedModel, modelNames } from "../src/models.js";
 
 // Built-in models. A Luna Reserve ID reported by Codex is also accepted (see ModelCatalog).
 export const modelSchema = z.enum(modelNames);
 export const modelIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u);
 export type ModelSelectable = (model: string) => boolean;
 const builtInModel: ModelSelectable = (model) => (modelNames as readonly string[]).includes(model);
+// Claude models are the ones a machine's Claude Code lists (see ModelCatalog).
+const defaultClaudeModel: ModelSelectable = (model) => model === DEFAULT_CLAUDE_MODEL;
 export const reasoningEffortSchema = z.enum([
   "none",
   "minimal",
@@ -32,6 +34,12 @@ export const settingsSchema = z.object({
     assignmentNavigation: modelIdSchema,
   }),
   reasoningEffort: reasoningEffortSchema,
+  // Claude's model and default effort; Codex uses the model and reasoning fields above. Settings
+  // saved before Claude support get these defaults.
+  claude: z.object({
+    model: modelIdSchema,
+    reasoningEffort: reasoningEffortSchema,
+  }).default({ model: DEFAULT_CLAUDE_MODEL, reasoningEffort: "high" }),
   prompts: z.object({
     problemExtraction: z.string().min(20),
     answerKey: z.string().min(20),
@@ -64,6 +72,7 @@ export const defaultSettings: AppSettings = {
     assignmentNavigation: "gpt-6-luna",
   },
   reasoningEffort: "high",
+  claude: { model: DEFAULT_CLAUDE_MODEL, reasoningEffort: "high" },
   prompts: {
     problemExtraction: `You are a careful educational content analyst. Locate the exact assigned questions from Canvas directions and directly linked source material. Preserve numbering and formatting in Markdown, using $...$ for inline LaTeX and $$...$$ for display math. Put question subparts and multiple-choice options on separate lines. Never invent a missing question. Store any answer bank shared by multiple problems once as a separate answer-bank entity and link the covered problems to it. For every question, provide source file and page provenance. Index each unfamiliar PDF once, prefer cached text and automatic problem detection, use an overview contact sheet only when candidate pages remain unclear, and use at most one distinct refinement contact sheet when the overview identifies a smaller region but not exact pages. Pass a named worksheet or section heading into problem detection so repeated numbers elsewhere are ignored. Use OCR only for unresolved selected pages with unusable text layers. If multiple pages genuinely need visual verification, render them together in one render_pdf_pages call. Represent simple tables with the structured table field; use a tight screenshot when table layout is visually meaningful. Set visual to null unless a supplied figure, diagram, graph, chart, spectrum, table, map, or other non-text image is required to understand or solve that specific problem. For every required visual, pass its visual kind and a precise anchor to semantic_crop_pdf, then use the completed crop directly. When detection is complete and that crop succeeds, do not render or crop the page again. Never request or attach a page crop for a text-only problem. Stop once every requested problem is sufficiently verified.`,
     answerKey: `Solve only the supplied parsed questions and use each attached visual when relevant. Show a concise final answer first, followed by a complete solution in Markdown with LaTeX. Silently verify units, signs, domains, and requested subparts, but do not output checks, citations, or provenance. Never output HTML tags and do not replace missing source text with a guess.`,
@@ -86,6 +95,7 @@ export class SettingsStore {
   constructor(
     private readonly path = SETTINGS_PATH,
     private readonly isSelectableModel: ModelSelectable = builtInModel,
+    private readonly isSelectableClaudeModel: ModelSelectable = defaultClaudeModel,
   ) {}
 
   async get(): Promise<AppSettings> {
@@ -105,6 +115,7 @@ export class SettingsStore {
           settings.featureModels[feature] = defaultSettings.featureModels[feature];
         }
       }
+      if (!this.isSelectableClaudeModel(settings.claude.model)) settings.claude.model = defaultSettings.claude.model;
       return settings;
     } catch {
       return structuredClone(defaultSettings);
@@ -122,6 +133,9 @@ export class SettingsStore {
         if (!this.isSelectableModel(model)) {
           context.addIssue({ code: "custom", path, message: `${model} is not a model Codex currently supports.` });
         }
+      }
+      if (!this.isSelectableClaudeModel(value.claude.model)) {
+        context.addIssue({ code: "custom", path: ["claude", "model"], message: `${value.claude.model} is not a model Claude Code currently lists.` });
       }
     }).parse(input);
     await mkdir(dirname(this.path), { recursive: true });

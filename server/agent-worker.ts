@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 
+import { claudeCodeVersion, probeClaude } from "./claude-execution.js";
 import { codexCliVersion, listCodexModels } from "./codex-models.js";
 import { APP_ROOT, env, WORKER_WORKSPACE_ROOT } from "./env.js";
 import { AgentWorkerClient } from "./worker-client.js";
@@ -36,6 +37,7 @@ const worker = new AgentWorkerClient({
   workspaceRoot: WORKER_WORKSPACE_ROOT,
   codexVersion: codexCliVersion(),
   listModels: () => listCodexModels(),
+  probeClaude: () => probeClaude(),
 });
 
 const shutdown = (signal: string) => {
@@ -46,6 +48,6 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 process.stdout.write(
-  `[${new Date().toISOString()}] School Dashboard agent worker ${name} (Codex ${codexCliVersion() ?? "unknown"}) connecting to ${env.serverUrl}\n`,
+  `[${new Date().toISOString()}] School Dashboard agent worker ${name} (Codex ${codexCliVersion() ?? "unknown"}, Claude Code ${claudeCodeVersion() ?? "not installed"}) connecting to ${env.serverUrl}\n`,
 );
 await worker.start();
