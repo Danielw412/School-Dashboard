@@ -54,6 +54,8 @@ export type AgentWorkerOptions = {
   // Reconnect when the server's 15 s heartbeat pings stop arriving (sleep, network change).
   staleAfterMs?: number;
   modelRefreshMs?: number;
+  claudeRetryInitialMs?: number;
+  claudeRetryMaxMs?: number;
   workspaceRetentionHours?: number;
 };
 
@@ -69,6 +71,10 @@ export class AgentWorkerClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private staleTimer: NodeJS.Timeout | null = null;
   private maintenanceTimer: NodeJS.Timeout | null = null;
+  private claudeRetryTimer: NodeJS.Timeout | null = null;
+  private modelCheck: Promise<void> | null = null;
+  private claudeCheck: Promise<void> | null = null;
+  private claudeFailures = 0;
   private readonly runTurn: typeof runAgentTurn;
   private readonly log: (message: string) => void;
 
@@ -84,7 +90,7 @@ export class AgentWorkerClient {
     this.maintenanceTimer = setInterval(() => {
       void this.refreshModels().then(() => this.sendModels());
       void this.pruneWorkspaces();
-    }, this.options.modelRefreshMs ?? 30 * 60_000);
+    }, this.options.modelRefreshMs ?? 2 * 60 * 60_000);
     this.maintenanceTimer.unref();
   }
 
@@ -93,6 +99,7 @@ export class AgentWorkerClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.staleTimer) clearTimeout(this.staleTimer);
     if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+    if (this.claudeRetryTimer) clearTimeout(this.claudeRetryTimer);
     for (const job of this.jobs.values()) job.controller.abort(new Error("The laptop agent worker stopped."));
     this.socket?.close(1001, "Worker stopping");
     this.socket = null;
@@ -319,8 +326,12 @@ export class AgentWorkerClient {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   }
 
-  private async refreshModels(): Promise<void> {
-    await Promise.all([this.refreshCodexModels(), this.refreshClaude()]);
+  private refreshModels(): Promise<void> {
+    if (this.modelCheck) return this.modelCheck;
+    this.modelCheck = Promise.all([this.refreshCodexModels(), this.refreshClaude()])
+      .then(() => undefined)
+      .finally(() => { this.modelCheck = null; });
+    return this.modelCheck;
   }
 
   private async refreshCodexModels(): Promise<void> {
@@ -333,18 +344,57 @@ export class AgentWorkerClient {
     }
   }
 
-  private async refreshClaude(): Promise<void> {
-    if (!this.options.probeClaude) return;
-    const probe = await this.options.probeClaude();
+  private refreshClaude(): Promise<void> {
+    if (!this.options.probeClaude) return Promise.resolve();
+    if (this.claudeCheck) return this.claudeCheck;
+    if (this.claudeRetryTimer) clearTimeout(this.claudeRetryTimer);
+    this.claudeRetryTimer = null;
+    this.claudeCheck = this.checkClaude().finally(() => { this.claudeCheck = null; });
+    return this.claudeCheck;
+  }
+
+  private async checkClaude(): Promise<void> {
+    let probe: ClaudeProbe;
+    try {
+      probe = await this.options.probeClaude!();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Claude Code could not be checked.";
+      probe = { version: this.claude?.version ?? null, ready: null, detail: message, models: null, error: message };
+    }
+    if (this.stopped) return;
+    if (probe.ready === null) {
+      const failures = ++this.claudeFailures;
+      // Give a recently confirmed sign-in time to recover after sleep, but report a persistent failure.
+      if (this.claude?.ready !== true || failures >= 3) {
+        this.claude = {
+          version: probe.version,
+          ready: null,
+          detail: probe.detail.slice(0, 2000),
+          models: this.claude?.models ?? null,
+          error: probe.error?.slice(0, 2000) ?? null,
+        };
+      }
+      this.log(`Could not check Claude on this machine: ${probe.error ?? probe.detail}`);
+      const delay = Math.min(
+        this.options.claudeRetryMaxMs ?? 30 * 60_000,
+        (this.options.claudeRetryInitialMs ?? 60_000) * 2 ** Math.min(failures - 1, 10),
+      );
+      this.claudeRetryTimer = setTimeout(() => {
+        this.claudeRetryTimer = null;
+        void this.refreshClaude().then(() => this.sendModels());
+      }, delay);
+      this.claudeRetryTimer.unref();
+      return;
+    }
+    this.claudeFailures = 0;
     this.claude = {
       version: probe.version,
       ready: probe.ready,
       detail: probe.detail.slice(0, 2000),
-      // A failed check keeps the last model list, as the server does for Codex.
       models: probe.models ?? this.claude?.models ?? null,
       error: probe.error?.slice(0, 2000) ?? null,
     };
-    if (probe.ready !== true) this.log(`Claude is unavailable on this machine: ${probe.error ?? probe.detail}`);
+    if (!probe.ready) this.log(`Claude is unavailable on this machine: ${probe.error ?? probe.detail}`);
   }
 
   private async pruneWorkspaces(): Promise<void> {

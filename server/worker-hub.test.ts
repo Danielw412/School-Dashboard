@@ -13,7 +13,7 @@ import type { ActivityStore } from "./activity.js";
 import type { AgentExecutionRequest } from "./agent-execution.js";
 import type { AgentTurnCallbacks, AgentTurnRequest, AgentTurnResult } from "./agent-turn.js";
 import type { ClaudeProbe } from "./claude-execution.js";
-import { AgentWorkerClient, compactThreadEventForTransport } from "./worker-client.js";
+import { AgentWorkerClient, type AgentWorkerOptions, compactThreadEventForTransport } from "./worker-client.js";
 import { WorkerHub, type WorkerModelsReport } from "./worker-hub.js";
 import { WORKER_CONNECT_PATH } from "./worker-protocol.js";
 
@@ -56,7 +56,13 @@ async function startHub(options: { port?: number; reconnectGraceMs?: number } = 
   return { hub, server, port, url: `http://127.0.0.1:${port}`, reports, activity, stop };
 }
 
-async function startWorker(url: string, runTurn: RunTurn, maxConcurrentJobs = 2, probeClaude?: () => Promise<ClaudeProbe>) {
+async function startWorker(
+  url: string,
+  runTurn: RunTurn,
+  maxConcurrentJobs = 2,
+  probeClaude?: () => Promise<ClaudeProbe>,
+  options: Pick<AgentWorkerOptions, "claudeRetryInitialMs" | "claudeRetryMaxMs"> = {},
+) {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "school-worker-"));
   const worker = new AgentWorkerClient({
     serverUrl: url,
@@ -79,6 +85,7 @@ async function startWorker(url: string, runTurn: RunTurn, maxConcurrentJobs = 2,
     log: () => undefined,
     reconnectInitialMs: 20,
     reconnectMaxMs: 60,
+    ...options,
   });
   cleanups.push(async () => {
     await worker.stop();
@@ -218,6 +225,44 @@ describe("laptop agent worker round trip", () => {
     await expect(hub.run(request(await serverWorkspace(), { provider: "claude", model: "claude-opus-5" }), callbacks))
       .resolves.toMatchObject({ threadId: "session-1" });
     expect(seen[0]).toMatchObject({ provider: "claude", model: "claude-opus-5" });
+  });
+
+  it("keeps a confirmed Claude sign-in through a timed-out check and retries without overlapping probes", async () => {
+    const { hub, url, reports } = await startHub();
+    const gate = deferred();
+    let calls = 0;
+    let active = 0;
+    let peak = 0;
+    const signedIn: ClaudeProbe = {
+      version: "2.1.282",
+      ready: true,
+      detail: "Signed in (Claude Max)",
+      models: [{ id: "claude-opus-5", displayName: "Opus 5", reasoningEfforts: ["low"] }],
+      error: null,
+    };
+    await startWorker(url, async () => ({ threadId: null, usage: null, finalResponse: "{}" }), 2, async () => {
+      calls += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      if (calls === 2) await gate.promise;
+      active -= 1;
+      return calls === 2
+        ? { ...signedIn, ready: null, detail: "Claude Code did not answer within 30000 ms.", models: null, error: "Claude Code did not answer within 30000 ms." }
+        : signedIn;
+    }, { claudeRetryInitialMs: 100, claudeRetryMaxMs: 100 });
+    await until(() => hub.status("claude").available);
+
+    expect(hub.requestModelRefresh()).toBe(true);
+    await until(() => calls === 2);
+    expect(hub.requestModelRefresh()).toBe(true);
+    gate.release();
+
+    await until(() => reports.length >= 2);
+    expect(hub.status("claude").available).toBe(true);
+    expect(reports.at(-1)?.claude).toMatchObject({ ready: true, error: null });
+    await until(() => calls === 3);
+    expect(peak).toBe(1);
+    expect(hub.status("claude").available).toBe(true);
   });
 
   it("keeps Claude unavailable on a worker from before Claude support, or one that is signed out", async () => {

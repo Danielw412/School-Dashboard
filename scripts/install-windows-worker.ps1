@@ -23,7 +23,7 @@ $legacyTaskName = "Homework Dashboard Web"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $projectRoot ".env"
 $wscriptPath = Join-Path $env:SystemRoot "System32\wscript.exe"
-$tsxCliPath = Join-Path $projectRoot "node_modules\tsx\dist\cli.mjs"
+$tsxPackagePath = Join-Path $projectRoot "node_modules\tsx\package.json"
 $workerEntryPath = Join-Path $projectRoot "server\windows-worker-startup.ts"
 $legacyEntryPath = Join-Path $projectRoot "server\windows-startup.ts"
 $windowlessLauncherPath = Join-Path $projectRoot "scripts\windows-startup.vbs"
@@ -44,7 +44,7 @@ if ($Uninstall) {
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 if ($null -eq $nodeCommand) { throw "Node.js was not found on PATH." }
 $nodePath = $nodeCommand.Source
-foreach ($required in @($wscriptPath, $tsxCliPath, $workerEntryPath, $windowlessLauncherPath)) {
+foreach ($required in @($wscriptPath, $tsxPackagePath, $workerEntryPath, $windowlessLauncherPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required file not found: $required. Run npm install in $projectRoot."
     }
@@ -80,7 +80,7 @@ Stop-ScheduledTaskAndWait -TaskName $taskName
 Stop-ProjectNodeProcess -EntryPath $workerEntryPath
 New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force | Out-Null
 
-$actionArguments = '"{0}" "{1}" "{2}" "{3}" "{4}"' -f $windowlessLauncherPath, $nodePath, $tsxCliPath, $workerEntryPath, $logPath
+$actionArguments = '"{0}" "{1}" "{2}" "{3}"' -f $windowlessLauncherPath, $nodePath, $workerEntryPath, $logPath
 $action = New-ScheduledTaskAction -Execute $wscriptPath -Argument $actionArguments -WorkingDirectory $projectRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $principalUser
 $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType Interactive -RunLevel Limited
