@@ -70,11 +70,11 @@ describe("agent run preferences", () => {
 
   it("maps directions to assignment-navigation settings and honors an override", () => {
     const settings = structuredClone(defaultSettings);
-    settings.featureModels.assignmentNavigation = "gpt-6-sol";
+    settings.featureModels.assignmentNavigation = "gpt-6.1-sol";
 
     const resolved = resolveAgentPreferences(settings, "directions", { reasoningEffort: "medium" });
 
-    expect(resolved.model).toBe("gpt-6-sol");
+    expect(resolved.model).toBe("gpt-6.1-sol");
     expect(resolved.reasoningEffort).toBe("medium");
     expect(resolved.prompt).toBe(settings.prompts.assignmentNavigation);
   });
@@ -96,6 +96,19 @@ describe("agent run preferences", () => {
     expect(resolveAgentPreferences(defaultSettings, "answerKey", { provider: "claude", effort: "max" }).reasoningEffort).toBe("max");
     expect(resolveAgentPreferences(defaultSettings, "problemExtraction", { effort: "default" }).reasoningEffort).toBe("xhigh");
     expect(resolveAgentPreferences(defaultSettings, "studyGuide", { effort: "low", reasoningEffort: "high" }).reasoningEffort).toBe("high");
+  });
+
+  it.each(["none", "minimal", "high"] as const)("uses supported GPT-6.1 Sol effort for a saved %s choice", (reasoningEffort) => {
+    const settings = structuredClone(defaultSettings);
+    settings.featureModels.answerKey = "gpt-6.1-sol";
+    settings.reasoningEffort = reasoningEffort;
+
+    expect(resolveAgentPreferences(settings, "answerKey")).toMatchObject({
+      model: "gpt-6.1-sol",
+      reasoningEffort,
+      effectiveReasoningEffort: reasoningEffort === "high" ? "high" : "low",
+    });
+    expect(resolveAgentPreferences(settings, "problemExtraction", { model: "gpt-6.1-sol" }).effectiveReasoningEffort).toBe("xhigh");
   });
 
   it("constrains directions to authoritative preloaded evidence and minimal tools", () => {

@@ -16,8 +16,11 @@ Canvas coursework, and runs structured agent workflows with Codex or Claude.
 - Answer keys that accept only a completed problem-extraction result as their problem source.
 - Focused study guides with teacher-stated scope separated from agent-inferred topics.
 - GPT-6 Luna as the default Codex SDK model, with xhigh reasoning by default for exact problem
-  extraction, plus GPT-6 Sol, GPT-5.6 Sol, and configurable reasoning controls. Saved GPT-5.6
-  Luna/Terra preferences migrate to GPT-6 Luna; historical runs retain their original model IDs.
+  extraction, plus GPT-6.1 Sol, GPT-5.6 Sol, and configurable reasoning controls. Saved GPT-5.6
+  Luna/Terra preferences migrate to GPT-6 Luna, and GPT-6 Sol preferences migrate to GPT-6.1 Sol;
+  historical runs retain their original model IDs.
+  GPT-6.1 Sol uses low effort for saved none/minimal choices and requires the bundled Codex 0.159.1
+  or newer.
 - Claude, through the Claude Agent SDK, as an alternative agent for every workflow. An **Agent**
   switch in the sidebar picks Codex or Claude, and an **Effort** menu next to it sets the effort
   level for the selected agent.

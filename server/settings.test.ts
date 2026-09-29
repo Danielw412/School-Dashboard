@@ -6,13 +6,13 @@ import { defaultSettings, modelSchema, SettingsStore } from "./settings.js";
 import { modelLabel } from "../src/models.js";
 
 describe("model settings compatibility", () => {
-  it("migrates retired saved preferences without losing custom settings", async () => {
+  it.each(["gpt-5.6-terra", "gpt-6-sol"])("migrates retired saved %s preferences without losing custom settings", async (defaultModel) => {
     const root = await mkdtemp(join(tmpdir(), "school-settings-"));
     const path = join(root, "settings.json");
     try {
       const legacy = {
         ...structuredClone(defaultSettings),
-        defaultModel: "gpt-5.6-terra",
+        defaultModel,
         featureModels: {
           problemExtraction: "gpt-5.6-luna", answerKey: "gpt-5.6-sol",
           studyGuide: "gpt-5.6-terra", assignmentNavigation: "gpt-6-sol",
@@ -23,10 +23,10 @@ describe("model settings compatibility", () => {
       await writeFile(path, JSON.stringify(legacy));
       const store = new SettingsStore(path);
       const settings = await store.get();
-      expect(settings.defaultModel).toBe("gpt-6-luna");
+      expect(settings.defaultModel).toBe(defaultModel === "gpt-6-sol" ? "gpt-6.1-sol" : "gpt-6-luna");
       expect(settings.featureModels).toEqual({
         problemExtraction: "gpt-6-luna", answerKey: "gpt-5.6-sol",
-        studyGuide: "gpt-6-luna", assignmentNavigation: "gpt-6-sol",
+        studyGuide: "gpt-6-luna", assignmentNavigation: "gpt-6.1-sol",
       });
       expect(settings.prompts).toEqual(legacy.prompts);
       expect(settings.cache.ttlMinutes).toBe(77);
@@ -49,7 +49,7 @@ describe("model settings compatibility", () => {
     try {
       const saved = await store.save({
         ...structuredClone(defaultSettings),
-        featureModels: { ...defaultSettings.featureModels, studyGuide: "gpt-6-luna-reserve", answerKey: "gpt-6-sol" },
+        featureModels: { ...defaultSettings.featureModels, studyGuide: "gpt-6-luna-reserve", answerKey: "gpt-6.1-sol" },
         prompts: { ...defaultSettings.prompts, answerKey: "Keep this customized answer-key prompt." },
       });
       expect(saved.featureModels.studyGuide).toBe("gpt-6-luna-reserve");
@@ -57,7 +57,7 @@ describe("model settings compatibility", () => {
 
       reserveListed = false;
       const settings = await store.get();
-      expect(settings.featureModels).toEqual({ ...defaultSettings.featureModels, answerKey: "gpt-6-sol" });
+      expect(settings.featureModels).toEqual({ ...defaultSettings.featureModels, answerKey: "gpt-6.1-sol" });
       expect(settings.prompts.answerKey).toBe("Keep this customized answer-key prompt.");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -65,10 +65,11 @@ describe("model settings compatibility", () => {
   });
 
   it("accepts verified current IDs and rejects retired models for new runs", () => {
-    for (const model of ["gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol"]) expect(modelSchema.parse(model)).toBe(model);
-    for (const model of ["gpt-5.6-luna", "gpt-5.6-terra", "GPT-6 Luna"]) expect(modelSchema.safeParse(model).success).toBe(false);
+    for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]) expect(modelSchema.parse(model)).toBe(model);
+    for (const model of ["gpt-6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "GPT-6 Luna"]) expect(modelSchema.safeParse(model).success).toBe(false);
     expect(modelLabel("gpt-6-luna")).toBe("GPT-6 Luna");
     expect(modelLabel("gpt-6-sol")).toBe("GPT-6 Sol");
+    expect(modelLabel("gpt-6.1-sol")).toBe("GPT-6.1 Sol");
     expect(modelLabel("gpt-5.6-terra")).toBe("GPT-5.6 Terra");
     expect(modelLabel("unknown-historical-model")).toBe("unknown-historical-model");
   });

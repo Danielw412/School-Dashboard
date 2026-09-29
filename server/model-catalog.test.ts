@@ -48,7 +48,9 @@ describe("Codex model catalog", () => {
     const described = catalog.describe();
     expect(described.lunaReserve.supported).toBe(false);
     expect(described.lunaReserve.detail).toMatch(/does not list a Luna Reserve model among 3 models/u);
-    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol"]);
+    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
+    expect(catalog.isSelectable("gpt-6.1-sol")).toBe(true);
+    expect(catalog.isSelectable("gpt-6-sol")).toBe(false);
   });
 
   it("makes a detected Luna Reserve selectable under the exact ID Codex reports, and remembers it", async () => {
@@ -173,7 +175,7 @@ describe("Claude model catalog", () => {
     const reloaded = new ModelCatalog(path, { activeTarget: () => "local" });
     await reloaded.load();
     expect(reloaded.describe().claude.selectable.map((model) => model.id)).toContain("claude-opus-5-5");
-    expect(reloaded.describe().selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol"]);
+    expect(reloaded.describe().selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
   });
 
   it("reads catalogs saved before Claude support", async () => {

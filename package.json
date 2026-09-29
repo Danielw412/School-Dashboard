@@ -45,7 +45,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.282",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@openai/codex-sdk": "^0.156.0",
+    "@openai/codex-sdk": "^0.159.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "cheerio": "^1.2.0",
     "dotenv": "^17.4.2",

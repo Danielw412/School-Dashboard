@@ -24,7 +24,7 @@ export function effortLabel(effort: string): string {
 }
 
 // API IDs (also passed unchanged by @openai/codex-sdk to Codex --model).
-export const modelNames = ["gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol"] as const;
+export const modelNames = ["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"] as const;
 export type ModelName = typeof modelNames[number];
 
 // Used until the student picks a model from the list Claude Code reports.
@@ -39,6 +39,7 @@ export function modelLabel(model: string): string {
 }
 
 export function migrateSavedModel(model: unknown): unknown {
+  if (model === "gpt-6-sol") return "gpt-6.1-sol";
   if (model === "gpt-5.6-luna" || model === "gpt-5.6-terra") return "gpt-6-luna";
   return model;
 }

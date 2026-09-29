@@ -454,9 +454,7 @@ export class AgentRunner {
     });
     const model = preference.model;
     const reasoningEffort = preference.reasoningEffort;
-    const effectiveReasoningEffort = provider === "claude"
-      ? claudeEffort(reasoningEffort)
-      : reasoningEffort === "none" ? "minimal" : reasoningEffort;
+    const effectiveReasoningEffort = preference.effectiveReasoningEffort;
     const prompt = preference.prompt;
     const run: AgentRun = {
       id: randomUUID(),
@@ -1088,11 +1086,20 @@ export function resolveAgentPreferences(
     : settings.featureModels[settingsFeature] ?? settings.defaultModel;
   const configuredEffort = claude ? settings.claude.reasoningEffort : settings.reasoningEffort;
   const quickEffort = overrides.effort && overrides.effort !== "default" ? overrides.effort : null;
+  const model = overrides.model ?? configuredModel;
+  const reasoningEffort = overrides.reasoningEffort
+    ?? quickEffort
+    ?? (feature === "problemExtraction" ? "xhigh" : configuredEffort);
+  // GPT-6.1 Sol starts at low effort; older saved none/minimal choices cannot run unchanged.
+  const effectiveReasoningEffort = claude
+    ? claudeEffort(reasoningEffort)
+    : model === "gpt-6.1-sol" && (reasoningEffort === "none" || reasoningEffort === "minimal")
+      ? "low"
+      : reasoningEffort === "none" ? "minimal" : reasoningEffort;
   return {
-    model: overrides.model ?? configuredModel,
-    reasoningEffort: overrides.reasoningEffort
-      ?? quickEffort
-      ?? (feature === "problemExtraction" ? "xhigh" : configuredEffort),
+    model,
+    reasoningEffort,
+    effectiveReasoningEffort,
     prompt: settings.prompts[settingsFeature],
   } as const;
 }
