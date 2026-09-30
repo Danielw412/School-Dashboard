@@ -123,7 +123,7 @@ export class TaskSyncClient {
       `Could not reach Canvas Task Sync at ${baseUrl}. Check that it is running.`,
   ) {}
 
-  async listTasks(completed: boolean | undefined = false): Promise<TrackedTask[]> {
+  async listTasks(completed?: boolean): Promise<TrackedTask[]> {
     const query = completed === undefined ? "" : `?completed=${completed}`;
     return z.array(taskSchema).parse(await this.get(`/tasks${query}`));
   }

@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   ArrowDownWideNarrow,
   ArrowUpRight,
   CalendarDays,
@@ -66,6 +67,7 @@ export function MyWork() {
     [tasksState.data],
   );
   const allTasks = useMemo(() => tasksState.data ?? [], [tasksState.data]);
+  const completionDataUnavailable = allTasks.some((task) => task.completion_status === "unavailable");
   const selectedTask = allTasks.find((task) => task.logical_id === selectedId) ?? null;
 
   const filtered = useMemo(() => {
@@ -109,7 +111,7 @@ export function MyWork() {
         <div className="page-heading-row work-heading">
           <h1>My work</h1>
           <div className="work-heading-actions">
-            <button className="secondary-button compact-button" onClick={() => void tasksState.refresh()}><RefreshCw size={15} />Refresh</button>
+            <button className="secondary-button compact-button" onClick={() => void tasksState.refresh().catch(() => undefined)}><RefreshCw size={15} />Refresh</button>
             <button className="primary-button compact-button" disabled={!coursesState.data?.length} onClick={() => setEditorTask("new")}><Plus size={15} />New task</button>
           </div>
         </div>
@@ -141,8 +143,17 @@ export function MyWork() {
         </div>
 
         {tasksState.error ? <ErrorNotice error={tasksState.error} /> : null}
+        {!tasksState.loading && !tasksState.error && completionDataUnavailable ? (
+          <div className="notice amber" role="alert">
+            <AlertCircle size={18} />
+            <div>
+              <strong>Google Tasks completion status is unavailable</strong>
+              <p>Some assignments are hidden until their completion status can be checked. Check the Google connection in Canvas Task Sync, reconnect if needed, then click Refresh.</p>
+            </div>
+          </div>
+        ) : null}
         {tasksState.loading ? <AssignmentSkeleton viewMode={viewMode} /> : null}
-        {!tasksState.loading && !tasksState.error && groups.length === 0 ? (
+        {!tasksState.loading && !tasksState.error && !completionDataUnavailable && filtered.length === 0 ? (
           <EmptyState title="Nothing here" detail="No unfinished assignments match these filters." />
         ) : null}
         <div className={`assignment-groups ${groupMode === "upcoming" ? "is-ungrouped" : ""}`}>

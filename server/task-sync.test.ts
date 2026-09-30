@@ -5,6 +5,24 @@ import { TaskSyncClient, TaskSyncRequestError } from "./task-sync.js";
 
 const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
 
+describe("TaskSyncClient task filters", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [undefined, "/tasks"],
+    [false, "/tasks?completed=false"],
+    [true, "/tasks?completed=true"],
+  ] as const)("requests the correct feed for completed=%s", async (completed, path) => {
+    const fetchMock = vi.fn(async () => json([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new TaskSyncClient("http://127.0.0.1:8790/api/v1", activity);
+
+    await expect(client.listTasks(completed)).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenCalledWith(`http://127.0.0.1:8790/api/v1${path}`, expect.any(Object));
+  });
+});
+
 describe("TaskSyncClient browser resources", () => {
   afterEach(() => vi.unstubAllGlobals());
 

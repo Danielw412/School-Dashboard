@@ -73,6 +73,25 @@ describe("MyWork", () => {
     expect(screen.getAllByText("AP Physics C").length).toBeGreaterThan(0);
   });
 
+  it("explains unavailable Google completion data and recovers after refresh", async () => {
+    const user = userEvent.setup();
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.tasks).mockResolvedValueOnce([
+      { ...task, completed: null, completion_status: "unavailable" },
+    ]);
+    render(<MemoryRouter><MyWork /></MemoryRouter>);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Google Tasks completion status is unavailable");
+    expect(screen.queryByText("Nothing here")).not.toBeInTheDocument();
+    expect(screen.queryByText("Problem Set 4")).not.toBeInTheDocument();
+
+    vi.mocked(schoolApi.tasks).mockResolvedValueOnce([task]);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByText("Problem Set 4")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("creates a manual task from the work list", async () => {
     const user = userEvent.setup();
     const { schoolApi } = await import("../api");
