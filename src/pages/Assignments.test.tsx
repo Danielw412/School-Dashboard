@@ -202,13 +202,13 @@ describe("Assignments", () => {
     expect(steps).toHaveTextContent("Directions (done)");
     expect(steps).toHaveTextContent("Assigned problems (running)");
     expect(within(working).getByText("Starting assigned problems")).toBeInTheDocument();
-    expect(screen.getByText(/Luna is working on one assignment/u)).toBeInTheDocument();
+    expect(screen.getByText(/Codex is working on one assignment/u)).toBeInTheDocument();
 
     const row = screen.getByRole("region", { name: "Later" }).querySelector(".assignment-row")!;
     expect(within(row as HTMLElement).getByText("Assigned problems")).toBeInTheDocument();
     expect(within(row as HTMLElement).getByRole("link", { name: "Problem Set 4" })).toHaveAttribute("href", `/assignment/${encodeURIComponent(task.logical_id)}?tab=problems`);
 
-    await user.click(within(working).getByRole("button", { name: "Cancel Luna on Problem Set 4" }));
+    await user.click(within(working).getByRole("button", { name: "Cancel Codex on Problem Set 4" }));
     await waitFor(() => expect(schoolApi.cancelWorkflow).toHaveBeenCalledWith("workflow-1"));
   });
 
@@ -218,14 +218,14 @@ describe("Assignments", () => {
     renderPage();
     await screen.findByText("Problem Set 4");
 
-    await user.click(screen.getByRole("button", { name: "Run Luna on Problem Set 4" }));
+    await user.click(screen.getByRole("button", { name: "Run Codex on Problem Set 4" }));
     await user.click(screen.getByRole("menuitem", { name: "Run all three" }));
     await waitFor(() => expect(schoolApi.startWorkflow).toHaveBeenCalledWith({
       logicalId: task.logical_id,
       steps: ["directions", "problemExtraction", "answerKey"],
     }));
 
-    await user.click(screen.getByRole("button", { name: "Run Luna on Problem Set 4" }));
+    await user.click(screen.getByRole("button", { name: "Run Codex on Problem Set 4" }));
     await user.click(screen.getByRole("menuitem", { name: "Study guide" }));
     await waitFor(() => expect(schoolApi.startRun).toHaveBeenCalledWith({ feature: "studyGuide", logicalId: task.logical_id }));
   });
@@ -244,6 +244,6 @@ describe("Assignments", () => {
     const second = renderPage();
     await screen.findByText("Problem Set 4");
     expect(second.container.querySelector(".assignment-tile")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Run Luna on Problem Set 4" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run Codex on Problem Set 4" })).toBeInTheDocument();
   });
 });

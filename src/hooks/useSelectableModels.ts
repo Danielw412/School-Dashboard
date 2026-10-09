@@ -5,8 +5,7 @@ import { usePolling } from "./usePolling";
 const builtIn = modelNames.map((id) => ({ id, label: modelLabel(id) }));
 const claudeDefault = [{ id: DEFAULT_CLAUDE_MODEL, label: modelLabel(DEFAULT_CLAUDE_MODEL) }];
 
-// Built-in Codex models plus any Luna Reserve ID the agent machine's Codex reports, and the Claude
-// models its Claude Code lists.
+// The built-in Codex models, and the Claude models the agent machine's Claude Code lists.
 export function useSelectableModels() {
   const state = usePolling(schoolApi.agentModels);
   return {

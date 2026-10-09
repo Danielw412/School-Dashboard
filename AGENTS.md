@@ -2,7 +2,7 @@
 
 ## Mental model
 
-School Dashboard is a local React + Express app layered on top of **Canvas Task Sync**. Task Sync remains the source of tracked schoolwork; this repo adds the student UI, direct Canvas access, temporary assignment workspaces, and structured agent workflows run by Codex (Luna) or Claude.
+School Dashboard is a local React + Express app layered on top of **Canvas Task Sync**. Task Sync remains the source of tracked schoolwork; this repo adds the student UI, direct Canvas access, temporary assignment workspaces, and structured agent workflows run by Codex or Claude.
 
 Main flow:
 
@@ -30,23 +30,23 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `server/agent-turn.ts` / `server/codex-execution.ts` / `server/claude-execution.ts` — the turn shared by server-side runs and the laptop worker. `runCodexTurn` is the one Codex SDK invocation (read-only sandbox, feature flags, MCP overrides from the machine's `codex mcp list`, secret-free env). `runClaudeTurn` is the one Claude Agent SDK invocation (read-only Read/Glob/Grep in `dontAsk` mode, only the `school_dashboard` MCP server, no filesystem settings, skills, or persisted sessions, secret-free env); `ClaudeEventTranslator` reports Claude's messages as Codex thread events, and `probeClaude` reads Claude Code's sign-in and model list without starting a turn.
 - `server/agent-routing.ts` / `src/components/AgentControls.tsx` — the top bar's Server/Laptop switch and agent/effort menu: persisted selection, per-run routing, combined status (`GET`/`PUT /api/agent-execution`).
 - `server/worker-hub.ts` (server) / `server/worker-client.ts` + `server/agent-worker.ts` (laptop) / `server/worker-protocol.ts` — laptop agent worker: WebSocket endpoint and auth, job queue and concurrency, reconnect grace and re-attachment, seed-file mirroring, event compaction, buffered results. Both sides validate every frame with the shared zod protocol.
-- `server/model-catalog.ts` / `server/codex-models.ts` — the Codex app-server `model/list` and the Claude Code model list and sign-in reported by each machine that can run agents, persisted on the server per target; the selected target's lists decide which model IDs are selectable (Codex built-ins plus a detected Luna Reserve; any Claude model a machine listed).
+- `server/model-catalog.ts` / `server/codex-models.ts` — the Codex app-server `model/list` and the Claude Code model list and sign-in reported by each machine that can run agents, persisted on the server per target; the selected target's lists decide which model IDs are selectable (the Codex built-ins, with each one's reasoning levels from the list; any Claude model a machine listed).
 - `server/network-access.ts` — loopback/Tailscale-only access, Host and cross-origin checks for the network-facing server.
 - `server/source-pages.ts` / `src/components/SourcePageViewer.tsx` — full source-page images saved with an extraction (cited PDF pages, or the whole file when short) and the floating zoom/pan page window that shows them.
-- `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to Luna. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
+- `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to the agent. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
 - `server/workspace.ts` — temporary workspaces, Canvas file cache, Poppler PDF inspection/text/rendering, OCR, problem detection, and cropping.
 - `server/settings.ts` / `server/env.ts` — local configuration, models/prompts, paths, and environment variables.
 - `server/activity.ts` / `server/agent-progress.ts` — redacted activity logging and user-facing run progress.
 - `server/predictor.ts` — optional external Test Question Predictor adapter.
-- `scripts/` — `deploy-server.ps1` (laptop -> server deploy), `linux/install-server.sh` + `deploy/linux/school-dashboard.service` (server systemd user service), `install-windows-worker.ps1` (laptop worker scheduled task), single-machine Windows startup helpers, and the legacy Canvas-tool compatibility CLI. Luna's normal retrieval path is MCP, not the script endpoint.
+- `scripts/` — `deploy-server.ps1` (laptop -> server deploy), `linux/install-server.sh` + `deploy/linux/school-dashboard.service` (server systemd user service), `install-windows-worker.ps1` (laptop worker scheduled task), single-machine Windows startup helpers, and the legacy Canvas-tool compatibility CLI. The agent's normal retrieval path is MCP, not the script endpoint.
 - `design/concepts/` — UI reference images, not runtime code.
 
 Tests are generally colocated with the implementation as `*.test.ts` / `*.test.tsx`.
 
 ## Important boundaries
 
-- Keep Canvas credentials in `.env`; never expose them to the browser, Luna workspace, persisted logs, or output.
-- Luna runs are intentionally **read-only**, sandboxed to one temporary assignment workspace, and given only the short-lived `school_dashboard` MCP capability. Do not bypass this with shell, direct Canvas HTTP, browser tools, or extra MCP servers.
+- Keep Canvas credentials in `.env`; never expose them to the browser, agent workspace, persisted logs, or output.
+- Agent runs are intentionally **read-only**, sandboxed to one temporary assignment workspace, and given only the short-lived `school_dashboard` MCP capability. Do not bypass this with shell, direct Canvas HTTP, browser tools, or extra MCP servers.
 - `CanvasToolSessions` is the policy layer; `CanvasClient` performs Canvas operations; `WorkspaceManager` performs local document/image work. Add behavior at the correct layer rather than duplicating it elsewhere.
 - Canvas Task Sync owns tracked-task identity/completion and the in-memory Chrome capture queue. Dashboard may request one already-known linked resource through Task Sync, but must not turn that bridge into browsing/discovery or persist captured browser content.
 - Reuse preloaded context, direct identifiers/URLs, caches, and batched operations before adding broader searches or repeated retrieval.

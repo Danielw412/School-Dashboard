@@ -40,22 +40,19 @@ describe("model settings compatibility", () => {
     }
   });
 
-  it("accepts a Codex-reported Luna Reserve ID and falls back per field when it disappears", async () => {
+  it("falls back per field from a saved Luna Reserve choice and rejects it for new saves", async () => {
     const root = await mkdtemp(join(tmpdir(), "school-settings-"));
     const path = join(root, "settings.json");
-    let reserveListed = true;
-    const store = new SettingsStore(path, (model) =>
-      modelSchema.safeParse(model).success || (reserveListed && model === "gpt-6-luna-reserve"));
+    const store = new SettingsStore(path);
     try {
-      const saved = await store.save({
+      const saved = {
         ...structuredClone(defaultSettings),
         featureModels: { ...defaultSettings.featureModels, studyGuide: "gpt-6-luna-reserve", answerKey: "gpt-6.1-sol" },
         prompts: { ...defaultSettings.prompts, answerKey: "Keep this customized answer-key prompt." },
-      });
-      expect(saved.featureModels.studyGuide).toBe("gpt-6-luna-reserve");
-      await expect(store.save({ ...saved, defaultModel: "gpt-99-imaginary" })).rejects.toThrow(/not a model Codex currently supports/u);
+      };
+      await writeFile(path, JSON.stringify(saved), "utf8");
+      await expect(store.save(saved)).rejects.toThrow(/gpt-6-luna-reserve is not a model Codex currently supports/u);
 
-      reserveListed = false;
       const settings = await store.get();
       expect(settings.featureModels).toEqual({ ...defaultSettings.featureModels, answerKey: "gpt-6.1-sol" });
       expect(settings.prompts.answerKey).toBe("Keep this customized answer-key prompt.");

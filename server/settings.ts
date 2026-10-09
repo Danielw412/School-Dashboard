@@ -7,7 +7,7 @@ import { z } from "zod";
 import { env, SETTINGS_PATH } from "./env.js";
 import { DEFAULT_CLAUDE_MODEL, migrateSavedModel, modelNames } from "../src/models.js";
 
-// Built-in models. A Luna Reserve ID reported by Codex is also accepted (see ModelCatalog).
+// Built-in Codex models.
 export const modelSchema = z.enum(modelNames);
 export const modelIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u);
 export type ModelSelectable = (model: string) => boolean;
@@ -111,8 +111,8 @@ export class SettingsStore {
         featureModels: Object.fromEntries(Object.entries(raw.featureModels ?? {})
           .map(([feature, model]) => [feature, migrateSavedModel(model)])),
       });
-      // A saved model Codex no longer lists (such as a withdrawn Luna Reserve ID) falls back to
-      // its default instead of discarding every other saved preference.
+      // A saved model that is no longer selectable (such as a retired Luna Reserve ID) falls back
+      // to its default instead of discarding every other saved preference.
       if (!this.isSelectableModel(settings.defaultModel)) settings.defaultModel = defaultSettings.defaultModel;
       for (const feature of Object.keys(settings.featureModels) as Array<keyof AppSettings["featureModels"]>) {
         if (!this.isSelectableModel(settings.featureModels[feature])) {

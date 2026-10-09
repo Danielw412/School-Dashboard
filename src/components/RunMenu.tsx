@@ -5,7 +5,7 @@ import type { ActiveAssignment } from "../active-work";
 import { useAgentAvailability, useSelectedAgentProvider } from "../agent-status";
 import { schoolApi } from "../api";
 import { type WorkflowFeature, workflows } from "../features";
-import { assistantName } from "../models";
+import { providerLabel } from "../models";
 import { useToast } from "../toast";
 import { Button, Menu } from "./ui";
 
@@ -22,7 +22,7 @@ export function RunMenu({ logicalId, title, active, onChanged, placement = "down
   const provider = useSelectedAgentProvider();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const assistant = assistantName(active?.run?.provider ?? provider);
+  const assistant = providerLabel(active?.run?.provider ?? provider);
 
   const act = async (work: () => Promise<unknown>, done: string) => {
     setBusy(true);

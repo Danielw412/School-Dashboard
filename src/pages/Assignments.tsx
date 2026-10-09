@@ -43,7 +43,7 @@ import {
   parseDueDate,
 } from "../format";
 import { usePolling } from "../hooks/usePolling";
-import { assistantName } from "../models";
+import { providerLabel } from "../models";
 import { useTaskSyncUrl } from "../shell-context";
 import { taskSyncPages } from "../task-sync-links";
 import { useToast } from "../toast";
@@ -152,7 +152,7 @@ export function AssignmentsPage() {
   const filtering = Boolean(query.trim() || classFilter);
   const clearFilters = () => { setQuery(""); setClassFilter(""); };
   const loading = tasksState.loading && !tasksState.data;
-  const assistant = assistantName(provider);
+  const assistant = providerLabel(provider);
 
   return (
     <div className="page--assignments">

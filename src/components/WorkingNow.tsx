@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import type { ActiveAssignment } from "../active-work";
 import { featureLabel, tabForFeature } from "../features";
 import { classMarkText, classTone, formatElapsed } from "../format";
-import { assistantName } from "../models";
+import { providerLabel } from "../models";
 import type { TrackedTask } from "../types";
 import { RunMenu } from "./RunMenu";
 
@@ -16,7 +16,7 @@ export function WorkingNow({ items, tasks, onChanged }: {
   onChanged: () => void;
 }) {
   if (!items.length) return null;
-  const assistant = assistantName(items[0]!.run?.provider);
+  const assistant = providerLabel(items[0]!.run?.provider);
   return <section className="section working" aria-labelledby="working-heading">
     <div className="section-head">
       <h2 id="working-heading">Working now</h2>

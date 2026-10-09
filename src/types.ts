@@ -254,7 +254,7 @@ export type AgentModels = {
     models: Array<{ id: string; displayName: string; hidden: boolean }> | null;
     error: string | null;
   };
-  lunaReserve: { supported: boolean; modelId: string | null; detail: string };
+  detail: string;
   claude?: {
     selectable: SelectableModel[];
     detection: null | {
@@ -292,7 +292,7 @@ export type ConnectionTestResult = {
 export type { ModelName } from "./models";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-// Model IDs are built-in names or a Luna Reserve ID reported by Codex (see /api/agent-models).
+// Codex model IDs are the built-in names; Claude model IDs come from /api/agent-models.
 export type AppSettings = {
   version: 1;
   defaultModel: string;

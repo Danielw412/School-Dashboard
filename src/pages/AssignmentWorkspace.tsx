@@ -59,7 +59,7 @@ import {
 import { classMarkText, classTone, formatDue, formatRelative, formatTokens, isPastDue, latestCompletedRun, latestRun } from "../format";
 import { usePolling } from "../hooks/usePolling";
 import { useSelectableModels } from "../hooks/useSelectableModels";
-import { type AgentProvider, assistantName, effortLabel, effortLevels, modelLabel, providerLabel } from "../models";
+import { type AgentProvider, effortLabel, effortLevels, modelLabel, providerLabel } from "../models";
 import { useTaskSyncUrl } from "../shell-context";
 import { taskSyncPages } from "../task-sync-links";
 import { useToast } from "../toast";
@@ -122,7 +122,7 @@ export function AssignmentWorkspace() {
   const workflow = activeState.data?.workflows.find((item) => item.logicalId === logicalId) ?? null;
   const activeRun = Object.values(latest).find((run) => isActiveRun(run)) ?? null;
   const busy = Boolean(workflow || activeRun || starting);
-  const assistant = assistantName(activeRun?.provider ?? provider);
+  const assistant = providerLabel(activeRun?.provider ?? provider);
 
   const switchTab = (next: WorkspaceTab) => {
     const params = new URLSearchParams(searchParams);
@@ -148,7 +148,7 @@ export function AssignmentWorkspace() {
       });
       await refreshWork();
       switchTab(tabForFeature(feature));
-      toast(`${assistantName(provider)} started on ${featureLabel(feature).toLowerCase()}.`, "info");
+      toast(`${providerLabel(provider)} started on ${featureLabel(feature).toLowerCase()}.`, "info");
     } catch (error) {
       setActionError(error);
     } finally {
@@ -163,7 +163,7 @@ export function AssignmentWorkspace() {
       await schoolApi.startWorkflow({ logicalId, steps });
       await refreshWork();
       switchTab(tabForFeature(steps[0]!));
-      toast(`${assistantName(provider)} started: ${steps.map((step) => featureLabel(step).toLowerCase()).join(", then ")}.`, "info");
+      toast(`${providerLabel(provider)} started: ${steps.map((step) => featureLabel(step).toLowerCase()).join(", then ")}.`, "info");
     } catch (error) {
       setActionError(error);
     } finally {
@@ -233,7 +233,7 @@ export function AssignmentWorkspace() {
       {needsLink ? (
         <div className="shell-notices">
           <Notice tone="info" title="This task has no Canvas assignment link" actions={<Button variant="secondary" size="sm" icon={PencilSimpleIcon} onClick={() => setEditing(true)}>Edit task</Button>}>
-            <p>Add one so {assistantName(provider)} can read the assignment.</p>
+            <p>Add one so {providerLabel(provider)} can read the assignment.</p>
           </Notice>
         </div>
       ) : null}
@@ -488,7 +488,7 @@ function RunButton({ run, label, again = "Run again", icon, starting, disabled, 
 function DirectionsPanel({ run, result, onRun, starting, disabled }: { run?: AgentRun; result?: AgentRun; onRun: () => void; starting: boolean; disabled: boolean }) {
   const provider = useSelectedAgentProvider();
   const output = result ? result.output as AssignmentDirections | null : null;
-  const assistant = assistantName(result?.provider ?? run?.provider ?? provider);
+  const assistant = providerLabel(result?.provider ?? run?.provider ?? provider);
   const hasSources = Boolean(output && (
     output.resources.length ||
     output.sourcesInspected.length ||
@@ -600,7 +600,7 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
         <EmptyState
           icon={SparkleIcon}
           title="Find the assigned problems"
-          body={`${assistantName(provider)} locates the exact questions in the directions, linked files, pages, and PDFs, with the figures they need.`}
+          body={`${providerLabel(provider)} locates the exact questions in the directions, linked files, pages, and PDFs, with the figures they need.`}
           action={button}
         />
       </div> : null}
@@ -720,7 +720,7 @@ function AnswerKeyPanel({ run, result, extractionReady: ready, onRun, starting, 
       <EmptyState
         icon={SparkleIcon}
         title="Write the answer key"
-        body={`${assistantName(provider)} solves each extracted problem, final answer first, with a worked solution underneath.`}
+        body={`${providerLabel(provider)} solves each extracted problem, final answer first, with a worked solution underneath.`}
         action={button}
       />
     </div> : null}

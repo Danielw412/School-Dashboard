@@ -232,7 +232,7 @@ function SelectControl({ label, value, options, onChange }: { label: string; val
 }
 
 const providerBlurbs: Record<AgentProvider, string> = {
-  codex: "Shows up as Luna. Uses the ChatGPT sign-in of the machine that runs it.",
+  codex: "Uses the ChatGPT sign-in of the machine that runs it.",
   claude: "Uses the Claude Code sign-in of the machine that runs it.",
 };
 
@@ -291,7 +291,7 @@ function AgentsSection({ settings, update, agents, diagnostics, onAgents }: {
             ))}
           </div>
         </Disclosure>
-        <p className="fine-print">Luna Reserve: {detected?.lunaReserve.detail ?? "Checking the agent machine's Codex model list."}</p>
+        <p className="fine-print">{detected?.detail ?? "Checking the agent machine's Codex model list."}</p>
       </div>
     </>,
     claude: <>
@@ -308,7 +308,7 @@ function AgentsSection({ settings, update, agents, diagnostics, onAgents }: {
   };
 
   return <>
-    <PaneHead title="Agents">Codex (as Luna) or Claude works on your assignments. Changes apply to new runs; runs already going keep their settings.</PaneHead>
+    <PaneHead title="Agents">Codex or Claude works on your assignments. Changes apply to new runs; runs already going keep their settings.</PaneHead>
 
     {providers.length > 1 ? (
       <div className="choice-grid" role="radiogroup" aria-label="Agent for new runs">

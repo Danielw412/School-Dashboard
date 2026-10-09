@@ -15,7 +15,7 @@ Canvas coursework, and runs structured agent workflows with Codex or Claude.
 - One design system shared with Canvas Task Sync's control center, plus links into it (the class's
   sync settings, Google connection, and control center). The links only open Task Sync's own pages;
   Task Sync needs nothing from this app.
-- A **Get Directions** workflow where Luna inspects the assignment, submission requirements,
+- A **Get Directions** workflow where the agent inspects the assignment, submission requirements,
   module neighborhood, and relevant Canvas resources, then produces a concise structured summary.
 - Exact problem extraction with Markdown/LaTeX, page-level provenance, PDF text-layer inspection,
   batched Poppler rendering, and optional image crops for diagrams or figures.
@@ -200,14 +200,14 @@ Until then the **Server** option shows as unavailable. `install-server.sh` repor
 state after each deploy. **Diagnostics** shows both targets, and **Test connections** checks the
 selected one (the other is reported as optional).
 
-### Models and Luna Reserve
+### Models
 
-Each machine that can run Codex (the laptop worker, and the dashboard process itself) reports its
-Codex app-server `model/list`, including hidden models: the laptop when it connects and every 30
-minutes, the dashboard at startup. The list from the machine selected under **Run agents on**
-decides what is selectable; **Settings -> Agents -> Check models** asks that machine for a fresh list. A model whose ID or display name names Luna
-Reserve (for example `gpt-6-luna-reserve`) becomes selectable under exactly the ID Codex reports.
-Nothing else is assumed to be Luna Reserve. Settings shows why it is unavailable otherwise.
+Codex runs use the built-in models: GPT-6 Luna, GPT-6.1 Sol, and GPT-5.6 Sol. Each machine that can
+run Codex (the laptop worker, and the dashboard process itself) reports its Codex app-server
+`model/list`: the laptop when it connects and every 30 minutes, the dashboard at startup. The list
+from the machine selected under **Run agents on** decides which reasoning levels each model offers;
+**Settings -> Agents -> Check models** asks that machine for a fresh list. A saved model that is no
+longer offered (such as a Luna Reserve choice from before it was removed) falls back to its default.
 
 ### Choosing Codex or Claude, and the effort level
 
@@ -274,10 +274,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\remove-windows-startup.ps1
 
 ## Structured Canvas and document tools
 
-Each Luna run receives a short-lived, bearer-authenticated Streamable HTTP MCP connection to the
+Each agent run receives a short-lived, bearer-authenticated Streamable HTTP MCP connection to the
 dashboard's assignment-scoped read-only tools. Canvas operations are structured calls, so Windows
 shell quoting, JSON escaping, and PowerShell language mode are not part of the retrieval path.
-The legacy loopback script endpoint remains available for compatibility, but Luna does not use it.
+The legacy loopback script endpoint remains available for compatibility, but agents do not use it.
 On Windows, that compatibility helper is invoked through `canvas-tool.ps1` with named parameters;
 it builds the JSON request internally, so arguments containing spaces, quotes, punctuation, URLs,
 or long search phrases never pass through PowerShell as JSON.
@@ -291,7 +291,7 @@ batch render / batch crop / semantic PDF crop
 ```
 
 When an already-known Canvas link points to an authenticated Google Doc or another course resource
-that the Canvas API cannot read, Luna can ask the paired Canvas Task Sync Chrome extension for a
+that the Canvas API cannot read, the agent can ask the paired Canvas Task Sync Chrome extension for a
 bounded readable capture. It cannot use the extension for browsing or discovery. Recent captures,
 successful session reads, and structured authentication/access failures are reused within the run.
 If the preloaded task and context already answer Directions, all further retrieval tools are hidden.

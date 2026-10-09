@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { normalizeRpcModels } from "./codex-models.js";
 import { ModelCatalog } from "./model-catalog.js";
-import { findLunaReserveModel, modelLabel } from "../src/models.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -39,63 +38,54 @@ describe("Codex model catalog", () => {
     expect(() => normalizeRpcModels({})).toThrow();
   });
 
-  it("does not treat an unrelated reserve model as Luna Reserve", async () => {
+  it("offers only the built-in models, with the reasoning levels Codex lists for them", async () => {
     const catalog = new ModelCatalog(await catalogPath());
-    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: installedModels, error: null });
-
-    expect(findLunaReserveModel(installedModels)).toBeNull();
-    expect(catalog.isSelectable("gpt-reserve")).toBe(false);
-    const described = catalog.describe();
-    expect(described.lunaReserve.supported).toBe(false);
-    expect(described.lunaReserve.detail).toMatch(/does not list a Luna Reserve model among 3 models/u);
-    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
-    expect(catalog.isSelectable("gpt-6.1-sol")).toBe(true);
-    expect(catalog.isSelectable("gpt-6-sol")).toBe(false);
-  });
-
-  it("makes a detected Luna Reserve selectable under the exact ID Codex reports, and remembers it", async () => {
-    const path = await catalogPath();
-    const catalog = new ModelCatalog(path);
     const withReserve = [
       ...installedModels,
       { id: "gpt-6-luna-reserve", displayName: "GPT-6-Luna-Reserve", hidden: false, isDefault: false, reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
     ];
-    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.157.0", models: withReserve, error: null });
+    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: withReserve, error: null });
 
-    expect(catalog.isSelectable("gpt-6-luna-reserve")).toBe(true);
-    expect(catalog.describe().selectable.at(-1)).toEqual({ id: "gpt-6-luna-reserve", label: "Luna Reserve", efforts: ["high"] });
-    expect(modelLabel("gpt-6-luna-reserve")).toBe("GPT-6 Luna Reserve");
+    const described = catalog.describe();
+    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
+    expect(described.selectable[0]).toEqual({ id: "gpt-6-luna", label: "GPT-6 Luna", efforts: ["medium", "xhigh"] });
+    expect(described.detail).toBe("Codex lists 4 models (DESKTOP-TQMTS8O, Codex 0.156.0).");
+    expect(catalog.isSelectable("gpt-6.1-sol")).toBe(true);
+    for (const model of ["gpt-6-luna-reserve", "gpt-reserve", "gpt-6-astra", "gpt-6-sol"]) {
+      expect(catalog.isSelectable(model)).toBe(false);
+    }
+  });
 
-    // A failed later probe keeps the last known list instead of withdrawing the model.
+  it("keeps the last model list through a failed check and across restarts", async () => {
+    const path = await catalogPath();
+    const catalog = new ModelCatalog(path);
+    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.157.0", models: installedModels, error: null });
     await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.157.0", models: null, error: "app-server timed out" });
+
     const reloaded = new ModelCatalog(path);
     await reloaded.load();
-    expect(reloaded.isSelectable("gpt-6-luna-reserve")).toBe(true);
-    expect(findLunaReserveModel([{ id: "luna_reserve", displayName: "x" }])).toBe("luna_reserve");
-    expect(findLunaReserveModel([{ id: "gpt-7-x", displayName: "Luna Reserve" }])).toBe("gpt-7-x");
+    expect(reloaded.describe().selectable[0]!.efforts).toEqual(["medium", "xhigh"]);
+    expect(reloaded.describe().detection?.error).toBe("app-server timed out");
   });
 
   it("follows the model list of the machine new runs are sent to", async () => {
     const path = await catalogPath();
     let target: "local" | "worker" = "worker";
     const catalog = new ModelCatalog(path, { activeTarget: () => target });
-    const withReserve = [
-      ...installedModels,
-      { id: "gpt-6-luna-reserve", displayName: "GPT-6-Luna-Reserve", hidden: false, isDefault: false, reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
-    ];
-    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: withReserve, error: null, target: "worker" });
-    await catalog.record({ source: "latitude7370", codexVersion: "0.156.0", models: installedModels, error: null, target: "local" });
+    const serverModels = installedModels.map((model) => model.id === "gpt-6-luna" ? { ...model, reasoningEfforts: ["high"] } : model);
+    await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: installedModels, error: null, target: "worker" });
+    await catalog.record({ source: "latitude7370", codexVersion: "0.156.0", models: serverModels, error: null, target: "local" });
 
-    expect(catalog.isSelectable("gpt-6-luna-reserve")).toBe(true);
     expect(catalog.describe().detection?.source).toBe("DESKTOP-TQMTS8O");
+    expect(catalog.describe().selectable[0]!.efforts).toEqual(["medium", "xhigh"]);
     target = "local";
-    expect(catalog.isSelectable("gpt-6-luna-reserve")).toBe(false);
     expect(catalog.describe().detection?.source).toBe("latitude7370");
+    expect(catalog.describe().selectable[0]!.efforts).toEqual(["high"]);
 
     const reloaded = new ModelCatalog(path, { activeTarget: () => "worker" });
     await reloaded.load();
     expect(reloaded.hasReport("local")).toBe(true);
-    expect(reloaded.isSelectable("gpt-6-luna-reserve")).toBe(true);
+    expect(reloaded.describe().detection?.source).toBe("DESKTOP-TQMTS8O");
   });
 
   it("reads a pre-switch single-machine model list as the target that reported it", async () => {
@@ -111,17 +101,13 @@ describe("Codex model catalog", () => {
     await catalog.load();
     expect(catalog.hasReport("worker")).toBe(true);
     expect(catalog.hasReport("local")).toBe(false);
-    expect(catalog.describe().lunaReserve.detail).toBe("Waiting for the agent machine to report its Codex model list.");
+    expect(catalog.describe().detail).toBe("Waiting for the agent machine to report its Codex model list.");
   });
 
   it("explains when no model list has been reported yet", async () => {
     const catalog = new ModelCatalog(await catalogPath());
     await catalog.load();
-    expect(catalog.describe().lunaReserve).toEqual({
-      supported: false,
-      modelId: null,
-      detail: "Waiting for the agent machine to report its Codex model list.",
-    });
+    expect(catalog.describe().detail).toBe("Waiting for the agent machine to report its Codex model list.");
   });
 });
 

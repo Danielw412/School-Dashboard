@@ -2,13 +2,9 @@
 export const agentProviders = ["codex", "claude"] as const;
 export type AgentProvider = typeof agentProviders[number];
 
-export function providerLabel(provider: AgentProvider): string {
+// Runs saved before Claude support have no provider; they ran on Codex.
+export function providerLabel(provider: AgentProvider | undefined): string {
   return provider === "claude" ? "Claude" : "Codex";
-}
-
-// How the dashboard refers to the assistant doing a run: Luna for Codex runs, Claude for Claude.
-export function assistantName(provider: AgentProvider | undefined): string {
-  return provider === "claude" ? "Claude" : "Luna";
 }
 
 // Effort levels both agents accept. "default" in the quick switch keeps the configured behavior
@@ -42,16 +38,4 @@ export function migrateSavedModel(model: unknown): unknown {
   if (model === "gpt-6-sol") return "gpt-6.1-sol";
   if (model === "gpt-5.6-luna" || model === "gpt-5.6-terra") return "gpt-6-luna";
   return model;
-}
-
-export const LUNA_RESERVE_LABEL = "Luna Reserve";
-
-// Luna Reserve has no published identifier. It becomes selectable only when the laptop's Codex
-// app-server lists a model whose ID or display name names it (for example "gpt-6-luna-reserve");
-// that listed ID is what runs use. Other "reserve" models are not assumed to be Luna Reserve.
-export function findLunaReserveModel(
-  models: ReadonlyArray<{ id: string; displayName: string }>,
-): string | null {
-  const pattern = /luna[\s._-]*reserve|reserve[\s._-]*luna/iu;
-  return models.find((model) => pattern.test(model.id) || pattern.test(model.displayName))?.id ?? null;
 }

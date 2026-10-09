@@ -12,18 +12,12 @@ import {
   codexModelInfoSchema,
   type CodexModelInfo,
 } from "./worker-protocol.js";
-import {
-  DEFAULT_CLAUDE_MODEL,
-  effortLevels,
-  findLunaReserveModel,
-  LUNA_RESERVE_LABEL,
-  modelLabel,
-  modelNames,
-} from "../src/models.js";
+import { DEFAULT_CLAUDE_MODEL, effortLevels, modelLabel, modelNames } from "../src/models.js";
 
 // The Codex and Claude model lists each machine that can run agents (the dashboard itself and
-// the laptop worker) reported most recently. The selected agent target's lists decide which models
-// are selectable. Lists are persisted so model choices stay stable while the laptop is offline or
+// the laptop worker) reported most recently. Codex runs use the built-in models, with the
+// reasoning levels the selected agent target's Codex lists for them; its Claude list decides which
+// Claude models are selectable. Lists are persisted so model choices stay stable while the laptop is offline or
 // the server restarts.
 const snapshotSchema = z.object({
   detectedAt: z.string(),
@@ -60,7 +54,7 @@ export type SelectableModel = { id: string; label: string; efforts: string[] };
 export type AgentModelsResponse = {
   selectable: SelectableModel[];
   detection: ModelCatalogSnapshot | null;
-  lunaReserve: { supported: boolean; modelId: string | null; detail: string };
+  detail: string;
   claude: { selectable: SelectableModel[]; detection: ClaudeCatalogSnapshot | null; detail: string };
 };
 
@@ -133,12 +127,7 @@ export class ModelCatalog {
     return Boolean(this.snapshots[target]);
   }
 
-  lunaReserveModelId(): string | null {
-    return findLunaReserveModel(this.snapshot()?.models ?? []);
-  }
-
-  isSelectable = (model: string): boolean =>
-    (modelNames as readonly string[]).includes(model) || model === this.lunaReserveModelId();
+  isSelectable = (model: string): boolean => (modelNames as readonly string[]).includes(model);
 
   // Any model a machine's Claude Code listed stays valid, so a Claude choice made while one
   // machine is selected survives switching to the other before it has reported.
@@ -147,29 +136,23 @@ export class ModelCatalog {
     Object.values(this.claudeSnapshots).some((snapshot) => snapshot?.models?.some((item) => item.id === model));
 
   describe(): AgentModelsResponse {
-    const lunaReserve = this.lunaReserveModelId();
     const snapshot = this.snapshot();
     const checked = snapshot
       ? `${snapshot.source}${snapshot.codexVersion ? `, Codex ${snapshot.codexVersion}` : ""}`
       : null;
     let detail: string;
-    if (lunaReserve) {
-      detail = `Codex lists Luna Reserve as ${lunaReserve} (${checked}).`;
-    } else if (!snapshot?.models) {
+    if (!snapshot?.models) {
       detail = snapshot?.error
         ? `Could not read the Codex model list (${checked}): ${snapshot.error}`
         : "Waiting for the agent machine to report its Codex model list.";
     } else {
-      detail = `Not available: the installed Codex (${checked}) does not list a Luna Reserve model among ${snapshot.models.length} models, including hidden ones.`;
+      detail = `Codex lists ${snapshot.models.length} models (${checked}).`;
     }
     const codexEfforts = (id: string) => snapshot?.models?.find((model) => model.id === id)?.reasoningEfforts ?? [...effortLevels];
     return {
-      selectable: [
-        ...modelNames.map((id) => ({ id, label: modelLabel(id), efforts: codexEfforts(id) })),
-        ...(lunaReserve ? [{ id: lunaReserve, label: LUNA_RESERVE_LABEL, efforts: codexEfforts(lunaReserve) }] : []),
-      ],
+      selectable: modelNames.map((id) => ({ id, label: modelLabel(id), efforts: codexEfforts(id) })),
       detection: snapshot,
-      lunaReserve: { supported: Boolean(lunaReserve), modelId: lunaReserve, detail },
+      detail,
       claude: this.describeClaude(),
     };
   }

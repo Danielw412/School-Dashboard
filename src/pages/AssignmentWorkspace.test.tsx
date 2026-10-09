@@ -87,7 +87,7 @@ describe("AssignmentWorkspace directions", () => {
     apiMocks.activeWork.mockResolvedValue({ workflows: [], runs: [] });
   });
 
-  it("does not expose raw Canvas directions and starts a Luna directions run", async () => {
+  it("does not expose raw Canvas directions and starts a Codex directions run", async () => {
     const user = userEvent.setup();
     renderWorkspace();
 
@@ -107,7 +107,7 @@ describe("AssignmentWorkspace directions", () => {
     }));
   });
 
-  it("renders only the structured Luna directions result", async () => {
+  it("renders only the structured directions result", async () => {
     apiMocks.runs.mockResolvedValue([directionsRun()]);
     renderWorkspace();
 
@@ -118,7 +118,7 @@ describe("AssignmentWorkspace directions", () => {
     expect(screen.getByText("View sources").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("shows safe live Luna activity and elapsed time", async () => {
+  it("shows safe live agent activity and elapsed time", async () => {
     apiMocks.runs.mockResolvedValue([{
       ...directionsRun(),
       status: "running",
@@ -147,7 +147,7 @@ describe("AssignmentWorkspace directions", () => {
     expect(screen.queryByText(/chain of thought/i)).not.toBeInTheDocument();
   });
 
-  it("cancels the active Luna run", async () => {
+  it("cancels the active Codex run", async () => {
     apiMocks.runs.mockResolvedValue([{
       ...directionsRun(),
       status: "running",
@@ -157,7 +157,7 @@ describe("AssignmentWorkspace directions", () => {
     const user = userEvent.setup();
     renderWorkspace();
 
-    await user.click(await screen.findByRole("button", { name: "Cancel Luna" }));
+    await user.click(await screen.findByRole("button", { name: "Cancel Codex" }));
 
     await waitFor(() => expect(apiMocks.cancelRun).toHaveBeenCalledWith("directions-run"));
   });
@@ -373,7 +373,7 @@ describe("AssignmentWorkspace agent workflow", () => {
     expect(screen.getByText("Reading page 3 of the packet")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run all three" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Cancel Luna" }));
+    await user.click(screen.getByRole("button", { name: "Cancel Codex" }));
     await waitFor(() => expect(apiMocks.cancelWorkflow).toHaveBeenCalledWith("workflow-1"));
   });
 
