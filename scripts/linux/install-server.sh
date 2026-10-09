@@ -111,7 +111,7 @@ fi
 # uses this user's own ~/.codex sign-in (never the laptop's).
 codex_bin="$(find "$APP_DIR/node_modules/@openai" -path '*/vendor/*/codex' -type f 2>/dev/null | head -n 1)"
 if [[ -n "$codex_bin" ]] && "$codex_bin" login status >/dev/null 2>&1; then
-  log "Codex is signed in on this server, so agents can also run here (switch in the dashboard sidebar)"
+  log "Codex is signed in on this server, so agents can also run here (use the Server/Laptop switch in the dashboard's top bar)"
 else
   log "note: Codex is not signed in on this server; the Server agent option stays unavailable until you run"
   log "      ${codex_bin:-node_modules/@openai/codex-linux-x64/vendor/*/bin/codex} login --device-auth"
