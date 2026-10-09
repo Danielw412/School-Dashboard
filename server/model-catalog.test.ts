@@ -47,11 +47,11 @@ describe("Codex model catalog", () => {
     await catalog.record({ source: "DESKTOP-TQMTS8O", codexVersion: "0.156.0", models: withReserve, error: null });
 
     const described = catalog.describe();
-    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
+    expect(described.selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol"]);
     expect(described.selectable[0]).toEqual({ id: "gpt-6-luna", label: "GPT-6 Luna", efforts: ["medium", "xhigh"] });
     expect(described.detail).toBe("Codex lists 4 models (DESKTOP-TQMTS8O, Codex 0.156.0).");
     expect(catalog.isSelectable("gpt-6.1-sol")).toBe(true);
-    for (const model of ["gpt-6-luna-reserve", "gpt-reserve", "gpt-6-astra", "gpt-6-sol"]) {
+    for (const model of ["gpt-6-luna-reserve", "gpt-reserve", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"]) {
       expect(catalog.isSelectable(model)).toBe(false);
     }
   });
@@ -161,7 +161,7 @@ describe("Claude model catalog", () => {
     const reloaded = new ModelCatalog(path, { activeTarget: () => "local" });
     await reloaded.load();
     expect(reloaded.describe().claude.selectable.map((model) => model.id)).toContain("claude-opus-5-5");
-    expect(reloaded.describe().selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]);
+    expect(reloaded.describe().selectable.map((model) => model.id)).toEqual(["gpt-6-luna", "gpt-6.1-sol"]);
   });
 
   it("reads catalogs saved before Claude support", async () => {

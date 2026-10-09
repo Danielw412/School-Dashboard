@@ -6,7 +6,7 @@ import { defaultSettings, modelSchema, SettingsStore } from "./settings.js";
 import { modelLabel } from "../src/models.js";
 
 describe("model settings compatibility", () => {
-  it.each(["gpt-5.6-terra", "gpt-6-sol"])("migrates retired saved %s preferences without losing custom settings", async (defaultModel) => {
+  it.each(["gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"])("migrates retired saved %s preferences without losing custom settings", async (defaultModel) => {
     const root = await mkdtemp(join(tmpdir(), "school-settings-"));
     const path = join(root, "settings.json");
     try {
@@ -23,9 +23,9 @@ describe("model settings compatibility", () => {
       await writeFile(path, JSON.stringify(legacy));
       const store = new SettingsStore(path);
       const settings = await store.get();
-      expect(settings.defaultModel).toBe(defaultModel === "gpt-6-sol" ? "gpt-6.1-sol" : "gpt-6-luna");
+      expect(settings.defaultModel).toBe(defaultModel.endsWith("-sol") ? "gpt-6.1-sol" : "gpt-6-luna");
       expect(settings.featureModels).toEqual({
-        problemExtraction: "gpt-6-luna", answerKey: "gpt-5.6-sol",
+        problemExtraction: "gpt-6-luna", answerKey: "gpt-6.1-sol",
         studyGuide: "gpt-6-luna", assignmentNavigation: "gpt-6.1-sol",
       });
       expect(settings.prompts).toEqual(legacy.prompts);
@@ -62,8 +62,8 @@ describe("model settings compatibility", () => {
   });
 
   it("accepts verified current IDs and rejects retired models for new runs", () => {
-    for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-sol"]) expect(modelSchema.parse(model)).toBe(model);
-    for (const model of ["gpt-6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "GPT-6 Luna"]) expect(modelSchema.safeParse(model).success).toBe(false);
+    for (const model of ["gpt-6-luna", "gpt-6.1-sol"]) expect(modelSchema.parse(model)).toBe(model);
+    for (const model of ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "GPT-6 Luna"]) expect(modelSchema.safeParse(model).success).toBe(false);
     expect(modelLabel("gpt-6-luna")).toBe("GPT-6 Luna");
     expect(modelLabel("gpt-6-sol")).toBe("GPT-6 Sol");
     expect(modelLabel("gpt-6.1-sol")).toBe("GPT-6.1 Sol");
