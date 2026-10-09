@@ -1,9 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentRun, AssignmentContext, ProblemExtraction, TrackedTask } from "../types";
+import { AgentStatusContext } from "../agent-status";
+import type { ActiveWork, AgentRun, AssignmentContext, ProblemExtraction, TrackedTask } from "../types";
 import { AssignmentWorkspace } from "./AssignmentWorkspace";
 
 const apiMocks = vi.hoisted(() => ({
@@ -13,6 +15,10 @@ const apiMocks = vi.hoisted(() => ({
   runProgress: vi.fn(),
   startRun: vi.fn(),
   cancelRun: vi.fn(),
+  activeWork: vi.fn(),
+  startWorkflow: vi.fn(),
+  cancelWorkflow: vi.fn(),
+  updateTask: vi.fn(),
 }));
 
 vi.mock("../api", async (importOriginal) => ({ ...await importOriginal<typeof import("../api")>(), schoolApi: apiMocks }));
@@ -78,6 +84,7 @@ describe("AssignmentWorkspace directions", () => {
     });
     apiMocks.startRun.mockResolvedValue({ id: "new-run" });
     apiMocks.cancelRun.mockResolvedValue({ id: "directions-run", status: "cancelled" });
+    apiMocks.activeWork.mockResolvedValue({ workflows: [], runs: [] });
   });
 
   it("does not expose raw Canvas directions and starts a Luna directions run", async () => {
@@ -315,12 +322,188 @@ describe("AssignmentWorkspace directions", () => {
   });
 });
 
-function renderWorkspace(search = "") {
-  return render(
-    <MemoryRouter initialEntries={[`/assignment/${encodeURIComponent(task.logical_id)}${search}`]}>
-      <Routes><Route path="/assignment/:logicalId" element={<AssignmentWorkspace />} /></Routes>
-    </MemoryRouter>,
-  );
+
+describe("AssignmentWorkspace agent workflow", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMocks.task.mockResolvedValue(task);
+    apiMocks.context.mockResolvedValue(context);
+    apiMocks.runs.mockResolvedValue([]);
+    apiMocks.activeWork.mockResolvedValue({ workflows: [], runs: [] });
+    apiMocks.startWorkflow.mockResolvedValue({ id: "workflow-1" });
+    apiMocks.cancelWorkflow.mockResolvedValue({ id: "workflow-1", status: "cancelled" });
+    apiMocks.updateTask.mockResolvedValue(task);
+  });
+
+  it("leads with the Canvas link, submission details, and one action to run everything", async () => {
+    const user = userEvent.setup();
+    renderWorkspace();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Worksheet 7" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open in Canvas/u })).toHaveAttribute("href", context.assignment.html_url);
+    expect(screen.getByText("File upload (PDF)")).toBeInTheDocument();
+    expect(screen.getByText("10 points")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Run all three" }));
+    await waitFor(() => expect(apiMocks.startWorkflow).toHaveBeenCalledWith({
+      logicalId: task.logical_id,
+      steps: ["directions", "problemExtraction", "answerKey"],
+    }));
+  });
+
+  it("runs part of the workflow from the menu", async () => {
+    const user = userEvent.setup();
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "Run part of the workflow" }));
+    await user.click(screen.getByRole("menuitem", { name: "Problems and answer key" }));
+    await waitFor(() => expect(apiMocks.startWorkflow).toHaveBeenCalledWith({
+      logicalId: task.logical_id,
+      steps: ["problemExtraction", "answerKey"],
+    }));
+  });
+
+  it("shows the running workflow's steps and cancels it", async () => {
+    const user = userEvent.setup();
+    apiMocks.activeWork.mockResolvedValue(runningWorkflow());
+    renderWorkspace();
+
+    const steps = await screen.findByRole("list", { name: "Workflow steps" });
+    expect(steps).toHaveTextContent("Directions (done)");
+    expect(steps).toHaveTextContent("Assigned problems (running)");
+    expect(screen.getByText("Reading page 3 of the packet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run all three" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel Luna" }));
+    await waitFor(() => expect(apiMocks.cancelWorkflow).toHaveBeenCalledWith("workflow-1"));
+  });
+
+  it("disables agent work while agents are offline but keeps Canvas available", async () => {
+    const message = "Agents are unavailable: the laptop agent worker (DESKTOP-TQMTS8O) is offline.";
+    renderWorkspace("", (children) => (
+      <AgentStatusContext.Provider value={{ mode: "worker", available: false, message, worker: null, activeJobs: 0, queuedJobs: 0 }}>{children}</AgentStatusContext.Provider>
+    ));
+
+    const button = await screen.findByRole("button", { name: "Run all three" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", message);
+    expect(screen.getByText("Agents are offline right now.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get directions" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: /Open in Canvas/u })).toBeInTheDocument();
+  });
+
+  it("keeps agent actions for tracked tasks without a direct Canvas URL", async () => {
+    const agendaTask = {
+      ...task,
+      logical_id: "english:agenda:crime-and-punishment",
+      display_title: "Bring copy of Crime and Punishment",
+      source: { key: "agenda:1", type: "agenda", anchor: "agenda:1", text: "Bring copy of Crime and Punishment" },
+      canvas: { course_id: "2", assignment_id: null, assignment_url: null },
+      manually_managed: false,
+    };
+    apiMocks.task.mockResolvedValue(agendaTask);
+    render(
+      <MemoryRouter initialEntries={[`/assignment/${encodeURIComponent(agendaTask.logical_id)}`]}>
+        <Routes><Route path="/assignment/:logicalId" element={<AssignmentWorkspace />} /></Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Run all three" })).toBeEnabled();
+    expect(screen.queryByText("This task has no Canvas assignment link")).not.toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.context).toHaveBeenCalledWith(agendaTask.logical_id));
+  });
+
+  it("asks for a Canvas link on a manual task without one", async () => {
+    apiMocks.task.mockResolvedValue({ ...task, manually_managed: true, canvas: {}, source: { ...task.source, assignment_url: null } });
+    apiMocks.context.mockResolvedValue({ ...context, assignment: null });
+    renderWorkspace();
+    expect(await screen.findByText("This task has no Canvas assignment link")).toBeInTheDocument();
+  });
+
+  it("doesn't ask for a link when Canvas found the manual task's assignment", async () => {
+    apiMocks.task.mockResolvedValue({ ...task, manually_managed: true, canvas: {}, source: { ...task.source, assignment_url: null } });
+    renderWorkspace();
+    expect(await screen.findByRole("link", { name: /Open in Canvas/u })).toBeInTheDocument();
+    expect(screen.queryByText("This task has no Canvas assignment link")).not.toBeInTheDocument();
+  });
+
+  it("edits the task from the actions menu", async () => {
+    const user = userEvent.setup();
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit task" }));
+    const name = screen.getByLabelText("Task name");
+    await user.clear(name);
+    await user.type(name, "Worksheet 7 revised");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(apiMocks.updateTask).toHaveBeenCalledWith(
+      task.logical_id,
+      expect.objectContaining({ title: "Worksheet 7 revised" }),
+    ));
+  });
+
+  it("keeps the previous result in view when the latest run fails", async () => {
+    apiMocks.runs.mockResolvedValue([
+      { ...directionsRun(), id: "failed-run", status: "failed", output: null, error: "Codex exited with code 1", completedAt: "2026-08-29T12:00:00Z" },
+      directionsRun(),
+    ]);
+    renderWorkspace();
+
+    expect(await screen.findByText("The latest run didn't finish. This is the previous result.")).toBeInTheDocument();
+    expect(screen.getByText("Codex exited with code 1")).toBeInTheDocument();
+    expect(screen.getByText("Start with the packet on page 3.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+  });
+
+  it("keeps the answer key behind a completed problem extraction", async () => {
+    const user = userEvent.setup();
+    renderWorkspace("?tab=answers");
+    expect(await screen.findByText("Find the assigned problems first")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Go to assigned problems" }));
+    expect(screen.getByRole("tab", { name: /Assigned problems/u })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
+function runningWorkflow(): ActiveWork {
+  return {
+    workflows: [{
+      id: "workflow-1",
+      logicalId: task.logical_id,
+      taskTitle: task.display_title,
+      courseName: task.course.name,
+      status: "running",
+      steps: [
+        { feature: "directions", status: "completed", runId: "directions-run" },
+        { feature: "problemExtraction", status: "running", runId: "problem-run" },
+        { feature: "answerKey", status: "pending", runId: null },
+      ],
+      currentStep: 1,
+      currentRunId: "problem-run",
+      startedAt: "2026-08-31T20:00:00Z",
+      completedAt: null,
+      error: null,
+    }],
+    runs: [{
+      run: { ...problemRun(), status: "running", output: null, completedAt: null },
+      progress: {
+        runId: "problem-run",
+        status: "running",
+        startedAt: "2026-08-31T20:01:00Z",
+        completedAt: null,
+        serverNow: "2026-08-31T20:01:30Z",
+        elapsedMs: 30_000,
+        current: "Reading page 3 of the packet",
+        entries: [],
+      },
+    }],
+  };
+}
+
+function renderWorkspace(search = "", wrapper?: (children: ReactNode) => ReactNode) {
+  const tree = <MemoryRouter initialEntries={[`/assignment/${encodeURIComponent(task.logical_id)}${search}`]}>
+    <Routes><Route path="/assignment/:logicalId" element={<AssignmentWorkspace />} /></Routes>
+  </MemoryRouter>;
+  return render(wrapper ? wrapper(tree) : tree);
 }
 
 function directionsRun(): AgentRun {

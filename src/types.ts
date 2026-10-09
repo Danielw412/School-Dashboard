@@ -1,6 +1,5 @@
 import type { AgentProvider, EffortChoice } from "./models";
 
-
 export type TrackedTask = {
   logical_id: string;
   course: {
@@ -313,8 +312,15 @@ export type AppSettings = {
     assignmentNavigation: string;
   };
   testQuestionPredictor: { enabled: boolean };
-  connections: { taskSyncApiBase: string; canvasBaseUrl: string };
+  // taskSyncDashboardUrl: where links into Task Sync open; "" means the API base's origin.
+  connections: { taskSyncApiBase: string; canvasBaseUrl: string; taskSyncDashboardUrl: string };
   cache: { ttlMinutes: number; maxMegabytes: number; workspaceRetentionHours: number };
+};
+
+export type HealthStatus = {
+  status: "ready" | "degraded";
+  taskSync: { connected: boolean; error?: string };
+  canvas: { connected: boolean; name?: string; error?: string };
 };
 
 export type TaskSyncTunnelStatus = {

@@ -23,3 +23,8 @@ export function selectedAgentTarget(agents: AgentExecutionStatus | null): AgentE
 export function useSelectedAgentProvider(): AgentProvider {
   return useContext(AgentStatusContext)?.provider ?? "codex";
 }
+
+// Whether there is anything to switch: a second agent or a second machine.
+export function hasAgentChoices(agents: AgentExecutionStatus | null): boolean {
+  return Boolean(agents && ((agents.providers?.length ?? 0) > 1 || (agents.targets?.length ?? 0) > 1));
+}

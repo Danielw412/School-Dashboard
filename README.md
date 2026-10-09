@@ -7,8 +7,14 @@ Canvas coursework, and runs structured agent workflows with Codex or Claude.
 
 ## What is included
 
-- Incomplete work grouped by due date or class, backed by `GET /api/v1/tasks?completed=false` and
-  shown only when Google Tasks explicitly reports `needsAction`.
+- Incomplete work grouped by due date or class, as a list or as tiles, backed by
+  `GET /api/v1/tasks?completed=false` and shown only when Google Tasks explicitly reports
+  `needsAction`. Each assignment has a **Run** menu (the full workflow, part of it, or a study
+  guide), and a **Working now** section shows each running agent's steps, current activity, and
+  elapsed time, with a way to stop it.
+- One design system shared with Canvas Task Sync's control center, plus links into it (the class's
+  sync settings, Google connection, and control center). The links only open Task Sync's own pages;
+  Task Sync needs nothing from this app.
 - A **Get Directions** workflow where Luna inspects the assignment, submission requirements,
   module neighborhood, and relevant Canvas resources, then produces a concise structured summary.
 - Exact problem extraction with Markdown/LaTeX, page-level provenance, PDF text-layer inspection,
@@ -21,14 +27,15 @@ Canvas coursework, and runs structured agent workflows with Codex or Claude.
   historical runs retain their original model IDs.
   GPT-6.1 Sol uses low effort for saved none/minimal choices and requires the bundled Codex 0.159.1
   or newer.
-- Claude, through the Claude Agent SDK, as an alternative agent for every workflow. An **Agent**
-  switch in the sidebar picks Codex or Claude, and an **Effort** menu next to it sets the effort
-  level for the selected agent.
+- Claude, through the Claude Agent SDK, as an alternative agent for every workflow. The top bar's
+  agent menu picks Codex or Claude, and its **Effort** menu sets the effort level for the selected
+  agent.
 - A Test Question Predictor adapter that reports `unavailable` unless a real local command is
   configured.
 - Explicitly confirmed Canvas text, URL, and file submissions.
-- A **Run agents on** switch in the sidebar that sends new runs to the Linux server or to the
+- A **Server**/**Laptop** switch in the top bar that sends new runs to the Linux server or to the
   Windows laptop, with the same scoped tools either way.
+- Per-class instructions for each agent feature on the **Classes** page.
 - Live per-run elapsed time and safe action summaries, plus local settings, cache controls, recent
   runs, Canvas requests, downloads, usage, raw structured output, and redacted errors. Private model
   reasoning text is neither requested nor persisted.
@@ -78,7 +85,7 @@ machine. Remove `TASK_SYNC_SSH_TARGET` to go back to a local Task Sync.
 
 The tunnel runs non-interactively (`BatchMode`), so key-based SSH login must already work. Run
 `ssh daniel@100.87.157.44` once by hand to accept the host key. Tunnel state and SSH errors appear
-under **Settings -> Connections & diagnostics**.
+under **Settings -> Connections** and on the **Diagnostics** page.
 
 Linked-resource reads through the Chrome extension still travel through Task Sync: the extension
 must stay paired with Task Sync's laptop dashboards (`scripts\start-remote-dashboards.ps1` or its
@@ -163,13 +170,13 @@ systemctl --user status school-dashboard      # on the server
 journalctl --user -u school-dashboard -f
 ```
 
-The worker logs to `.school-dashboard\agent-worker.log` on the laptop. **Settings -> Connections &
-diagnostics** shows the worker, its Codex version, and running/queued jobs.
+The worker logs to `.school-dashboard\agent-worker.log` on the laptop. **Diagnostics** (open it from
+the top bar's status or from Settings) shows the worker, its Codex version, and running/queued jobs.
 
 ### Choosing where agents run
 
-The sidebar's **Run agents on** switch (a **Server**/**Laptop** chip in the mobile header opens it)
-chooses where new runs execute:
+The **Server**/**Laptop** switch in the top bar (also under **Settings -> Agents**) chooses where
+new runs execute. It appears only when both exist:
 
 - **Laptop** (the default): the run goes to the laptop agent worker, as described above.
 - **Server**: the dashboard runs Codex in its own process on the server, as the service's user,
@@ -180,7 +187,7 @@ chooses where new runs execute:
   read-only sandbox, disabled features, and secret-free environment.
 
 The choice is saved on the server and applies to runs started afterwards; a run in progress
-finishes where it started, and **Agent runs** records where each run executed. Server runs are
+finishes where it started, and **Runs** records where each run executed. Server runs are
 limited to `SCHOOL_DASHBOARD_AGENT_CONCURRENCY` at a time (default 3); later ones wait for a slot.
 
 The server option needs Codex signed in for the dashboard's user on the server, once:
@@ -190,28 +197,28 @@ The server option needs Codex signed in for the dashboard's user on the server, 
 ```
 
 Until then the **Server** option shows as unavailable. `install-server.sh` reports the sign-in
-state after each deploy. **Settings -> Connections & diagnostics** shows both targets, and the
-connection test checks the selected one (the other is reported as optional).
+state after each deploy. **Diagnostics** shows both targets, and **Test connections** checks the
+selected one (the other is reported as optional).
 
 ### Models and Luna Reserve
 
 Each machine that can run Codex (the laptop worker, and the dashboard process itself) reports its
 Codex app-server `model/list`, including hidden models: the laptop when it connects and every 30
 minutes, the dashboard at startup. The list from the machine selected under **Run agents on**
-decides what is selectable; **Settings -> Check again** asks that machine for a fresh list. A model whose ID or display name names Luna
+decides what is selectable; **Settings -> Agents -> Check models** asks that machine for a fresh list. A model whose ID or display name names Luna
 Reserve (for example `gpt-6-luna-reserve`) becomes selectable under exactly the ID Codex reports.
 Nothing else is assumed to be Luna Reserve. Settings shows why it is unavailable otherwise.
 
 ### Choosing Codex or Claude, and the effort level
 
-The sidebar's **Agent** switch picks which agent runs new runs, and **Effort** sets that agent's
-effort level (each agent keeps its own). Both are saved on the server, like the machine switch,
-and a run in progress keeps what it started with. On a phone, the header chip (for example
-**Claude · Server**) opens them.
+The top bar's agent menu (it shows the selected agent, for example **Claude**) holds the **Agent**
+switch, which picks which agent runs new runs, and **Effort**, which sets that agent's effort level
+(each agent keeps its own). Both are saved on the server, like the machine switch, and a run in
+progress keeps what it started with. **Settings -> Agents** makes the same agent choice.
 
-- **Codex** uses the models and reasoning set under **Settings -> Models & reasoning -> Codex**.
+- **Codex** uses the models and reasoning set under **Settings -> Agents** (Codex).
 - **Claude** runs through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) with
-  the model and default effort under **Settings -> Models & reasoning -> Claude** (Claude Opus 5
+  the model and default effort under **Settings -> Agents** (Claude) (Claude Opus 5
   until you pick another). The model list is what that machine's Claude Code reports for its
   signed-in account, such as Opus 5.5, Fable 5.1, and Sonnet 5.
 - **Effort -> Default** keeps the configured behavior: the Settings default for each agent, and

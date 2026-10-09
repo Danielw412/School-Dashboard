@@ -1,6 +1,7 @@
-import { AlertCircle, Check, LoaderCircle, Wrench } from "lucide-react";
+import { CaretRightIcon, CheckIcon, CircleNotchIcon, WarningCircleIcon, WrenchIcon, XCircleIcon } from "@phosphor-icons/react";
 
 import { schoolApi } from "../api";
+import { formatElapsed, formatTime } from "../format";
 import { usePolling } from "../hooks/usePolling";
 import type { AgentProgress, AgentRun } from "../types";
 
@@ -17,6 +18,8 @@ export function RunProgressPanel({ run, compact = false }: { run: AgentRun; comp
   );
 }
 
+// What the agent is doing now, with its activity log. A finished run's log folds away behind one
+// line so the result stays the focus.
 export function ProgressTimeline({
   progress,
   active,
@@ -31,45 +34,42 @@ export function ProgressTimeline({
   fallbackCurrent?: string;
 }) {
   const entries = progress?.entries ?? [];
+  const timeline = entries.length ? (
+    <ol className="progress-timeline">
+      {entries.map((entry) => {
+        const Icon = entry.status === "failed" ? XCircleIcon
+          : entry.status === "warning" ? WarningCircleIcon
+            : entry.status === "started" ? CircleNotchIcon
+              : entry.tool ? WrenchIcon : CheckIcon;
+        return (
+          <li className={entry.status} key={entry.id}>
+            <span className="progress-entry-icon">
+              <Icon className={entry.status === "started" ? "spin" : undefined} size={14} weight="bold" aria-hidden />
+            </span>
+            <span>{entry.message}</span>
+            <time>{formatTime(entry.timestamp)}</time>
+          </li>
+        );
+      })}
+    </ol>
+  ) : null;
   return (
     <section className={`progress-panel ${compact ? "compact" : ""}`} aria-live={active ? "polite" : "off"}>
       <div className="progress-current">
         <span className={`progress-spinner ${active ? "active" : ""}`}>
-          {active ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />}
+          {active ? <CircleNotchIcon className="spin" size={16} weight="bold" aria-hidden /> : <CheckIcon size={15} weight="bold" aria-hidden />}
         </span>
         <div>
           <strong>{progress?.current ?? fallbackCurrent ?? (loading ? "Loading agent activity" : "Run activity")}</strong>
           {progress ? <span>{formatElapsed(progress.elapsedMs)}</span> : null}
         </div>
       </div>
-      {entries.length ? (
-        <ol className="progress-timeline">
-          {entries.map((entry) => {
-            const Icon = entry.status === "failed" ? AlertCircle : entry.status === "started" ? LoaderCircle : entry.tool ? Wrench : Check;
-            return (
-              <li className={entry.status} key={entry.id}>
-                <span className="progress-entry-icon">
-                  <Icon className={entry.status === "started" ? "spin" : ""} size={14} />
-                </span>
-                <span>{entry.message}</span>
-                <time>{formatTime(entry.timestamp)}</time>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
+      {active || !timeline ? timeline : (
+        <details className="reveal">
+          <summary><CaretRightIcon size={13} weight="bold" aria-hidden />Activity log ({entries.length})</summary>
+          {timeline}
+        </details>
+      )}
     </section>
   );
-}
-
-function formatElapsed(milliseconds: number): string {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-  const minutes = Math.floor(seconds / 60);
-  if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  if (minutes) return `${minutes}m ${seconds % 60}s`;
-  return `${seconds}s`;
-}
-
-function formatTime(value: string): string {
-  return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }

@@ -1,7 +1,9 @@
+import { ImageBrokenIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 
 import { workspaceFileUrl } from "../api";
 import type { ProblemExtraction } from "../types";
+import { Notice } from "./ui";
 
 type Visual = NonNullable<ProblemExtraction["problems"][number]["visual"]>;
 
@@ -12,7 +14,7 @@ export function ProblemVisual({ visual, workspaceId }: { visual: Visual; workspa
   return <figure>
     {src && failedSrc !== src
       ? <img src={src} alt={visual.caption} onError={() => setFailedSrc(src)} />
-      : <div className="notice amber" role="status">This figure is unavailable. Use View sources to open the original, or Extract again to restore it.</div>}
+      : <Notice tone="warning" icon={ImageBrokenIcon} role="status">This figure is unavailable. Use View sources to open the original, or Extract again to restore it.</Notice>}
     <figcaption>{visual.caption} · page {visual.page}</figcaption>
   </figure>;
 }

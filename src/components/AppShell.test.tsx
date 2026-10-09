@@ -27,8 +27,10 @@ function serverAndLaptop(mode: "local" | "worker", laptopAvailable: boolean): Ag
 }
 
 vi.mock("../api", () => ({
-  schoolApi: { activeWork: vi.fn(), updateAgentSelection: vi.fn() },
+  schoolApi: { activeWork: vi.fn(), updateAgentSelection: vi.fn(), settings: vi.fn(), health: vi.fn() },
 }));
+
+const openSwitcher = async () => userEvent.click(await screen.findByRole("button", { name: "Agent settings" }));
 
 function withAgents(status: AgentExecutionStatus, provider: "codex" | "claude", claudeAvailable = true): AgentExecutionStatus {
   const claudeMessage = claudeAvailable
@@ -93,13 +95,16 @@ describe("AppShell agent availability", () => {
     vi.mocked(schoolApi.updateAgentSelection).mockResolvedValue(serverAndLaptop("local", true));
     render(<MemoryRouter><AppShell><AvailabilityProbe /></AppShell></MemoryRouter>);
 
+    // The switch sits in the top bar itself, one click away.
     const group = await screen.findByRole("group", { name: "Run agents on" });
     expect(within(group).getByRole("button", { name: "Laptop" })).toHaveAttribute("aria-pressed", "true");
+    await openSwitcher();
     expect(screen.getByText("Codex on DESKTOP-TQMTS8O · ready")).toBeInTheDocument();
 
     await userEvent.click(within(group).getByRole("button", { name: "Server" }));
     expect(schoolApi.updateAgentSelection).toHaveBeenCalledWith({ target: "local" });
     expect(await within(group).findByRole("button", { name: "Server" })).toHaveAttribute("aria-pressed", "true");
+    await openSwitcher();
     expect(screen.getByText("Codex on latitude7370 · ready")).toBeInTheDocument();
   });
 
@@ -136,7 +141,7 @@ describe("AppShell agent availability", () => {
     render(<MemoryRouter><AppShell><AvailabilityProbe /></AppShell></MemoryRouter>);
 
     expect(await screen.findByText("agents ready")).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Run agents on" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agent settings" })).not.toBeInTheDocument();
   });
 
   it("switches new runs between Codex and Claude and sets the selected agent's effort", async () => {
@@ -146,6 +151,7 @@ describe("AppShell agent availability", () => {
     vi.mocked(schoolApi.updateAgentSelection).mockResolvedValueOnce(withAgents(server, "claude"));
     render(<MemoryRouter><AppShell><AvailabilityProbe /></AppShell></MemoryRouter>);
 
+    await openSwitcher();
     const agentGroup = await screen.findByRole("group", { name: "Agent" });
     expect(within(agentGroup).getByRole("button", { name: "Codex" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("combobox", { name: "Codex effort" })).toHaveValue("default");
@@ -170,10 +176,41 @@ describe("AppShell agent availability", () => {
     render(<MemoryRouter><AppShell><AvailabilityProbe /></AppShell></MemoryRouter>);
 
     expect(await screen.findByRole("status")).toHaveTextContent(/Claude is not signed in on the dashboard server/u);
+    await openSwitcher();
     expect(screen.getByRole("button", { name: "Claude (unavailable)" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(screen.getByRole("button", { name: /Use Codex instead/u }));
 
     expect(schoolApi.updateAgentSelection).toHaveBeenCalledWith({ provider: "codex" });
     expect(await screen.findByText("agents ready")).toBeInTheDocument();
+  });
+});
+
+describe("AppShell connections and Task Sync", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("links to Task Sync's control center and reports healthy connections", async () => {
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.activeWork).mockResolvedValue({ workflows: [], runs: [] });
+    vi.mocked(schoolApi.settings).mockResolvedValue({
+      connections: { taskSyncApiBase: "http://127.0.0.1:8890/api/v1", canvasBaseUrl: "https://canvas.test", taskSyncDashboardUrl: "" },
+      reasoningEffort: "high",
+      claude: { model: "claude-opus-5", reasoningEffort: "high" },
+    } as never);
+    vi.mocked(schoolApi.health).mockResolvedValue({ status: "ready", taskSync: { connected: true }, canvas: { connected: true } });
+    render(<MemoryRouter><AppShell><p>page</p></AppShell></MemoryRouter>);
+
+    expect(await screen.findByRole("link", { name: /Task Sync/u })).toHaveAttribute("href", "http://127.0.0.1:8890");
+    expect(await screen.findByRole("link", { name: /All systems ready/u })).toHaveAttribute("href", "/diagnostics");
+  });
+
+  it("points to connection settings when Task Sync is unreachable, and hides its link when no address is known", async () => {
+    const { schoolApi } = await import("../api");
+    vi.mocked(schoolApi.activeWork).mockResolvedValue({ workflows: [], runs: [] });
+    vi.mocked(schoolApi.settings).mockRejectedValue(new Error("offline"));
+    vi.mocked(schoolApi.health).mockResolvedValue({ status: "degraded", taskSync: { connected: false, error: "refused" }, canvas: { connected: true } });
+    render(<MemoryRouter><AppShell><p>page</p></AppShell></MemoryRouter>);
+
+    expect(await screen.findByRole("link", { name: /Check connections/u })).toHaveAttribute("href", "/settings?section=connections");
+    expect(screen.queryByRole("link", { name: /Task Sync/u })).not.toBeInTheDocument();
   });
 });

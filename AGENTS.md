@@ -17,9 +17,10 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 ## Where to look
 
 - `src/App.tsx` — frontend routes.
-- `src/pages/` — main screens: task list, assignment workspace, run history, settings/diagnostics.
+- `src/pages/` — main screens: assignments (list/tiles, run menu, Working now), assignment workspace, runs, classes (per-class agent instructions), settings, diagnostics.
 - `src/api.ts` — frontend API boundary. `src/types.ts` mirrors data returned by the server.
-- `src/components/` — shared shell/status/Markdown UI. `src/styles.css` contains most styling.
+- `src/components/ui.tsx` + `src/styles.css` — the design system shared with Canvas Task Sync's control center (same tokens, Geist, Phosphor, and primitives). Keep them in step with Task Sync's `web/src/components/ui.tsx` and `styles.css`. `src/task-sync-links.ts` builds links into Task Sync's own pages; they are links only, never API calls, and disappear when no address is known.
+- `src/components/` — shared shell, run menu and live progress, task editor, Markdown, and source-page UI.
 - `server/index.ts` — application composition and HTTP routes. Start here for request flow.
 - `server/task-sync.ts` — typed client for Canvas Task Sync's canonical `/api/v1/tasks` and browser-resource APIs. Do not duplicate Task Sync's discovery/reconciliation/completion logic or Chrome capture broker here; `completed=false` intentionally includes only tasks whose live Google status is `needsAction`.
 - `server/ssh-tunnel.ts` — supervised SSH tunnel used when `TASK_SYNC_SSH_TARGET` points at a Task Sync backend on a server. The local port must equal the backend port because Task Sync only accepts its own loopback `Host`.
@@ -27,7 +28,7 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `server/agent-runner.ts` — agent run lifecycle, feature schemas/prompts, model and effort settings per agent (`resolveAgentPreferences`), workspace setup, structured-output validation. It hands the turn to an `AgentExecutor`.
 - `server/agent-execution.ts` — executor interface and per-agent status, and the in-process `LocalAgentExecutor` (one concurrency limit for both agents, Codex and Claude sign-in checks).
 - `server/agent-turn.ts` / `server/codex-execution.ts` / `server/claude-execution.ts` — the turn shared by server-side runs and the laptop worker. `runCodexTurn` is the one Codex SDK invocation (read-only sandbox, feature flags, MCP overrides from the machine's `codex mcp list`, secret-free env). `runClaudeTurn` is the one Claude Agent SDK invocation (read-only Read/Glob/Grep in `dontAsk` mode, only the `school_dashboard` MCP server, no filesystem settings, skills, or persisted sessions, secret-free env); `ClaudeEventTranslator` reports Claude's messages as Codex thread events, and `probeClaude` reads Claude Code's sign-in and model list without starting a turn.
-- `server/agent-routing.ts` / `src/components/AgentControls.tsx` — the sidebar's agent, target, and effort switches: persisted selection, per-run routing, combined status, and the sidebar control (`GET`/`PUT /api/agent-execution`).
+- `server/agent-routing.ts` / `src/components/AgentControls.tsx` — the top bar's Server/Laptop switch and agent/effort menu: persisted selection, per-run routing, combined status (`GET`/`PUT /api/agent-execution`).
 - `server/worker-hub.ts` (server) / `server/worker-client.ts` + `server/agent-worker.ts` (laptop) / `server/worker-protocol.ts` — laptop agent worker: WebSocket endpoint and auth, job queue and concurrency, reconnect grace and re-attachment, seed-file mirroring, event compaction, buffered results. Both sides validate every frame with the shared zod protocol.
 - `server/model-catalog.ts` / `server/codex-models.ts` — the Codex app-server `model/list` and the Claude Code model list and sign-in reported by each machine that can run agents, persisted on the server per target; the selected target's lists decide which model IDs are selectable (Codex built-ins plus a detected Luna Reserve; any Claude model a machine listed).
 - `server/network-access.ts` — loopback/Tailscale-only access, Host and cross-origin checks for the network-facing server.

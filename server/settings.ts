@@ -52,6 +52,9 @@ export const settingsSchema = z.object({
   connections: z.object({
     taskSyncApiBase: z.string().url(),
     canvasBaseUrl: z.string(),
+    // Where the browser opens Canvas Task Sync's own pages (links only; the dashboard never calls
+    // it). Empty means the API base's origin, which is Task Sync's control center.
+    taskSyncDashboardUrl: z.union([z.literal(""), z.url({ protocol: /^https?$/u })]).default(""),
   }),
   cache: z.object({
     ttlMinutes: z.number().int().min(1).max(1440),
@@ -83,6 +86,7 @@ export const defaultSettings: AppSettings = {
   connections: {
     taskSyncApiBase: env.taskSyncApiBase,
     canvasBaseUrl: env.canvasBaseUrl,
+    taskSyncDashboardUrl: "",
   },
   cache: {
     ttlMinutes: Number.isFinite(env.cacheTtlMinutes) ? env.cacheTtlMinutes : 30,

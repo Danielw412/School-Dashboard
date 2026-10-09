@@ -117,3 +117,25 @@ describe("Claude settings", () => {
     }
   });
 });
+
+describe("Task Sync link setting", () => {
+  it("defaults to automatic for settings saved before it existed and accepts only web addresses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "school-settings-"));
+    const path = join(root, "settings.json");
+    try {
+      const legacy = structuredClone(defaultSettings) as { connections: Record<string, string> };
+      delete legacy.connections.taskSyncDashboardUrl;
+      await writeFile(path, JSON.stringify(legacy));
+      const store = new SettingsStore(path);
+      const settings = await store.get();
+      expect(settings.connections.taskSyncDashboardUrl).toBe("");
+
+      const saved = await store.save({ ...settings, connections: { ...settings.connections, taskSyncDashboardUrl: "http://latitude7370:8890" } });
+      expect(saved.connections.taskSyncDashboardUrl).toBe("http://latitude7370:8890");
+      await expect(store.save({ ...settings, connections: { ...settings.connections, taskSyncDashboardUrl: "javascript:alert(1)" } }))
+        .rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

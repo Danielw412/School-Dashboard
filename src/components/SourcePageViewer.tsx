@@ -1,14 +1,14 @@
 import {
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  ImageOff,
-  LoaderCircle,
-  Scan,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from "lucide-react";
+  ArrowSquareOutIcon,
+  CaretLeftIcon,
+  CaretRightIcon,
+  CircleNotchIcon,
+  CornersOutIcon,
+  ImageBrokenIcon,
+  MagnifyingGlassMinusIcon,
+  MagnifyingGlassPlusIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import {
   useEffect,
   useRef,
@@ -297,17 +297,17 @@ export function SourcePageViewer({
         </div>
         <div className="page-viewer-tools">
           <div className="page-viewer-group">
-            <button className="icon-button" onClick={() => go(-1)} disabled={index <= 0} aria-label="Previous page" title="Previous page (Page Up)"><ChevronLeft size={17} /></button>
-            <button className="icon-button" onClick={() => go(1)} disabled={index < 0 || index >= pages.length - 1} aria-label="Next page" title="Next page (Page Down)"><ChevronRight size={17} /></button>
+            <button className="btn btn--ghost btn--icon" onClick={() => go(-1)} disabled={index <= 0} aria-label="Previous page" title="Previous page (Page Up)"><CaretLeftIcon size={16} aria-hidden /></button>
+            <button className="btn btn--ghost btn--icon" onClick={() => go(1)} disabled={index < 0 || index >= pages.length - 1} aria-label="Next page" title="Next page (Page Down)"><CaretRightIcon size={16} aria-hidden /></button>
           </div>
           <div className="page-viewer-group">
-            <button className="icon-button" onClick={() => zoomBy(0.8)} disabled={!view} aria-label="Zoom out" title="Zoom out (−)"><ZoomOut size={16} /></button>
+            <button className="btn btn--ghost btn--icon" onClick={() => zoomBy(0.8)} disabled={!view} aria-label="Zoom out" title="Zoom out (-)"><MagnifyingGlassMinusIcon size={16} aria-hidden /></button>
             <button className="page-viewer-zoom" onClick={fit} disabled={!view} aria-label="Fit page width" title="Fit width (0)">{zoomPercent}%</button>
-            <button className="icon-button" onClick={() => zoomBy(1.25)} disabled={!view} aria-label="Zoom in" title="Zoom in (+)"><ZoomIn size={16} /></button>
-            <button className="icon-button" onClick={() => size && setViewState({ key: pageKey, view: fitView(size, "page") })} disabled={!view} aria-label="Show whole page" title="Show whole page"><Scan size={16} /></button>
+            <button className="btn btn--ghost btn--icon" onClick={() => zoomBy(1.25)} disabled={!view} aria-label="Zoom in" title="Zoom in (+)"><MagnifyingGlassPlusIcon size={16} aria-hidden /></button>
+            <button className="btn btn--ghost btn--icon" onClick={() => size && setViewState({ key: pageKey, view: fitView(size, "page") })} disabled={!view} aria-label="Show whole page" title="Show whole page"><CornersOutIcon size={16} aria-hidden /></button>
           </div>
-          {src && <a className="icon-button" href={src} target="_blank" rel="noreferrer" aria-label="Open page image in a new tab" title="Open in a new tab"><ExternalLink size={15} /></a>}
-          <button className="icon-button" onClick={onClose} aria-label="Close page viewer" title="Close (Esc)"><X size={17} /></button>
+          {src && <a className="btn btn--ghost btn--icon" href={src} target="_blank" rel="noreferrer" aria-label="Open page image in a new tab" title="Open in a new tab"><ArrowSquareOutIcon size={16} aria-hidden /></a>}
+          <button className="btn btn--ghost btn--icon" onClick={onClose} aria-label="Close page viewer" title="Close (Esc)"><XIcon size={17} aria-hidden /></button>
         </div>
       </header>
       <div
@@ -335,8 +335,8 @@ export function SourcePageViewer({
           }}
           onError={() => setFailedSrc(src)}
         />}
-        {src && !failed && !view && <div className="page-viewer-status"><LoaderCircle className="spin" size={18} />Loading page</div>}
-        {(!src || failed) && <div className="page-viewer-status" role="status"><ImageOff size={18} />This page image is unavailable. Extract the problems again to restore it.</div>}
+        {src && !failed && !view && <div className="page-viewer-status"><CircleNotchIcon className="spin" size={18} aria-hidden />Loading page</div>}
+        {(!src || failed) && <div className="page-viewer-status" role="status"><ImageBrokenIcon size={18} aria-hidden />This page image is unavailable. Extract the problems again to restore it.</div>}
       </div>
       {!compact && <span
         className="page-viewer-resize"
@@ -352,8 +352,8 @@ export function SourcePageViewer({
 
 function defaultFrame(): Frame {
   const width = Math.min(620, Math.max(MIN_WIDTH, window.innerWidth * 0.44));
-  const height = Math.max(MIN_HEIGHT, window.innerHeight - 110);
-  return { left: window.innerWidth - width - 24, top: 86, width, height };
+  const height = Math.max(MIN_HEIGHT, window.innerHeight - 100);
+  return { left: window.innerWidth - width - 24, top: 76, width, height };
 }
 
 // Keep the whole window, including its resize corner, inside the viewport.
