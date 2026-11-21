@@ -34,6 +34,7 @@ vi.mock("../api", () => ({
       { ...task, logical_id: "physics:assignment:100", display_title: "Unknown task", completed: null, completion_status: "unavailable" },
     ]),
     activeWork: vi.fn(async () => ({ workflows: [], runs: [] })),
+    runSummary: vi.fn(async () => [{ logicalId: "physics:assignment:42", features: [{ feature: "directions", completedAt: "2099-08-01T12:00:00Z" }, { feature: "problemExtraction", completedAt: "2099-08-01T12:05:00Z" }] }]),
     taskCourses: vi.fn(async () => [{ id: "physics", settings: { name: "AP Physics C", prefix: "PHY" } }]),
     createTask: vi.fn(async () => task),
     startWorkflow: vi.fn(async () => ({ id: "workflow-1" })),
@@ -68,6 +69,14 @@ describe("Assignments", () => {
     expect(row).toHaveAttribute("href", `/assignment/${encodeURIComponent(task.logical_id)}`);
     expect(screen.queryByText("Checked off task")).not.toBeInTheDocument();
     expect(screen.queryByText("Unknown task")).not.toBeInTheDocument();
+  });
+
+  it("marks which agent features already finished and links each to its tab", async () => {
+    renderPage();
+    const marks = await screen.findByRole("group", { name: "Already run: Directions, Assigned problems" });
+    expect(within(marks).getByRole("link", { name: "Open directions" })).toHaveAttribute("href", `/assignment/${encodeURIComponent(task.logical_id)}?tab=directions`);
+    expect(within(marks).getByRole("link", { name: "Open assigned problems" })).toHaveAttribute("href", `/assignment/${encodeURIComponent(task.logical_id)}?tab=problems`);
+    expect(within(marks).queryByRole("link", { name: "Open answer key" })).not.toBeInTheDocument();
   });
 
   it("groups by due date by default, by class on request, and remembers the choice", async () => {

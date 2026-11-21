@@ -23,13 +23,14 @@ import {
   WarningCircleIcon,
   WarningIcon,
 } from "@phosphor-icons/react";
-import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { useAgentAvailability, useSelectedAgentProvider } from "../agent-status";
 import { schoolApi } from "../api";
 import { RunProgressPanel } from "../components/AgentProgress";
 import { Markdown } from "../components/Markdown";
+import { ProblemNavigator } from "../components/ProblemNavigator";
 import { ProblemVisual } from "../components/ProblemVisual";
 import { SourcePageViewer, type SourcePageRequest } from "../components/SourcePageViewer";
 import { RunStatusBadge } from "../components/Status";
@@ -57,11 +58,12 @@ import {
   type WorkspaceTab,
 } from "../features";
 import { classMarkText, classTone, formatDue, formatRelative, formatTokens, isPastDue, latestCompletedRun, latestRun } from "../format";
-import { usePolling } from "../hooks/usePolling";
 import { useActiveWork } from "../hooks/useActiveWork";
-import { runsChanged } from "../live-updates";
+import { usePolling } from "../hooks/usePolling";
 import { useSelectableModels } from "../hooks/useSelectableModels";
+import { runsChanged } from "../live-updates";
 import { type AgentProvider, effortLabel, effortLevels, modelLabel, providerLabel } from "../models";
+import { problemPreview } from "../problem-navigation";
 import { useTaskSyncUrl } from "../shell-context";
 import { taskSyncPages } from "../task-sync-links";
 import { useToast } from "../toast";
@@ -594,6 +596,12 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
   const [pageRequest, setPageRequest] = useState<SourcePageRequest | null>(null);
   const openPage = (label: string) => (ref: SourcePageRef) => setPageRequest({ ...ref, label });
   const button = <RunButton run={run} label="Find the assigned problems" icon={SparkleIcon} again="Extract again" starting={starting} disabled={disabled} onRun={onRun} />;
+  const navigation = useMemo(() => (output?.problems ?? []).map((problem, index) => ({
+    id: `problem-${index}`,
+    number: problem.number,
+    preview: problemPreview(problem.markdown),
+    flagged: Boolean(problem.missingVisual) || problem.confidence === "low",
+  })), [output]);
   return (
     <div>
       <PanelHead title="Assigned problems" run={result ?? run} action={run ? button : null} />
@@ -606,8 +614,7 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
           action={button}
         />
       </div> : null}
-      {output ? <>
-        <p className="summary-line">{output.summary}</p>
+      {output ? <div className="problems-layout">
         <div className="problem-stack">
           {output.problems.map((problem, index) => {
             const occurrence = output.problems
@@ -621,7 +628,7 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
             const showPage = openPage(`Problem ${problem.number}`);
             return <Fragment key={`${problem.number}-${index}`}>
               {banks.map((bank) => <AnswerBank key={bank.id} bank={bank} />)}
-              <article className="surface problem">
+              <article className="surface problem" id={`problem-${index}`} tabIndex={-1} aria-label={`Problem ${problem.number}`}>
                 <div className="problem__head">
                   <span className="problem__number">Problem {problem.number}</span>
                   {problem.confidence !== "high" ? <span className={`badge ${problem.confidence === "low" ? "badge--danger" : "badge--warning"}`}>{problem.confidence === "low" ? "Low" : "Medium"} confidence</span> : null}
@@ -635,13 +642,7 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
                 {problem.table ? <ProblemTable table={problem.table} /> : null}
                 {problem.visual ? <ProblemVisual visual={problem.visual} workspaceId={result?.workspaceId ?? null} /> : null}
                 {problem.missingVisual ? <MissingVisualNotice missing={problem.missingVisual} /> : null}
-                {answer ? <details className="inline-answer">
-                  <summary>Show answer <CaretDownIcon size={15} aria-hidden /></summary>
-                  <div className="inline-answer__body">
-                    <Markdown>{answer.finalAnswerMarkdown}</Markdown>
-                    <details className="reveal"><summary><CaretRightIcon size={13} weight="bold" aria-hidden />Full solution</summary><div className="reveal__body"><Markdown>{answer.solutionMarkdown}</Markdown></div></details>
-                  </div>
-                </details> : null}
+                {answer ? <InlineAnswer answer={answer} /> : null}
                 <SourceDisclosure items={problem.provenance} pages={sourcePages} onOpenPage={showPage} />
               </article>
             </Fragment>;
@@ -655,7 +656,8 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
             </div>)}
           </section> : null}
         </div>
-      </> : null}
+        <ProblemNavigator items={navigation} label="Problems" />
+      </div> : null}
       {pageRequest && output ? <SourcePageViewer
         documents={output.sourceDocuments ?? []}
         workspaceId={result?.workspaceId ?? null}
@@ -665,6 +667,36 @@ function ProblemsPanel({ run, result, answerResult, onRun, starting, disabled }:
       /> : null}
     </div>
   );
+}
+
+// A click shows the final answer; a double-click shows it with the full worked solution.
+function InlineAnswer({ answer }: { answer: AnswerKey["answers"][number] }) {
+  const [open, setOpen] = useState(false);
+  const [showWork, setShowWork] = useState(false);
+  const toggle = (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    // The second click of a double-click (detail 2) opens both instead of closing the answer again.
+    if (event.detail >= 2) {
+      setOpen(true);
+      setShowWork(true);
+      return;
+    }
+    if (open) setShowWork(false);
+    setOpen(!open);
+  };
+  return <details className="inline-answer" open={open}>
+    <summary onClick={toggle} title="Double-click to show the work too">
+      <span>Show answer</span>
+      <span className="inline-answer__hint">{open ? null : "Double-click for the work"}<CaretDownIcon size={15} aria-hidden /></span>
+    </summary>
+    <div className="inline-answer__body">
+      <Markdown>{answer.finalAnswerMarkdown}</Markdown>
+      <details className="reveal" open={showWork}>
+        <summary onClick={(event) => { event.preventDefault(); setShowWork((value) => !value); }}><CaretRightIcon size={13} weight="bold" aria-hidden />Full solution</summary>
+        <div className="reveal__body"><Markdown>{answer.solutionMarkdown}</Markdown></div>
+      </details>
+    </div>
+  </details>;
 }
 
 function MissingVisualNotice({ missing }: { missing: MissingVisual }) {
@@ -710,6 +742,11 @@ function AnswerKeyPanel({ run, result, extractionReady: ready, onRun, starting, 
   const provider = useSelectedAgentProvider();
   const output = result ? result.output as AnswerKey | null : null;
   const button = <RunButton run={run} label="Write the answer key" icon={SparkleIcon} again="Generate again" starting={starting} disabled={disabled || !ready} onRun={onRun} />;
+  const navigation = useMemo(() => (output?.answers ?? []).map((answer, index) => ({
+    id: `answer-${index}`,
+    number: answer.problemNumber,
+    preview: problemPreview(answer.finalAnswerMarkdown),
+  })), [output]);
   return <div>
     <PanelHead title="Answer key" run={result ?? run} action={run ? button : null} />
     {!ready ? <div className="run-progress">
@@ -726,16 +763,17 @@ function AnswerKeyPanel({ run, result, extractionReady: ready, onRun, starting, 
         action={button}
       />
     </div> : null}
-    {output ? <>
-      <p className="summary-line">{output.summary}</p>
+    {output ? <p className="summary-line">{output.summary}</p> : null}
+    {output ? <div className="problems-layout">
       <div className="answer-stack">
-        {output.answers.map((answer, index) => <article className="surface answer" key={`${answer.problemNumber}-${index}`}>
+        {output.answers.map((answer, index) => <article className="surface answer" id={`answer-${index}`} tabIndex={-1} aria-label={`Answer to problem ${answer.problemNumber}`} key={`${answer.problemNumber}-${index}`}>
           <div className="answer__head"><span className="problem__number">Problem {answer.problemNumber}</span></div>
           <div className="final-answer"><span>Final answer</span><Markdown>{answer.finalAnswerMarkdown}</Markdown></div>
           <details className="reveal"><summary><CaretRightIcon size={13} weight="bold" aria-hidden />Show full solution</summary><div className="reveal__body"><Markdown>{answer.solutionMarkdown}</Markdown></div></details>
         </article>)}
       </div>
-    </> : null}
+      <ProblemNavigator items={navigation} label="Answers" />
+    </div> : null}
   </div>;
 }
 

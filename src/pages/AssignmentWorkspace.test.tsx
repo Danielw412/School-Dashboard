@@ -177,6 +177,51 @@ describe("AssignmentWorkspace directions", () => {
 
     expect(answerDetails).toHaveAttribute("open");
     expect(screen.getAllByText("5 m/s").length).toBeGreaterThan(0);
+    expect(screen.getByText("Full solution").closest("details")).not.toHaveAttribute("open");
+    expect(screen.queryByText("One exact problem found.")).not.toBeInTheDocument();
+  });
+
+  it("shows the full worked solution when the answer is double-clicked", async () => {
+    apiMocks.runs.mockResolvedValue([problemRun(), answerRun()]);
+    const user = userEvent.setup();
+    renderWorkspace("?tab=problems");
+
+    await user.dblClick(await screen.findByText("Show answer"));
+
+    expect(screen.getByText("Show answer").closest("details")).toHaveAttribute("open");
+    expect(screen.getByText("Full solution").closest("details")).toHaveAttribute("open");
+
+    await user.click(screen.getByText("Show answer"));
+    expect(screen.getByText("Show answer").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Full solution").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("lists every problem by section in a table of contents that jumps to it", async () => {
+    const run = problemRun();
+    const base = (run.output as ProblemExtraction).problems[0]!;
+    run.output = {
+      ...(run.output as ProblemExtraction),
+      problems: [
+        { ...base, number: "Kinematics 8.1–8.2 #1", markdown: "How many grads are in one radian?" },
+        { ...base, number: "Kinematics 8.1–8.2 #10", markdown: "A space station rotates." },
+        { ...base, number: "Torque 9.4 #34", markdown: "A rotating door.", confidence: "low" },
+      ],
+    };
+    apiMocks.runs.mockResolvedValue([run]);
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    const user = userEvent.setup();
+    renderWorkspace("?tab=problems");
+
+    const toc = await screen.findByRole("navigation", { name: "Problems" });
+    expect(within(toc).getByText("Kinematics 8.1–8.2")).toBeInTheDocument();
+    expect(within(toc).getByText("Torque 9.4")).toBeInTheDocument();
+    const chip = within(toc).getByRole("button", { name: "Problem Kinematics 8.1–8.2 #10" });
+    expect(chip).toHaveTextContent("10");
+
+    await user.click(chip);
+    expect(scrolled).toHaveBeenCalled();
+    expect(document.activeElement).toHaveAttribute("aria-label", "Problem Kinematics 8.1–8.2 #10");
   });
 
   it("renders shared answer banks once and uses structured tables", async () => {
