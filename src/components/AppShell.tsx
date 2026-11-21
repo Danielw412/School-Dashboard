@@ -13,6 +13,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { AgentStatusContext } from "../agent-status";
 import { schoolApi } from "../api";
+import { ActiveWorkContext, useActiveWorkSource } from "../hooks/useActiveWork";
 import { usePolling } from "../hooks/usePolling";
 import { ShellContext } from "../shell-context";
 import { taskSyncBaseUrl } from "../task-sync-links";
@@ -31,7 +32,7 @@ const HEALTH_INTERVAL_MS = 120_000;
 
 export function AppShell({ children }: PropsWithChildren) {
   const location = useLocation();
-  const activeWork = usePolling(schoolApi.activeWork, 2_500);
+  const activeWork = useActiveWorkSource();
   const health = usePolling(schoolApi.health, HEALTH_INTERVAL_MS);
   const settingsState = usePolling(schoolApi.settings);
   const settings = settingsState.data;
@@ -64,93 +65,95 @@ export function AppShell({ children }: PropsWithChildren) {
 
   return (
     <ShellContext.Provider value={shell}>
-      <AgentStatusContext.Provider value={agents}>
-        <ToastProvider>
-          <div className="shell">
-            <a className="skip-link" href="#main">Skip to content</a>
-            <header className="topbar">
-              <div className="topbar__inner">
-                <Link to="/" className="brand" aria-label="School Dashboard assignments">
-                  <img src={logoSrc} alt="" />
-                  <span>School Dashboard</span>
-                </Link>
-                <nav className="nav" aria-label="Primary navigation">
-                  {navigation.map(({ to, label, match }) => (
-                    <NavLink key={to} to={to} className={`nav__link${match(location.pathname) ? " is-active" : ""}`} aria-current={match(location.pathname) ? "page" : undefined}>
-                      {label}
-                    </NavLink>
-                  ))}
-                  {taskSyncUrl ? <>
-                    <span className="nav__sep" aria-hidden />
-                    <a className="nav__link nav__link--external" href={taskSyncUrl} target="_blank" rel="noreferrer" title="Open Canvas Task Sync in a new tab">
-                      Task Sync<ArrowUpRightIcon size={13} weight="bold" aria-hidden />
-                    </a>
-                  </> : null}
-                </nav>
-                <div className="topbar__end">
-                  {connected === true ? (
-                    <Link to="/diagnostics" className="health-link" title="Canvas and Canvas Task Sync are connected. Open diagnostics.">
-                      <CheckCircleIcon className="tone-success" size={17} weight="fill" aria-hidden /><span className="health-link__text">All systems ready</span>
-                    </Link>
-                  ) : connected === false ? (
-                    <Link to="/settings?section=connections" className="health-link health-link--warning" title="A connection needs attention. Open connection settings.">
-                      <WarningCircleIcon size={17} weight="fill" aria-hidden /><span className="health-link__text">Check connections</span>
-                    </Link>
-                  ) : null}
-                  <TargetSwitch agents={agents} onChange={changeAgents} />
-                  <AgentSwitcher
-                    agents={agents}
-                    onChange={changeAgents}
-                    defaultEffort={settings ? { codex: settings.reasoningEffort, claude: settings.claude.reasoningEffort } : undefined}
-                  />
-                  <NavLink to="/settings" className={({ isActive }) => `nav__link settings-link${isActive ? " is-active" : ""}`} aria-label="Settings" title="Settings">
-                    <GearSixIcon size={19} aria-hidden /><span>Settings</span>
-                  </NavLink>
-                </div>
-              </div>
-            </header>
-
-            <main className="page-shell" id="main" key={location.pathname}>
-              {agents && !agents.available ? (
-                <div className="shell-notices">
-                  <Notice
-                    tone="warning"
-                    role="status"
-                    icon={CloudSlashIcon}
-                    title="Agents unavailable"
-                    actions={fallbackTarget ? (
-                      <Button variant="secondary" size="sm" onClick={() => void changeAgents({ target: fallbackTarget.id }).catch(() => undefined)}>
-                        <AgentTargetIcon target={fallbackTarget.id} />
-                        Run on the {fallbackTarget.label.toLowerCase()} instead
-                      </Button>
-                    ) : fallbackProvider ? (
-                      <Button variant="secondary" size="sm" onClick={() => void changeAgents({ provider: fallbackProvider.id }).catch(() => undefined)}>
-                        <AgentProviderIcon provider={fallbackProvider.id} />
-                        Use {fallbackProvider.label} instead
-                      </Button>
+      <ActiveWorkContext.Provider value={activeWork}>
+        <AgentStatusContext.Provider value={agents}>
+          <ToastProvider>
+            <div className="shell">
+              <a className="skip-link" href="#main">Skip to content</a>
+              <header className="topbar">
+                <div className="topbar__inner">
+                  <Link to="/" className="brand" aria-label="School Dashboard assignments">
+                    <img src={logoSrc} alt="" />
+                    <span>School Dashboard</span>
+                  </Link>
+                  <nav className="nav" aria-label="Primary navigation">
+                    {navigation.map(({ to, label, match }) => (
+                      <NavLink key={to} to={to} className={`nav__link${match(location.pathname) ? " is-active" : ""}`} aria-current={match(location.pathname) ? "page" : undefined}>
+                        {label}
+                      </NavLink>
+                    ))}
+                    {taskSyncUrl ? <>
+                      <span className="nav__sep" aria-hidden />
+                      <a className="nav__link nav__link--external" href={taskSyncUrl} target="_blank" rel="noreferrer" title="Open Canvas Task Sync in a new tab">
+                        Task Sync<ArrowUpRightIcon size={13} weight="bold" aria-hidden />
+                      </a>
+                    </> : null}
+                  </nav>
+                  <div className="topbar__end">
+                    {connected === true ? (
+                      <Link to="/diagnostics" className="health-link" title="Canvas and Canvas Task Sync are connected. Open diagnostics.">
+                        <CheckCircleIcon className="tone-success" size={17} weight="fill" aria-hidden /><span className="health-link__text">All systems ready</span>
+                      </Link>
+                    ) : connected === false ? (
+                      <Link to="/settings?section=connections" className="health-link health-link--warning" title="A connection needs attention. Open connection settings.">
+                        <WarningCircleIcon size={17} weight="fill" aria-hidden /><span className="health-link__text">Check connections</span>
+                      </Link>
                     ) : null}
-                  >
-                    <p>{agents.message} Assignments, past results, and settings still work.</p>
-                  </Notice>
+                    <TargetSwitch agents={agents} onChange={changeAgents} />
+                    <AgentSwitcher
+                      agents={agents}
+                      onChange={changeAgents}
+                      defaultEffort={settings ? { codex: settings.reasoningEffort, claude: settings.claude.reasoningEffort } : undefined}
+                    />
+                    <NavLink to="/settings" className={({ isActive }) => `nav__link settings-link${isActive ? " is-active" : ""}`} aria-label="Settings" title="Settings">
+                      <GearSixIcon size={19} aria-hidden /><span>Settings</span>
+                    </NavLink>
+                  </div>
                 </div>
-              ) : null}
-              {children}
-            </main>
+              </header>
 
-            <nav className="mobile-nav" aria-label="Mobile navigation">
-              {navigation.map(({ to, label, icon: Icon, match }) => (
-                <NavLink key={to} to={to} className={`mobile-nav__item${match(location.pathname) ? " is-active" : ""}`}>
-                  <Icon size={22} weight={match(location.pathname) ? "fill" : "regular"} aria-hidden />
-                  <span>{label}{to === "/" && working ? <span className="sr-only"> (agents working)</span> : null}</span>
+              <main className="page-shell" id="main" key={location.pathname}>
+                {agents && !agents.available ? (
+                  <div className="shell-notices">
+                    <Notice
+                      tone="warning"
+                      role="status"
+                      icon={CloudSlashIcon}
+                      title="Agents unavailable"
+                      actions={fallbackTarget ? (
+                        <Button variant="secondary" size="sm" onClick={() => void changeAgents({ target: fallbackTarget.id }).catch(() => undefined)}>
+                          <AgentTargetIcon target={fallbackTarget.id} />
+                          Run on the {fallbackTarget.label.toLowerCase()} instead
+                        </Button>
+                      ) : fallbackProvider ? (
+                        <Button variant="secondary" size="sm" onClick={() => void changeAgents({ provider: fallbackProvider.id }).catch(() => undefined)}>
+                          <AgentProviderIcon provider={fallbackProvider.id} />
+                          Use {fallbackProvider.label} instead
+                        </Button>
+                      ) : null}
+                    >
+                      <p>{agents.message} Assignments, past results, and settings still work.</p>
+                    </Notice>
+                  </div>
+                ) : null}
+                {children}
+              </main>
+
+              <nav className="mobile-nav" aria-label="Mobile navigation">
+                {navigation.map(({ to, label, icon: Icon, match }) => (
+                  <NavLink key={to} to={to} className={`mobile-nav__item${match(location.pathname) ? " is-active" : ""}`}>
+                    <Icon size={22} weight={match(location.pathname) ? "fill" : "regular"} aria-hidden />
+                    <span>{label}{to === "/" && working ? <span className="sr-only"> (agents working)</span> : null}</span>
+                  </NavLink>
+                ))}
+                <NavLink to="/settings" className={({ isActive }) => `mobile-nav__item${isActive || location.pathname === "/diagnostics" ? " is-active" : ""}`}>
+                  <GearSixIcon size={22} aria-hidden /><span>Settings</span>
                 </NavLink>
-              ))}
-              <NavLink to="/settings" className={({ isActive }) => `mobile-nav__item${isActive || location.pathname === "/diagnostics" ? " is-active" : ""}`}>
-                <GearSixIcon size={22} aria-hidden /><span>Settings</span>
-              </NavLink>
-            </nav>
-          </div>
-        </ToastProvider>
-      </AgentStatusContext.Provider>
+              </nav>
+            </div>
+          </ToastProvider>
+        </AgentStatusContext.Provider>
+      </ActiveWorkContext.Provider>
     </ShellContext.Provider>
   );
 }

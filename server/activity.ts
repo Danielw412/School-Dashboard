@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { rename, rm, writeFile } from "node:fs/promises";
 
 import { ACTIVITY_PATH } from "./env.js";
+import { JsonFileWriter, readJsonFile, removeStaleTemporaryFiles } from "./json-file.js";
 
 export type ActivityCategory =
   | "agent"
@@ -66,16 +66,27 @@ export function sanitizeForLog(value: unknown): unknown {
   return value;
 }
 
+const MAX_EVENTS = 500;
+
+export type ActivityListener = (event: ActivityEvent) => void;
+
+// The recent activity log. It lives in memory (loaded once) and is saved to disk shortly after it
+// changes, so recording an event never waits on the file and reading never re-parses it.
 export class ActivityStore {
-  private writeChain: Promise<void> = Promise.resolve();
+  private events: ActivityEvent[] | null = null;
+  private loading: Promise<ActivityEvent[]> | null = null;
+  private readonly listeners = new Set<ActivityListener>();
+  private readonly file: JsonFileWriter;
+
+  constructor(private readonly path = ACTIVITY_PATH, private readonly saveDelayMs = 1_000) {
+    // Activity is diagnostic telemetry. A transient antivirus/indexer lock must never fail a
+    // Canvas tool or an agent run, so a failed save is dropped and retried with the next event.
+    this.file = new JsonFileWriter(path, () => this.events ?? [], replaceActivityFile);
+  }
 
   async list(limit = 150): Promise<ActivityEvent[]> {
-    try {
-      const parsed = JSON.parse(await readFile(ACTIVITY_PATH, "utf8")) as ActivityEvent[];
-      return parsed.slice(-Math.max(1, Math.min(limit, 500))).reverse();
-    } catch {
-      return [];
-    }
+    const events = await this.load();
+    return events.slice(-Math.max(1, Math.min(limit, MAX_EVENTS))).reverse();
   }
 
   async record(
@@ -87,37 +98,60 @@ export class ActivityStore {
       timestamp: new Date().toISOString(),
       metadata: sanitizeForLog(event.metadata) as Record<string, unknown> | undefined,
     };
-    this.writeChain = this.writeChain.catch(() => undefined).then(async () => {
-      const current = (await this.list(500)).reverse();
-      const next = [...current, complete].slice(-500);
-      await mkdir(dirname(ACTIVITY_PATH), { recursive: true });
-      const temporaryPath = `${ACTIVITY_PATH}.${process.pid}.${randomUUID()}.tmp`;
-      const contents = `${JSON.stringify(next, null, 2)}\n`;
+    const events = await this.load();
+    events.push(complete);
+    if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+    this.file.saveSoon(this.saveDelayMs);
+    for (const listener of this.listeners) {
       try {
-        await writeFile(temporaryPath, contents, "utf8");
-        await replaceActivityFile(temporaryPath, contents);
+        listener(complete);
       } catch {
-        // Activity is diagnostic telemetry. A transient antivirus/indexer lock must
-        // never fail a Canvas tool or an agent run.
-        await rm(temporaryPath, { force: true }).catch(() => undefined);
+        // A listener (run progress, live updates) must never fail the work being recorded.
       }
-    });
-    await this.writeChain.catch(() => undefined);
+    }
     return complete;
+  }
+
+  // Called with each new event, after it is recorded.
+  subscribe(listener: ActivityListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  // Writes any events not yet on disk (on shutdown).
+  async flush(): Promise<void> {
+    await this.file.flush().catch(() => undefined);
+  }
+
+  private load(): Promise<ActivityEvent[]> {
+    if (this.events) return Promise.resolve(this.events);
+    this.loading ??= (async () => {
+      await removeStaleTemporaryFiles(this.path);
+      let saved: ActivityEvent[] = [];
+      try {
+        const parsed = await readJsonFile(this.path);
+        if (Array.isArray(parsed)) saved = (parsed as ActivityEvent[]).slice(-MAX_EVENTS);
+      } catch {
+        // Missing or unreadable: start a fresh log.
+      }
+      this.events = saved;
+      return saved;
+    })();
+    return this.loading;
   }
 }
 
-async function replaceActivityFile(temporaryPath: string, contents: string) {
+async function replaceActivityFile(temporaryPath: string, destination: string, contents: string) {
   try {
-    await rename(temporaryPath, ACTIVITY_PATH);
+    await rename(temporaryPath, destination);
   } catch (error) {
     const code = error instanceof Error && "code" in error ? String(error.code) : "";
     if (code !== "EPERM" && code !== "EACCES") throw error;
     await new Promise((resolve) => setTimeout(resolve, 30));
     try {
-      await rename(temporaryPath, ACTIVITY_PATH);
+      await rename(temporaryPath, destination);
     } catch {
-      await writeFile(ACTIVITY_PATH, contents, "utf8");
+      await writeFile(destination, contents, "utf8");
       await rm(temporaryPath, { force: true }).catch(() => undefined);
     }
   }

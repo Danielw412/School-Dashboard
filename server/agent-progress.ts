@@ -20,6 +20,46 @@ export type AgentProgress = {
   }>;
 };
 
+export type AgentProgressEntry = AgentProgress["entries"][number];
+
+// The most progress entries one run keeps. Finished steps replace their "started" entries, so
+// only an unusually long run reaches it, and then its oldest entries go first.
+export const MAX_PROGRESS_ENTRIES = 300;
+
+export function progressEntry(event: ActivityEvent): AgentProgressEntry {
+  return {
+    id: event.id,
+    timestamp: event.timestamp,
+    status: event.status,
+    message: progressMessage(event),
+    category: event.category,
+    action: event.action,
+    tool: typeof event.metadata?.tool === "string" ? event.metadata.tool : null,
+  };
+}
+
+// Adds an event to a run's progress (oldest first, changed in place). A completed or failed step
+// replaces the entries that said it had started.
+export function appendProgressEntry(entries: AgentProgressEntry[], event: ActivityEvent): void {
+  if (event.status === "completed" || event.status === "failed") {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (entry.status === "started" && entry.category === event.category && entry.action === event.action) {
+        entries.splice(index, 1);
+      }
+    }
+  }
+  entries.push(progressEntry(event));
+  if (entries.length > MAX_PROGRESS_ENTRIES) entries.splice(0, entries.length - MAX_PROGRESS_ENTRIES);
+}
+
+// Progress from the entries saved with the run (oldest first).
+export function runProgress(run: AgentRun, entries: AgentProgressEntry[], now = new Date()): AgentProgress {
+  return progressFromEntries(run, [...entries].reverse(), now);
+}
+
+// Progress for runs saved before progress was kept with the run: rebuilt from the recent activity
+// log (newest first), which may no longer hold all of a run's steps.
 export function buildAgentProgress(
   run: AgentRun,
   activity: ActivityEvent[],
@@ -30,16 +70,11 @@ export function buildAgentProgress(
     const workspace = typeof event.metadata?.workspace === "string" ? event.metadata.workspace : null;
     return eventRunId === run.id || Boolean(run.workspaceId && workspace === run.workspaceId);
   });
-  const entries = collapseStartedEvents(relevant)
-    .map((event) => ({
-      id: event.id,
-      timestamp: event.timestamp,
-      status: event.status,
-      message: progressMessage(event),
-      category: event.category,
-      action: event.action,
-      tool: typeof event.metadata?.tool === "string" ? event.metadata.tool : null,
-    }));
+  return progressFromEntries(run, collapseStartedEvents(relevant).map(progressEntry), now);
+}
+
+// `entries` are newest first.
+function progressFromEntries(run: AgentRun, entries: AgentProgressEntry[], now: Date): AgentProgress {
   const end = run.completedAt ? Date.parse(run.completedAt) : now.getTime();
   const start = Date.parse(run.startedAt);
   return {

@@ -28,12 +28,14 @@ describe("AgentWorkflowRunner", () => {
       })),
     } as unknown as TaskSyncClient;
     const activity = { record: vi.fn(async () => undefined) } as unknown as ActivityStore;
-    const runner = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
+    const onChange = vi.fn();
+    const runner = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity, onChange);
 
     await runner.start({
       logicalId: "physics:assignment:42",
       steps: ["directions", "problemExtraction", "answerKey"],
     });
+    expect(onChange).toHaveBeenCalled();
 
     await vi.waitFor(() => expect(starts).toHaveLength(3));
     expect(starts.map((item) => item.feature)).toEqual([

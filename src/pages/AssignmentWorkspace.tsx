@@ -58,6 +58,8 @@ import {
 } from "../features";
 import { classMarkText, classTone, formatDue, formatRelative, formatTokens, isPastDue, latestCompletedRun, latestRun } from "../format";
 import { usePolling } from "../hooks/usePolling";
+import { useActiveWork } from "../hooks/useActiveWork";
+import { runsChanged } from "../live-updates";
 import { useSelectableModels } from "../hooks/useSelectableModels";
 import { type AgentProvider, effortLabel, effortLevels, modelLabel, providerLabel } from "../models";
 import { useTaskSyncUrl } from "../shell-context";
@@ -86,8 +88,8 @@ export function AssignmentWorkspace() {
   const tab: WorkspaceTab = isWorkspaceTab(tabParam) ? tabParam : "directions";
   const taskState = usePolling(() => schoolApi.task(logicalId));
   const contextState = usePolling(() => schoolApi.context(logicalId));
-  const runsState = usePolling(schoolApi.runs, 2500);
-  const activeState = usePolling(schoolApi.activeWork, 2500);
+  const runsState = usePolling(schoolApi.runs, 2500, { live: runsChanged });
+  const activeState = useActiveWork();
   const agents = useAgentAvailability();
   const provider = useSelectedAgentProvider();
   const toast = useToast();

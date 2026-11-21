@@ -9,12 +9,13 @@ import { Button, Disclosure, EmptyState, ErrorNotice, PageHeader, Sheet, Skeleto
 import { type Feature, featureLabel, features, isActiveRun, tabForFeature } from "../features";
 import { formatDateTime, formatDayHeading, formatTime, formatTokens, runDuration } from "../format";
 import { usePolling } from "../hooks/usePolling";
+import { runsChanged } from "../live-updates";
 import { effortLabel, modelLabel, providerLabel } from "../models";
 import { useToast } from "../toast";
 import type { AgentRun } from "../types";
 
 export function RunsPage() {
-  const { data, error, loading, refresh } = usePolling(schoolApi.runs, 3_000);
+  const { data, error, loading, refresh } = usePolling(schoolApi.runs, 3_000, { live: runsChanged });
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const [feature, setFeature] = useState<Feature | "">("");

@@ -36,7 +36,9 @@ Class directions are feature-scoped. When a relevant agent feature is added, add
 - `server/tool-sessions.ts` — assignment-scoped MCP capability exposed to the agent. Defines tool policy, caching/retry limits, Canvas retrieval tools, and the PDF/image tool surface.
 - `server/workspace.ts` — temporary workspaces, Canvas file cache, Poppler PDF inspection/text/rendering, OCR, problem detection, and cropping.
 - `server/settings.ts` / `server/env.ts` — local configuration, models/prompts, paths, and environment variables.
-- `server/activity.ts` / `server/agent-progress.ts` — redacted activity logging and user-facing run progress.
+- `server/activity.ts` / `server/agent-progress.ts` — redacted activity logging and user-facing run progress. Each run keeps its own progress entries (saved with the run in `runs.json`); runs saved before that rebuild progress from the activity log.
+- `server/json-file.ts` — the in-memory stores' disk writer. Runs and activity are loaded once and served from memory; saves are atomic and coalesced. Only the dashboard process writes these files.
+- `server/live-events.ts` / `src/live-updates.ts` — `GET /api/events` server-sent change notices (`runs`, `progress`, `workflows`, `agents`). Notices carry no data; `usePolling(loader, interval, { live })` reloads on matching notices and falls back to polling while the stream is down. AppShell owns the one active-work copy (`useActiveWork`).
 - `server/predictor.ts` — optional external Test Question Predictor adapter.
 - `scripts/` — `deploy-server.ps1` (laptop -> server deploy), `linux/install-server.sh` + `deploy/linux/school-dashboard.service` (server systemd user service), `install-windows-worker.ps1` (laptop worker scheduled task), single-machine Windows startup helpers, and the legacy Canvas-tool compatibility CLI. The agent's normal retrieval path is MCP, not the script endpoint.
 - `design/concepts/` — UI reference images, not runtime code.

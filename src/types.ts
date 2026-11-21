@@ -178,6 +178,10 @@ export type AgentProgress = {
   }>;
 };
 
+// A "something changed" notice from GET /api/events (server/live-events.ts).
+export type LiveTopic = "runs" | "progress" | "workflows" | "agents";
+export type LiveChange = { topics: LiveTopic[]; runIds: string[] };
+
 export type AgentWorkflow = {
   id: string;
   logicalId: string;

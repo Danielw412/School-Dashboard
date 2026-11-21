@@ -48,6 +48,8 @@ export class AgentWorkflowRunner {
     private readonly runs: AgentRunStore,
     private readonly taskSync: TaskSyncClient,
     private readonly activity: ActivityStore,
+    // Called after any workflow changes (live updates for open dashboards).
+    private readonly onChange: () => void = () => undefined,
   ) {}
 
   async start(input: unknown): Promise<AgentWorkflow> {
@@ -75,6 +77,7 @@ export class AgentWorkflowRunner {
       error: null,
     };
     this.workflows.set(workflow.id, workflow);
+    this.onChange();
     void this.execute(workflow.id).catch(() => undefined);
     return structuredClone(workflow);
   }
@@ -211,6 +214,7 @@ export class AgentWorkflowRunner {
   private patch(id: string, patch: Partial<AgentWorkflow>) {
     const workflow = this.require(id);
     this.workflows.set(id, { ...workflow, ...patch });
+    this.onChange();
   }
 
   private updateStep(id: string, index: number, patch: Partial<AgentWorkflowStep>) {
@@ -219,6 +223,7 @@ export class AgentWorkflowRunner {
       stepIndex === index ? { ...step, ...patch } : step,
     );
     this.workflows.set(id, { ...workflow, steps });
+    this.onChange();
   }
 }
 

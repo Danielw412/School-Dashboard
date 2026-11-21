@@ -1,9 +1,10 @@
-import { mkdtemp, rename, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ActivityEvent } from "./activity.js";
 import {
   type AgentRun,
   AgentRunStore,
@@ -411,7 +412,103 @@ describe("AgentRunStore", () => {
       error: "The run stopped without reporting a final status.",
     });
   });
+
+  it("serves reads from memory after loading the file once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "runs.json");
+    await writeFile(path, JSON.stringify([{ ...agentRun(), status: "completed" }]), "utf8");
+    const store = new AgentRunStore(path);
+    await store.load();
+    await rm(path);
+
+    await expect(store.list()).resolves.toHaveLength(1);
+    await expect(store.get("run-1")).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("redacts runs as they are saved", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "runs.json");
+    const store = new AgentRunStore(path);
+    await store.create(agentRun());
+    await store.update("run-1", { error: "Canvas rejected Bearer abc.def-123" });
+
+    await expect(store.get("run-1")).resolves.toMatchObject({ error: "Canvas rejected Bearer [redacted]" });
+    expect(await readFile(path, "utf8")).not.toContain("abc.def-123");
+  });
+
+  it("keeps each run's progress, matched by run or workspace, and saves it with the run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "runs.json");
+    const store = new AgentRunStore(path, undefined, 5);
+    const changes: string[] = [];
+    store.subscribe((change) => changes.push(`${change.kind}:${change.runId}`));
+    await store.create({ ...agentRun(), status: "running" });
+    await store.create({ ...agentRun(), id: "run-2", status: "running" });
+
+    store.recordProgress(activityEvent("workspace.prepare", "started", { runId: "run-1" }));
+    store.recordProgress(activityEvent("workspace.prepare", "completed", { runId: "run-1", workspace: "workspace-1" }));
+    store.recordProgress(activityEvent("canvas_tool.pdf-text", "started", { workspace: "workspace-1" }));
+    store.recordProgress(activityEvent("canvas_tool.search", "completed", { runId: "run-2" }));
+    store.recordProgress(activityEvent("canvas_tool.search", "completed", { runId: "unknown-run" }));
+    store.recordProgress(activityEvent("hit", "completed", { workspace: "unknown-workspace" }));
+
+    expect(store.progress("run-1")?.map((entry) => `${entry.action}:${entry.status}`)).toEqual([
+      "workspace.prepare:completed",
+      "canvas_tool.pdf-text:started",
+    ]);
+    expect(store.progress("run-2")).toHaveLength(1);
+    expect(changes).toContain("progress:run-1");
+    expect(changes).toContain("progress:run-2");
+
+    await store.flush();
+    const reloaded = new AgentRunStore(path);
+    await reloaded.load();
+    expect(reloaded.progress("run-1")).toHaveLength(2);
+    // Progress is kept beside the run, not returned with it.
+    expect(await reloaded.get("run-1")).not.toHaveProperty("progress");
+    // A run saved before progress was kept with runs has none.
+    await writeFile(path, JSON.stringify([agentRun()]), "utf8");
+    const legacy = new AgentRunStore(path);
+    await legacy.load();
+    expect(legacy.progress("run-1")).toBeNull();
+  });
+
+  it("coalesces progress saves and clears temporary files left by an earlier process", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "runs.json");
+    await writeFile(`${path}.1234.stale.tmp`, "{}", "utf8");
+    const replace = vi.fn(async (source: string, destination: string) => rename(source, destination));
+    const store = new AgentRunStore(path, replace, 20);
+    await store.create({ ...agentRun(), status: "running" });
+    expect(await readdir(directory)).toEqual(["runs.json"]);
+    replace.mockClear();
+
+    for (let index = 0; index < 25; index += 1) {
+      store.recordProgress({ ...activityEvent(`step-${index}`, "completed", { runId: "run-1" }), id: `event-${index}` });
+    }
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledTimes(1));
+    await store.flush();
+    expect(replace).toHaveBeenCalledTimes(1);
+    const saved = JSON.parse(await readFile(path, "utf8")) as Array<{ progress: unknown[] }>;
+    expect(saved[0].progress).toHaveLength(25);
+  });
 });
+
+function activityEvent(action: string, status: ActivityEvent["status"], metadata: Record<string, unknown>): ActivityEvent {
+  return {
+    id: `${action}-${status}-${JSON.stringify(metadata)}`,
+    timestamp: "2026-08-31T20:01:00.000Z",
+    category: "agent",
+    action,
+    status,
+    summary: "Problem Set 4",
+    metadata,
+  };
+}
 
 function agentRun(): AgentRun {
   return {

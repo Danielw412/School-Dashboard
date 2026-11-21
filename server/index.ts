@@ -8,7 +8,7 @@ import { z, ZodError } from "zod";
 import { modelLabel, providerLabel } from "../src/models.js";
 import { ActivityStore } from "./activity.js";
 import { AgentsUnavailableError, LocalAgentExecutor } from "./agent-execution.js";
-import { buildAgentProgress } from "./agent-progress.js";
+import { buildAgentProgress, runProgress } from "./agent-progress.js";
 import {
   AgentExecutionRouter,
   AgentSelectionStore,
@@ -16,6 +16,7 @@ import {
   UnknownAgentTargetError,
 } from "./agent-routing.js";
 import {
+  type AgentRun,
   AgentRunner,
   AgentRunStore,
   parseProblemExtractionOutput,
@@ -28,6 +29,7 @@ import { CompactingCanvasToolSessions } from "./compacting-tool-sessions.js";
 import { runConnectionTest } from "./connection-test.js";
 import { CourseDirectionsStore, courseDirectionsRouter } from "./course-directions.js";
 import { AGENT_TARGET_PATH, APP_ROOT, CODEX_MODELS_PATH, env, WORKER_STATE_PATH } from "./env.js";
+import { LiveEvents } from "./live-events.js";
 import { ModelCatalog } from "./model-catalog.js";
 import { networkAccessMiddleware } from "./network-access.js";
 import { SettingsStore } from "./settings.js";
@@ -84,6 +86,15 @@ const canvas = new CanvasClient(settings.connections.canvasBaseUrl || env.canvas
 const workspaces = new WorkspaceManager(activity);
 const runs = new AgentRunStore();
 await runs.failInterrupted();
+// Each run keeps its own progress, gathered from the activity it causes.
+activity.subscribe((event) => runs.recordProgress(event));
+// Open dashboards hear about changes as they happen instead of polling for them.
+const live = new LiveEvents();
+runs.subscribe(({ runId, kind }) => live.publish(kind === "run" ? "runs" : "progress", runId));
+// System events cover the agent switches and the laptop worker connecting or disconnecting.
+activity.subscribe((event) => {
+  if (event.category === "system") live.publish("agents");
+});
 const toolSessions = new CompactingCanvasToolSessions(canvas, workspaces, activity, taskSync);
 // The laptop agent worker dials in over the tailnet (worker mode only).
 const workerHub = env.agentExecution === "worker"
@@ -132,9 +143,11 @@ const agentRunner = new AgentRunner(
   courseDirections,
   models.isSelectable,
 );
-const workflows = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity);
+const workflows = new AgentWorkflowRunner(agentRunner, runs, taskSync, activity, () => live.publish("workflows"));
 
 app.use("/api/course-directions", courseDirectionsRouter(courseDirections));
+
+app.get("/api/events", live.stream);
 
 app.get("/api/health", async (_request, response) => {
   const [taskSyncHealth, canvasHealth] = await Promise.all([
@@ -291,7 +304,7 @@ app.get("/api/agent-runs/:id", async (request, response) => {
 app.get("/api/agent-runs/:id/progress", async (request, response) => {
   const run = await runs.get(request.params.id);
   if (!run) return response.status(404).json({ error: "Agent run not found." });
-  response.json(buildAgentProgress(run, await activity.list(500)));
+  response.json(await progressFor(run));
 });
 
 app.post("/api/agent-runs", async (request, response) => {
@@ -334,11 +347,11 @@ app.post("/api/agent-workflows/:id/cancel", async (request, response) => {
 
 app.get("/api/active-work", async (_request, response) => {
   await agentRunner.reconcileOrphanedRuns();
-  const [recentRuns, recentActivity] = await Promise.all([runs.list(100), activity.list(500)]);
-  const activeRuns = recentRuns.filter((run) => run.status === "queued" || run.status === "running");
+  const activeRuns = (await runs.list(100)).filter((run) => run.status === "queued" || run.status === "running");
+  const progress = await Promise.all(activeRuns.map((run) => progressFor(run)));
   response.json({
     workflows: workflows.list().filter((workflow) => workflow.status === "queued" || workflow.status === "running"),
-    runs: activeRuns.map((run) => ({ run, progress: buildAgentProgress(run, recentActivity) })),
+    runs: activeRuns.map((run, index) => ({ run, progress: progress[index] })),
     agents: executor.status(),
   });
 });
@@ -537,16 +550,25 @@ const httpServer = app.listen(env.port, env.host, () => {
   process.stdout.write(`School Dashboard API listening on ${address} (agents: ${agents})\n`);
 });
 workerHub?.attach(httpServer);
-// systemd stops the service with SIGTERM; exit cleanly so a restart is not logged as a failure.
+// systemd stops the service with SIGTERM; save what is still in memory and exit cleanly so a
+// restart is not logged as a failure.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     workerHub?.close();
+    live.close();
     httpServer.close();
-    process.exit(0);
+    void Promise.allSettled([runs.flush(), activity.flush()]).then(() => process.exit(0));
   });
 }
 if (workerHub && !env.workerToken) {
   process.stderr.write("SCHOOL_DASHBOARD_AGENT_EXECUTION=worker needs SCHOOL_DASHBOARD_WORKER_TOKEN; agents stay unavailable until it is set.\n");
+}
+
+// A run's progress: kept with the run, or for runs saved before that, rebuilt from recent activity.
+async function progressFor(run: AgentRun, now = new Date()) {
+  const entries = runs.progress(run.id);
+  if (entries) return runProgress(run, entries, now);
+  return buildAgentProgress(run, await activity.list(500), now);
 }
 
 // The model new runs of the agent use unless a feature says otherwise.

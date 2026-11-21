@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, extname } from "node:path";
+import { copyFile, rename, rm } from "node:fs/promises";
+import { basename, extname } from "node:path";
 
 import type { ThreadEvent, Usage } from "@openai/codex-sdk";
 import { z } from "zod";
@@ -11,13 +11,14 @@ import {
   type EffortChoice,
   providerLabel,
 } from "../src/models.js";
-import { type ActivityStore, sanitizeForLog } from "./activity.js";
+import { type ActivityEvent, type ActivityStore, sanitizeForLog } from "./activity.js";
 import {
   agentPlacement,
   type AgentExecutor,
   type AgentPlacement,
   AgentsUnavailableError,
 } from "./agent-execution.js";
+import { type AgentProgressEntry, appendProgressEntry } from "./agent-progress.js";
 import type { AssignmentContext, CanvasClient } from "./canvas-client.js";
 import { claudeEffort } from "./claude-execution.js";
 import {
@@ -25,6 +26,7 @@ import {
   type CourseDirectionFeature,
 } from "./course-directions.js";
 import { RUNS_PATH } from "./env.js";
+import { JsonFileWriter, readJsonFile, removeStaleTemporaryFiles } from "./json-file.js";
 import { runTestQuestionPredictor, type PredictorResult } from "./predictor.js";
 import {
   type AppSettings,
@@ -242,26 +244,60 @@ export type StartAgentRun = {
   extractionRunId?: string;
 };
 
+// What changed about a run: its record (status, output, ...) or only its progress.
+export type AgentRunChange = { runId: string; kind: "run" | "progress" };
+
+// Saved runs as a list (oldest first), each with its progress entries.
+type SavedRun = AgentRun & { progress?: AgentProgressEntry[] };
+
+// Agent runs. They live in memory (loaded once, newest 250 kept) and are saved to disk as they
+// change: a status or result change is on disk before the call returns, while progress entries are
+// saved shortly after, a burst at a time. Reads never touch the file.
 export class AgentRunStore {
-  private writeChain: Promise<void> = Promise.resolve();
+  private runs: AgentRun[] | null = null;
+  private loading: Promise<AgentRun[]> | null = null;
+  // Each run's progress (oldest first), and which run each workspace belongs to.
+  private readonly progressEntries = new Map<string, AgentProgressEntry[]>();
+  private readonly workspaceRuns = new Map<string, string>();
+  private readonly listeners = new Set<(change: AgentRunChange) => void>();
+  private readonly file: JsonFileWriter;
 
   constructor(
     private readonly path = RUNS_PATH,
-    private readonly replaceFile: (source: string, destination: string) => Promise<void> = replaceFileWithRetry,
-  ) {}
+    replaceFile: (source: string, destination: string) => Promise<void> = replaceFileWithRetry,
+    private readonly progressSaveDelayMs = 1_000,
+  ) {
+    this.file = new JsonFileWriter(path, () => this.snapshot(), (source, destination) => replaceFile(source, destination));
+  }
+
+  async load(): Promise<void> {
+    await this.all();
+  }
 
   async list(limit = 100): Promise<AgentRun[]> {
-    const runs = await this.read();
+    const runs = await this.all();
     return runs.slice(-Math.max(1, Math.min(limit, 250))).reverse();
   }
 
   async get(id: string): Promise<AgentRun | null> {
-    return (await this.read()).find((run) => run.id === id) ?? null;
+    return (await this.all()).find((run) => run.id === id) ?? null;
+  }
+
+  // The run's progress entries (oldest first), or null for a run saved before progress was kept
+  // with the run.
+  progress(id: string): AgentProgressEntry[] | null {
+    return this.progressEntries.get(id) ?? null;
   }
 
   async create(run: AgentRun): Promise<AgentRun> {
-    await this.mutate((runs) => [...runs, run].slice(-250));
-    return run;
+    const saved = normalizeRun(run);
+    this.progressEntries.set(saved.id, []);
+    try {
+      await this.mutate((runs) => [...runs, saved].slice(-250), [saved.id]);
+    } finally {
+      this.forgetRemovedRuns();
+    }
+    return saved;
   }
 
   async update(id: string, patch: Partial<AgentRun>): Promise<AgentRun> {
@@ -269,10 +305,10 @@ export class AgentRunStore {
     await this.mutate((runs) =>
       runs.map((run) => {
         if (run.id !== id) return run;
-        updated = { ...run, ...patch };
+        updated = normalizeRun({ ...run, ...patch });
         return updated;
       }),
-    );
+    [id]);
     if (!updated) throw new Error(`Agent run ${id} was not found.`);
     return updated;
   }
@@ -282,89 +318,147 @@ export class AgentRunStore {
     await this.mutate((runs) =>
       runs.map((run) => {
         if (run.id !== id) return run;
-        updated = run.status === "queued" || run.status === "running" ? { ...run, ...patch } : run;
+        updated = isActiveRun(run) ? normalizeRun({ ...run, ...patch }) : run;
         return updated;
       }),
-    );
+    [id]);
     if (!updated) throw new Error(`Agent run ${id} was not found.`);
     return updated;
   }
 
   async failInterrupted(): Promise<number> {
-    let count = 0;
-    await this.mutate((runs) =>
-      runs.map((run) => {
-        if (run.status !== "queued" && run.status !== "running") return run;
-        count += 1;
-        return {
-          ...run,
-          status: "failed",
-          completedAt: new Date().toISOString(),
-          error: "The dashboard server restarted before this run completed.",
-        };
-      }),
-    );
-    return count;
+    return this.failActive(() => true, "The dashboard server restarted before this run completed.");
   }
 
   async failOrphaned(isActive: (id: string) => boolean): Promise<number> {
-    let count = 0;
+    return this.failActive((id) => !isActive(id), "The run stopped without reporting a final status.");
+  }
+
+  // Adds an activity event to the progress of the run it belongs to: the run it names, or the run
+  // whose workspace it names. Events for no known run are ignored.
+  recordProgress(event: ActivityEvent): void {
+    if (!this.runs) return;
+    const runId = typeof event.metadata?.runId === "string" ? event.metadata.runId : null;
+    const workspace = typeof event.metadata?.workspace === "string" ? event.metadata.workspace : null;
+    if (runId && workspace && this.progressEntries.has(runId)) this.workspaceRuns.set(workspace, runId);
+    const owner = runId ?? (workspace ? this.workspaceRuns.get(workspace) : undefined);
+    const entries = owner ? this.progressEntries.get(owner) : undefined;
+    if (!owner || !entries) return;
+    appendProgressEntry(entries, event);
+    this.file.saveSoon(this.progressSaveDelayMs);
+    this.notify({ runId: owner, kind: "progress" });
+  }
+
+  // Called after each change, once it is in memory.
+  subscribe(listener: (change: AgentRunChange) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  // Writes any change not yet on disk (on shutdown).
+  async flush(): Promise<void> {
+    await this.file.flush();
+  }
+
+  private async failActive(shouldFail: (id: string) => boolean, error: string): Promise<number> {
+    const failed: string[] = [];
     await this.mutate((runs) => {
       const next = runs.map((run) => {
-        if ((run.status !== "queued" && run.status !== "running") || isActive(run.id)) return run;
-        count += 1;
+        if (!isActiveRun(run) || !shouldFail(run.id)) return run;
+        failed.push(run.id);
         return {
           ...run,
           status: "failed" as const,
           completedAt: new Date().toISOString(),
-          error: "The run stopped without reporting a final status.",
+          error,
         };
       });
-      return count === 0 ? runs : next;
-    });
-    return count;
+      return failed.length === 0 ? runs : next;
+    }, failed);
+    return failed.length;
   }
 
-  private async read(): Promise<AgentRun[]> {
-    try {
-      const runs = sanitizeForLog(JSON.parse(await readFile(this.path, "utf8"))) as AgentRun[];
-      return runs.map((run) => {
-        const normalizedOutput = run.feature === "answerKey"
-          ? stripLegacyAnswerMetadata(run.output)
-          : run.output;
-        return {
-          ...run,
-          events: sanitizeStoredAgentEvents(run.events),
-          output: normalizedOutput,
-          rawStructuredOutput:
-            run.feature === "answerKey" && normalizedOutput && run.rawStructuredOutput
-              ? JSON.stringify(normalizedOutput)
-              : run.rawStructuredOutput,
-        };
+  private all(): Promise<AgentRun[]> {
+    if (this.runs) return Promise.resolve(this.runs);
+    this.loading ??= (async () => {
+      await removeStaleTemporaryFiles(this.path);
+      let saved: SavedRun[] = [];
+      try {
+        const parsed = await readJsonFile(this.path);
+        if (Array.isArray(parsed)) saved = parsed as SavedRun[];
+      } catch {
+        // Missing or unreadable: start with no runs.
+      }
+      const runs = saved.map(({ progress, ...run }) => {
+        if (Array.isArray(progress)) this.progressEntries.set(run.id, progress);
+        if (run.workspaceId) this.workspaceRuns.set(run.workspaceId, run.id);
+        return normalizeRun(run);
       });
-    } catch {
-      return [];
+      this.runs = runs;
+      return runs;
+    })();
+    return this.loading;
+  }
+
+  // Applies a change in memory, then saves it. Changes apply one at a time in call order; a failed
+  // save leaves the change in memory, and the next save writes it.
+  private async mutate(transform: (runs: AgentRun[]) => AgentRun[], changed: string[]): Promise<void> {
+    const current = await this.all();
+    const next = transform(current);
+    if (next === current) return;
+    this.runs = next;
+    for (const runId of changed) {
+      const run = next.find((item) => item.id === runId);
+      if (run?.workspaceId) this.workspaceRuns.set(run.workspaceId, run.id);
+      this.notify({ runId, kind: "run" });
+    }
+    await this.file.save();
+  }
+
+  private forgetRemovedRuns(): void {
+    const kept = new Set(this.runs?.map((run) => run.id));
+    for (const runId of this.progressEntries.keys()) if (!kept.has(runId)) this.progressEntries.delete(runId);
+    for (const [workspace, runId] of this.workspaceRuns) if (!kept.has(runId)) this.workspaceRuns.delete(workspace);
+  }
+
+  private snapshot(): SavedRun[] {
+    return (this.runs ?? []).map((run) => {
+      const progress = this.progressEntries.get(run.id);
+      return progress ? { ...run, progress } : run;
+    });
+  }
+
+  private notify(change: AgentRunChange): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch {
+        // Live updates are best effort; they must never fail a run.
+      }
     }
   }
+}
 
-  private async mutate(transform: (runs: AgentRun[]) => AgentRun[]) {
-    const operation = this.writeChain.catch(() => undefined).then(async () => {
-      const current = await this.read();
-      const next = transform(current);
-      if (next === current) return;
-      await mkdir(dirname(this.path), { recursive: true });
-      const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-        await this.replaceFile(temporaryPath, this.path);
-      } catch (error) {
-        await rm(temporaryPath, { force: true }).catch(() => undefined);
-        throw error;
-      }
-    });
-    this.writeChain = operation;
-    await operation;
-  }
+function isActiveRun(run: AgentRun): boolean {
+  return run.status === "queued" || run.status === "running";
+}
+
+// Redacts a run and upgrades older saved shapes. Applied whenever a run enters the store, so runs
+// served from memory are always safe to show.
+function normalizeRun(value: AgentRun): AgentRun {
+  const run = sanitizeForLog(value) as AgentRun;
+  const normalizedOutput = run.feature === "answerKey"
+    ? stripLegacyAnswerMetadata(run.output)
+    : run.output;
+  return {
+    ...run,
+    events: sanitizeStoredAgentEvents(Array.isArray(run.events) ? run.events : []),
+    output: normalizedOutput,
+    rawStructuredOutput:
+      run.feature === "answerKey" && normalizedOutput && run.rawStructuredOutput
+        ? JSON.stringify(normalizedOutput)
+        : run.rawStructuredOutput,
+  };
 }
 
 async function replaceFileWithRetry(source: string, destination: string): Promise<void> {

@@ -43,6 +43,7 @@ import {
   parseDueDate,
 } from "../format";
 import { usePolling } from "../hooks/usePolling";
+import { useActiveWork } from "../hooks/useActiveWork";
 import { providerLabel } from "../models";
 import { useTaskSyncUrl } from "../shell-context";
 import { taskSyncPages } from "../task-sync-links";
@@ -72,7 +73,7 @@ function saveChoice(key: string, value: string) {
 
 export function AssignmentsPage() {
   const tasksState = usePolling(schoolApi.tasks);
-  const activeState = usePolling(schoolApi.activeWork, 2_500);
+  const activeState = useActiveWork();
   const coursesState = usePolling(schoolApi.taskCourses);
   const [searchParams] = useSearchParams();
   const toast = useToast();

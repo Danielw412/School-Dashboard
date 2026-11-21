@@ -7,7 +7,9 @@ import type { AgentProgress, AgentRun } from "../types";
 
 export function RunProgressPanel({ run, compact = false }: { run: AgentRun; compact?: boolean }) {
   const active = run.status === "queued" || run.status === "running";
-  const progress = usePolling(() => schoolApi.runProgress(run.id), active ? 1_500 : 0);
+  const progress = usePolling(() => schoolApi.runProgress(run.id), active ? 1_500 : 0, {
+    live: active ? (change) => change.runIds.includes(run.id) : undefined,
+  });
   return (
     <ProgressTimeline
       progress={progress.data}
