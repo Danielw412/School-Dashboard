@@ -400,6 +400,26 @@ describe("AgentRunStore", () => {
     expect(replace).toHaveBeenCalledTimes(3);
   });
 
+  it("summarizes the finished features of each assignment without run bodies", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
+    temporaryDirectories.push(directory);
+    const store = new AgentRunStore(join(directory, "runs.json"));
+    const base = agentRun();
+    await store.create({ ...base, id: "a", feature: "answerKey", status: "completed", completedAt: "2026-09-01T10:00:00.000Z" });
+    await store.create({ ...base, id: "b", feature: "directions", status: "completed", completedAt: "2026-09-01T09:00:00.000Z" });
+    await store.create({ ...base, id: "c", feature: "directions", status: "completed", completedAt: "2026-09-02T09:00:00.000Z" });
+    await store.create({ ...base, id: "d", feature: "problemExtraction", status: "failed", completedAt: "2026-09-02T10:00:00.000Z" });
+    await store.create({ ...base, id: "e", logicalId: "other", feature: "studyGuide", status: "running", completedAt: null });
+
+    await expect(store.summaries()).resolves.toEqual([{
+      logicalId: base.logicalId,
+      features: [
+        { feature: "directions", completedAt: "2026-09-02T09:00:00.000Z" },
+        { feature: "answerKey", completedAt: "2026-09-01T10:00:00.000Z" },
+      ],
+    }]);
+  });
+
   it("marks persisted active records as failed when no live execution owns them", async () => {
     const directory = await mkdtemp(join(tmpdir(), "school-dashboard-runs-"));
     temporaryDirectories.push(directory);

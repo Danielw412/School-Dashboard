@@ -244,6 +244,34 @@ export type StartAgentRun = {
   extractionRunId?: string;
 };
 
+// Which features already have a finished result for each assignment, without the run bodies, so
+// the assignment list can show it cheaply.
+export type AssignmentRunSummary = {
+  logicalId: string;
+  features: Array<{ feature: AgentFeature; completedAt: string | null }>;
+};
+
+const SUMMARY_FEATURE_ORDER: AgentFeature[] = ["directions", "problemExtraction", "answerKey", "studyGuide"];
+
+export function summarizeAssignmentRuns(runs: AgentRun[]): AssignmentRunSummary[] {
+  const byAssignment = new Map<string, Map<AgentFeature, string | null>>();
+  for (const run of runs) {
+    if (run.status !== "completed") continue;
+    const features = byAssignment.get(run.logicalId) ?? new Map<AgentFeature, string | null>();
+    const previous = features.get(run.feature);
+    if (!features.has(run.feature) || (run.completedAt && (!previous || run.completedAt > previous))) {
+      features.set(run.feature, run.completedAt);
+    }
+    byAssignment.set(run.logicalId, features);
+  }
+  return [...byAssignment.entries()].map(([logicalId, features]) => ({
+    logicalId,
+    features: SUMMARY_FEATURE_ORDER
+      .filter((feature) => features.has(feature))
+      .map((feature) => ({ feature, completedAt: features.get(feature) ?? null })),
+  }));
+}
+
 // What changed about a run: its record (status, output, ...) or only its progress.
 export type AgentRunChange = { runId: string; kind: "run" | "progress" };
 
@@ -277,6 +305,10 @@ export class AgentRunStore {
   async list(limit = 100): Promise<AgentRun[]> {
     const runs = await this.all();
     return runs.slice(-Math.max(1, Math.min(limit, 250))).reverse();
+  }
+
+  async summaries(): Promise<AssignmentRunSummary[]> {
+    return summarizeAssignmentRuns(await this.all());
   }
 
   async get(id: string): Promise<AgentRun | null> {

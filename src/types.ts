@@ -159,6 +159,12 @@ export type AgentRun = {
   predictor: null | { requested: boolean; status: string; message: string; output: unknown };
 };
 
+// The features that already have a finished result for an assignment (`GET /api/agent-runs/summary`).
+export type AssignmentRunSummary = {
+  logicalId: string;
+  features: Array<{ feature: AgentRun["feature"]; completedAt: string | null }>;
+};
+
 export type AgentProgress = {
   runId: string;
   status: AgentRun["status"];

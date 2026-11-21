@@ -30,7 +30,7 @@ import {
   SkeletonRows,
 } from "../components/ui";
 import { WorkingNow } from "../components/WorkingNow";
-import { featureLabel, tabForFeature } from "../features";
+import { type Feature, featureLabel, features, tabForFeature } from "../features";
 import {
   classMarkText,
   classTone,
@@ -44,11 +44,12 @@ import {
 } from "../format";
 import { usePolling } from "../hooks/usePolling";
 import { useActiveWork } from "../hooks/useActiveWork";
+import { runsChanged } from "../live-updates";
 import { providerLabel } from "../models";
 import { useTaskSyncUrl } from "../shell-context";
 import { taskSyncPages } from "../task-sync-links";
 import { useToast } from "../toast";
-import type { TrackedTask } from "../types";
+import type { AssignmentRunSummary, TrackedTask } from "../types";
 
 type Status = "open" | "completed";
 type GroupBy = "date" | "class";
@@ -75,6 +76,8 @@ export function AssignmentsPage() {
   const tasksState = usePolling(schoolApi.tasks);
   const activeState = useActiveWork();
   const coursesState = usePolling(schoolApi.taskCourses);
+  // What the agents have already finished for each assignment; reloaded when a run changes.
+  const summaryState = usePolling(schoolApi.runSummary, 10_000, { live: runsChanged });
   const [searchParams] = useSearchParams();
   const toast = useToast();
   const taskSyncUrl = useTaskSyncUrl();
@@ -90,6 +93,7 @@ export function AssignmentsPage() {
   const allTasks = useMemo(() => tasksState.data ?? [], [tasksState.data]);
   const taskIndex = useMemo(() => new Map(allTasks.map((task) => [task.logical_id, task])), [allTasks]);
   const active = useMemo(() => activeAssignments(activeState.data), [activeState.data]);
+  const finished = useMemo(() => new Map((summaryState.data ?? []).map((item) => [item.logicalId, item.features])), [summaryState.data]);
   const completionUnavailable = allTasks.some((task) => task.completion_status === "unavailable");
   const openTasks = useMemo(() => allTasks.filter((task) => task.completed === false), [allTasks]);
   const classes = useMemo(() => {
@@ -149,7 +153,10 @@ export function AssignmentsPage() {
     }
   };
 
-  const refreshActive = () => void activeState.refresh().catch(() => undefined);
+  const refreshActive = () => {
+    void activeState.refresh().catch(() => undefined);
+    void summaryState.refresh().catch(() => undefined);
+  };
   const filtering = Boolean(query.trim() || classFilter);
   const clearFilters = () => { setQuery(""); setClassFilter(""); };
   const loading = tasksState.loading && !tasksState.data;
@@ -259,11 +266,11 @@ export function AssignmentsPage() {
             <h2 className={`group-label${group.danger ? " group-label--danger" : ""}`}>{group.label}<span>{group.items.length}</span></h2>
             {view === "tiles" ? (
               <div className="assignment-tiles">
-                {group.items.map((task) => <AssignmentTile key={task.logical_id} task={task} showClass={groupBy === "date"} active={active.get(task.logical_id) ?? null} onChanged={refreshActive} />)}
+                {group.items.map((task) => <AssignmentTile key={task.logical_id} task={task} showClass={groupBy === "date"} active={active.get(task.logical_id) ?? null} finished={finished.get(task.logical_id) ?? []} onChanged={refreshActive} />)}
               </div>
             ) : (
               <div className="surface">
-                {group.items.map((task) => <AssignmentRow key={task.logical_id} task={task} showClass={groupBy === "date"} active={active.get(task.logical_id) ?? null} onChanged={refreshActive} />)}
+                {group.items.map((task) => <AssignmentRow key={task.logical_id} task={task} showClass={groupBy === "date"} active={active.get(task.logical_id) ?? null} finished={finished.get(task.logical_id) ?? []} onChanged={refreshActive} />)}
               </div>
             )}
           </section>
@@ -292,7 +299,13 @@ export function AssignmentsPage() {
   );
 }
 
-type ItemProps = { task: TrackedTask; showClass: boolean; active: ActiveAssignment | null; onChanged: () => void };
+type ItemProps = {
+  task: TrackedTask;
+  showClass: boolean;
+  active: ActiveAssignment | null;
+  finished: AssignmentRunSummary["features"];
+  onChanged: () => void;
+};
 
 function assignmentHref(task: TrackedTask, active: ActiveAssignment | null) {
   const path = `/assignment/${encodeURIComponent(task.logical_id)}`;
@@ -317,6 +330,27 @@ function Due({ task }: { task: TrackedTask }) {
   </span>;
 }
 
+// One mark per agent feature: filled when it has a finished result, which opens that tab.
+function FinishedFeatures({ task, finished, working }: { task: TrackedTask; finished: AssignmentRunSummary["features"]; working: Feature | null }) {
+  if (finished.length === 0) return null;
+  const done = new Set(finished.map((item) => item.feature));
+  const path = `/assignment/${encodeURIComponent(task.logical_id)}`;
+  const doneLabels = features.filter((feature) => done.has(feature.id)).map((feature) => feature.label);
+  return <span className="feature-marks" role="group" aria-label={`Already run: ${doneLabels.join(", ")}`}>
+    {features.map((feature) => {
+      const FeatureIcon = feature.icon;
+      if (!done.has(feature.id)) {
+        return <span key={feature.id} className={`feature-mark${working === feature.id ? " is-working" : ""}`} title={`${feature.label}: not run yet`} aria-hidden>
+          <FeatureIcon size={13} weight="bold" />
+        </span>;
+      }
+      return <Link key={feature.id} className="feature-mark is-done" to={`${path}?tab=${feature.tab}`} title={`${feature.label}: done. Open it`} aria-label={`Open ${feature.label.toLowerCase()}`}>
+        <FeatureIcon size={13} weight="bold" aria-hidden />
+      </Link>;
+    })}
+  </span>;
+}
+
 function WorkingBadge({ active }: { active: ActiveAssignment }) {
   const label = active.feature ? featureLabel(active.feature) : "Working";
   return <span className="badge badge--info working-badge" title={active.current}>
@@ -324,7 +358,7 @@ function WorkingBadge({ active }: { active: ActiveAssignment }) {
   </span>;
 }
 
-function AssignmentRow({ task, showClass, active, onChanged }: ItemProps) {
+function AssignmentRow({ task, showClass, active, finished, onChanged }: ItemProps) {
   return (
     <div className={`row row--interactive assignment-row${task.completed ? " is-done" : ""}`}>
       <span className={`class-mark class-tone-${classTone(task.course.id)}`} aria-hidden>{classMarkText(task.course.prefix, task.course.name)}</span>
@@ -334,6 +368,7 @@ function AssignmentRow({ task, showClass, active, onChanged }: ItemProps) {
       </span>
       <span className="assignment-row__end">
         {active ? <WorkingBadge active={active} /> : null}
+        <FinishedFeatures task={task} finished={finished} working={active?.feature ?? null} />
         <Due task={task} />
       </span>
       <span className={`row-actions${active ? " is-shown" : ""}`}>
@@ -344,7 +379,7 @@ function AssignmentRow({ task, showClass, active, onChanged }: ItemProps) {
   );
 }
 
-function AssignmentTile({ task, showClass, active, onChanged }: ItemProps) {
+function AssignmentTile({ task, showClass, active, finished, onChanged }: ItemProps) {
   return (
     <article className={`assignment-tile${task.completed ? " is-done" : ""}${active ? " is-working" : ""}`}>
       <span className="assignment-tile__class">
@@ -358,7 +393,10 @@ function AssignmentTile({ task, showClass, active, onChanged }: ItemProps) {
         <span className="truncate">{active.feature ? `${featureLabel(active.feature)}: ` : ""}{active.current}</span>
       </span> : null}
       <span className="assignment-tile__foot">
-        <Due task={task} />
+        <span className="assignment-tile__status">
+          <Due task={task} />
+          <FinishedFeatures task={task} finished={finished} working={active?.feature ?? null} />
+        </span>
         <span className="row-actions is-shown">
           <RunMenu logicalId={task.logical_id} title={task.display_title} active={active} onChanged={onChanged} placement="up" />
         </span>

@@ -295,6 +295,11 @@ app.get("/api/agent-runs", async (request, response) => {
   response.json(await runs.list(Number.isFinite(limit) ? limit : 100));
 });
 
+// Registered before `/:id` so "summary" is not read as a run ID.
+app.get("/api/agent-runs/summary", async (_request, response) => {
+  response.json(await runs.summaries());
+});
+
 app.get("/api/agent-runs/:id", async (request, response) => {
   const run = await runs.get(request.params.id);
   if (!run) return response.status(404).json({ error: "Agent run not found." });
