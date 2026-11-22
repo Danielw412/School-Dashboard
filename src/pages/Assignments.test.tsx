@@ -255,4 +255,22 @@ describe("Assignments", () => {
     expect(second.container.querySelector(".assignment-tile")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Run Codex on Problem Set 4" })).toBeInTheDocument();
   });
+  it("shows the last assignments at once and updates them when the fresh list arrives", async () => {
+    const { schoolApi } = await import("../api");
+    const { unmount } = renderPage();
+    await screen.findByText("Problem Set 4");
+    unmount();
+
+    let resolve: (tasks: TrackedTask[]) => void = () => undefined;
+    vi.mocked(schoolApi.tasks).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderPage();
+    expect(screen.getByText("Problem Set 4")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Loading assignments")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Updating assignments" })).toHaveAttribute("aria-busy", "true");
+
+    resolve([english]);
+    expect(await screen.findByText("Prose essay")).toBeInTheDocument();
+    expect(screen.queryByText("Problem Set 4")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh assignments" })).not.toHaveAttribute("aria-busy", "true");
+  });
 });

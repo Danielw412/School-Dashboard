@@ -97,7 +97,7 @@ p { text-wrap: pretty; }
 }
 .num { font-variant-numeric: tabular-nums; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.spin { animation: spin 0.9s linear infinite; }
+.spin, .btn--icon[aria-busy="true"] svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Shell ------------------------------------------------------------------ */
@@ -1229,5 +1229,5 @@ input[type="file"].control { padding: 7px 10px; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .spin { animation: none !important; }
+  .spin, .btn--icon[aria-busy="true"] svg { animation: none !important; }
 }

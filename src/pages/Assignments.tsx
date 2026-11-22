@@ -73,9 +73,10 @@ function saveChoice(key: string, value: string) {
 }
 
 export function AssignmentsPage() {
-  const tasksState = usePolling(schoolApi.tasks);
+  // The last list shows at once; reading live completion status from Google takes a few seconds.
+  const tasksState = usePolling(schoolApi.tasks, 0, { cacheKey: "tasks" });
   const activeState = useActiveWork();
-  const coursesState = usePolling(schoolApi.taskCourses);
+  const coursesState = usePolling(schoolApi.taskCourses, 0, { cacheKey: "task-courses" });
   // What the agents have already finished for each assignment; reloaded when a run changes.
   const summaryState = usePolling(schoolApi.runSummary, 10_000, { live: runsChanged });
   const [searchParams] = useSearchParams();
@@ -160,15 +161,17 @@ export function AssignmentsPage() {
   const filtering = Boolean(query.trim() || classFilter);
   const clearFilters = () => { setQuery(""); setClassFilter(""); };
   const loading = tasksState.loading && !tasksState.data;
+  // Showing the saved list while the fresh one loads.
+  const updating = refreshing || (tasksState.loading && Boolean(tasksState.data));
   const assistant = providerLabel(provider);
 
   return (
     <div className="page--assignments">
       <PageHeader
         title={headline(openTasks, loading || completionUnavailable || Boolean(tasksState.error))}
-        description={loading ? "Loading your classes." : tasksState.error ? "Your assignments come from Canvas Task Sync." : summary(openTasks, active.size, assistant)}
+        description={loading ? "Loading your classes." : tasksState.error ? "Your assignments come from Canvas Task Sync." : updating ? `${summary(openTasks, active.size, assistant)} Updating…` : summary(openTasks, active.size, assistant)}
         actions={<>
-          <IconButton label="Refresh assignments" icon={ArrowsClockwiseIcon} variant="ghost" disabled={refreshing} onClick={() => void refresh()} />
+          <IconButton label={updating ? "Updating assignments" : "Refresh assignments"} icon={ArrowsClockwiseIcon} variant="ghost" aria-busy={updating} disabled={updating} onClick={() => void refresh()} />
           <Button variant="secondary" icon={PlusIcon} disabled={!coursesState.data?.length} onClick={() => setCreating(true)}>New task</Button>
         </>}
       />
