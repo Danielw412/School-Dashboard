@@ -1,5 +1,6 @@
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
+import { readCached, writeCached } from "../data-cache";
 import { isLiveConnected, subscribeToChanges, subscribeToConnection } from "../live-updates";
 import type { LiveChange } from "../types";
 
@@ -10,6 +11,9 @@ export type PollingOptions = {
   liveInterval?: number;
   // When false, load nothing (another component already supplies this data).
   enabled?: boolean;
+  // Start from the copy saved under this key by an earlier visit, then replace it with each fresh
+  // load. `loading` stays true until the first fresh load, so a page can tell it is updating.
+  cacheKey?: string;
 };
 
 export type PollingState<T> = {
@@ -21,14 +25,15 @@ export type PollingState<T> = {
 };
 
 export function usePolling<T>(loader: () => Promise<T>, interval = 0, options: PollingOptions = {}): PollingState<T> {
-  const { live, liveInterval = 0, enabled = true } = options;
+  const { live, liveInterval = 0, enabled = true, cacheKey } = options;
   const loaderRef = useRef(loader);
   const liveRef = useRef(live);
   useEffect(() => {
     loaderRef.current = loader;
     liveRef.current = live;
   }, [loader, live]);
-  const [data, setData] = useState<T | null>(null);
+  const cacheKeyRef = useRef(cacheKey);
+  const [data, setData] = useState<T | null>(() => cacheKey ? readCached<T>(cacheKey) : null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(enabled);
   const hasLive = Boolean(live);
@@ -37,6 +42,7 @@ export function usePolling<T>(loader: () => Promise<T>, interval = 0, options: P
     try {
       const result = await loaderRef.current();
       setData(result);
+      if (cacheKeyRef.current) writeCached(cacheKeyRef.current, result);
       setError(null);
       return result;
     } catch (nextError) {

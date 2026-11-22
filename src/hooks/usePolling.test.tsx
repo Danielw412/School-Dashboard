@@ -101,3 +101,24 @@ describe("usePolling with live updates", () => {
     unmount();
   });
 });
+
+describe("usePolling with a cache key", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("starts from the saved copy and replaces it with the fresh load", async () => {
+    let resolve: (value: string[]) => void = () => undefined;
+    const loader = vi.fn(() => new Promise<string[]>((done) => { resolve = done; }));
+    const first = renderHook(() => usePolling(loader, 0, { cacheKey: "items" }));
+    expect(first.result.current.data).toBeNull();
+    await act(async () => resolve(["fresh"]));
+    expect(first.result.current.data).toEqual(["fresh"]);
+    first.unmount();
+
+    const second = renderHook(() => usePolling(loader, 0, { cacheKey: "items" }));
+    expect(second.result.current.data).toEqual(["fresh"]);
+    expect(second.result.current.loading).toBe(true);
+    await act(async () => resolve(["newer"]));
+    expect(second.result.current.data).toEqual(["newer"]);
+    expect(second.result.current.loading).toBe(false);
+  });
+});
